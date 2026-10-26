@@ -1,73 +1,29 @@
 {
-  "activeProfileId": "alex-taylor",
-  "profiles": [
-    {
-      "id": "alex-taylor",
-      "name": "Alex Taylor",
-      "headline": "Senior Platform & DevOps Engineer",
-      "email": "alex.taylor@example.com",
-      "phone": "+44 7000 000000",
-      "location": "London, United Kingdom",
-      "postcode": "EC1A",
-      "linkedin": "https://www.linkedin.com/in/example",
-      "github": "https://github.com/example",
-      "portfolio": "",
-      "visaSponsorshipRequired": true,
-      "targetRoles": [
-        "Senior Platform Engineer",
-        "Senior DevOps Engineer",
-        "Staff Platform Engineer",
-        "Senior SRE",
-        "Cloud Infrastructure Engineer"
-      ],
-      "targetLocations": [
-        "Remote",
-        "London",
-        "Manchester",
-        "Leeds",
-        "Edinburgh",
-        "Birmingham"
-      ],
-      "preferredRadiusMiles": 50,
-      "minSalary": 75000,
-      "skills": {
-        "cloud": ["AWS (EKS, EC2, RDS, Lambda, S3, IAM)", "GCP", "Azure"],
-        "devops": ["Kubernetes", "Terraform", "Docker", "Helm", "ArgoCD", "GitOps"],
-        "languages": ["TypeScript", "Python", "Bash/Shell", "Go"],
-        "tools": ["GitHub Actions", "Jenkins", "Prometheus", "Grafana", "Datadog"]
-      },
-      "experience": [
-        {
-          "company": "Cloud Systems Ltd",
-          "role": "Senior Platform Engineer",
-          "location": "London, UK / Hybrid",
-          "startDate": "2023",
-          "endDate": "Present",
-          "bullets": [
-            "Scale and maintain multi-cluster Kubernetes infrastructure and CI/CD automation supporting high-throughput platform services.",
-            "Executed multi-version in-place upgrades of production Kubernetes clusters with zero downtime.",
-            "Modernized application services to GitOps architecture using ArgoCD, Helm, and GitHub Actions."
-          ]
-        }
-      ],
-      "education": [
-        {
-          "degree": "BSc / MSc in Computer Science",
-          "institution": "University of Technology",
-          "startDate": "2018",
-          "endDate": "2022",
-          "details": "Cloud Computing, Distributed Architecture"
-        }
-      ],
-      "certifications": [
-        {
-          "name": "AWS Certified Solutions Architect",
-          "issuer": "Amazon Web Services",
-          "year": "2023"
-        }
-      ],
-      "tracker": {},
-      "scenarioHistory": []
-    }
-  ]
+  "activeProfileId": "candidate-profile",
+  "profiles": [{
+    "id": "candidate-profile",
+    "name": "",
+    "headline": "",
+    "email": "",
+    "phone": "",
+    "location": "",
+    "postcode": "",
+    "linkedin": "",
+    "github": "",
+    "portfolio": "",
+    "visaSponsorshipRequired": false,
+    "targetRoles": [],
+    "targetLocations": [],
+    "preferredRadiusMiles": 50,
+    "minSalary": 0,
+    "skills": { "cloud": [], "devops": [], "languages": [], "tools": [] },
+    "experience": [],
+    "projects": [],
+    "education": [],
+    "certifications": [],
+    "spokenLanguages": [],
+    "profileVersion": 1,
+    "tracker": {},
+    "scenarioHistory": []
+  }]
 }

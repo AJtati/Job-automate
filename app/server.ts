@@ -1,19 +1,86 @@
 import { serve } from "bun";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, copyFileSync } from "fs";
+import { join, resolve, relative, basename, isAbsolute } from "path";
+import { tmpdir, homedir } from "os";
 import { spawnSync } from "child_process";
+import { createHash } from "crypto";
 import { ProfilesManager, CandidateProfile } from "./profiles_manager";
 import { AIService } from "./ai_service";
+import { analyzeApplication } from "./application_engine";
+import { createLatexBackbone } from "./resume_engine";
+import { parseResumeDeterministically } from "./resume_parser";
 
-const PORT = 3333;
-const ROOT_DIR = process.cwd();
+const PORT = Number(process.env.PORT || process.env.AI_JOB_SEARCH_PORT || 3333);
+const ROOT_DIR = process.env.AI_JOB_SEARCH_ROOT || process.cwd();
 const SEEN_JOBS_FILE = join(ROOT_DIR, "job_scraper", "seen_jobs.json");
 const TRACKER_FILE = join(ROOT_DIR, "job_search_tracker.csv");
 const CANDIDATE_PROFILE_FILE = join(ROOT_DIR, ".claude", "skills", "job-application-assistant", "01-candidate-profile.md");
 
 const profilesManager = new ProfilesManager();
 const aiService = new AIService();
+
+mkdirSync(join(ROOT_DIR, "job_scraper"), { recursive: true });
+mkdirSync(join(ROOT_DIR, "cv"), { recursive: true });
+mkdirSync(join(ROOT_DIR, "cover_letters"), { recursive: true });
+
+function isAllowedWorkspacePath(path: string): boolean {
+  const candidate = resolve(ROOT_DIR, path);
+  const allowed = ["cv", "cover_letters", "documents", "templates"].map(folder => resolve(ROOT_DIR, folder));
+  return allowed.some(folder => {
+    const child = relative(folder, candidate);
+    return child === "" || (!child.startsWith("..") && !isAbsolute(child));
+  });
+}
+
+function safeSlug(value: string): string {
+  return (value || "item").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "item";
+}
+
+function extractPdfText(bytes: Uint8Array, fileName: string): string {
+  const workDir = mkdtempSync(join(tmpdir(), "ai-job-search-pdf-"));
+  const input = join(workDir, basename(fileName || "resume.pdf"));
+  writeFileSync(input, bytes);
+  try {
+    const pdftotext = spawnSync("pdftotext", ["-layout", "-enc", "UTF-8", input, "-"], { encoding: "utf-8" });
+    if (pdftotext.status === 0 && pdftotext.stdout.trim()) return pdftotext.stdout;
+    for (const python of process.platform === "win32" ? ["python", "py"] : ["python3", "python"]) {
+      const script = "import sys; from pypdf import PdfReader; print('\\n'.join((p.extract_text() or '') for p in PdfReader(sys.argv[1]).pages))";
+      const result = spawnSync(python, ["-c", script, input], { encoding: "utf-8" });
+      if (result.status === 0 && result.stdout.trim()) return result.stdout;
+    }
+    throw new Error("PDF text extraction is unavailable. Install pypdf or Poppler pdftotext, then retry.");
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+async function readResumeRequest(req: Request): Promise<{ text: string; fileName: string; mediaType: string; previewOnly: boolean }> {
+  const contentType = req.headers.get("content-type") || "";
+  if (contentType.includes("multipart/form-data")) {
+    const form = await req.formData();
+    const file = form.get("file");
+    const pastedText = String(form.get("resumeText") || "").trim();
+    const previewOnly = String(form.get("previewOnly") || "false") === "true";
+    if (file instanceof File && file.size > 0) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      return {
+        text: isPdf ? extractPdfText(bytes, file.name) : new TextDecoder("utf-8", { fatal: false }).decode(bytes),
+        fileName: file.name,
+        mediaType: file.type || "text/plain",
+        previewOnly,
+      };
+    }
+    return { text: pastedText, fileName: "pasted-resume.txt", mediaType: "text/plain", previewOnly };
+  }
+  const body = await req.json() as any;
+  return {
+    text: String(body.resumeText || body.text || ""),
+    fileName: String(body.fileName || "pasted-resume.txt"),
+    mediaType: String(body.mediaType || "text/plain"),
+    previewOnly: Boolean(body.previewOnly),
+  };
+}
 
 // Known A-rated UK Skilled Worker Licensed Sponsors (North East & Major Tech)
 const KNOWN_SPONSORS: Record<string, { status: string; license: string; notes: string }> = {
@@ -134,6 +201,60 @@ function readSeenJobs(): Record<string, any> {
 
 function saveSeenJobs(data: Record<string, any>) {
   writeFileSync(SEEN_JOBS_FILE, JSON.stringify({ seen: data }, null, 2));
+}
+
+function fetchJobDescription(job: { id?: string; url?: string; portal?: string; title?: string }): string | null {
+  const url = job.url || "";
+  const portal = job.portal || "";
+
+  // 1. LinkedIn detail
+  if (portal === "linkedin-search" || url.includes("linkedin.com")) {
+    const liCliPath = join(ROOT_DIR, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
+    if (existsSync(liCliPath) && url) {
+      try {
+        const res = spawnSync("bun", ["run", liCliPath, "detail", url, "--format", "json"], {
+          cwd: ROOT_DIR,
+          encoding: "utf-8",
+          timeout: 10000
+        });
+        if (res.status === 0 && res.stdout) {
+          const parsed = JSON.parse(res.stdout);
+          if (parsed.description && parsed.description.length > 50) {
+            return parsed.description;
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to fetch LinkedIn detail for:", url, e);
+      }
+    }
+  }
+
+  // 2. Freehire detail
+  if (portal === "freehire-ats" || url.includes("freehire.me")) {
+    const freehireCliPath = join(ROOT_DIR, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
+    if (existsSync(freehireCliPath)) {
+      const slugOrUrl = url || job.id?.replace(/^fh_/, "") || "";
+      if (slugOrUrl) {
+        try {
+          const res = spawnSync("bun", ["run", freehireCliPath, "detail", slugOrUrl, "--format", "json"], {
+            cwd: ROOT_DIR,
+            encoding: "utf-8",
+            timeout: 10000
+          });
+          if (res.status === 0 && res.stdout) {
+            const parsed = JSON.parse(res.stdout);
+            if (parsed.description && parsed.description.length > 50) {
+              return parsed.description;
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to fetch Freehire detail for:", slugOrUrl, e);
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 // Initial verified seed postings
@@ -283,6 +404,7 @@ initializeSeed();
 // Start Bun HTTP server
 serve({
   port: PORT,
+  hostname: "127.0.0.1",
   async fetch(req) {
     const url = new URL(req.url);
 
@@ -317,12 +439,14 @@ serve({
         const cvFile = (tracked && tracked.cvFile) ? tracked.cvFile : (item.cv_file || "");
         const coverFile = (tracked && tracked.coverFile) ? tracked.coverFile : (item.cover_file || "");
 
-        // Dynamic fit score based on active profile target roles and skills
-        let fitScore = item.fit_score || 85;
-        const titleLower = (item.title || "").toLowerCase();
-        const targetRoles = activeProfile.targetRoles || [];
-        const isTargetMatch = targetRoles.some(r => titleLower.includes(r.toLowerCase()) || r.toLowerCase().includes(titleLower));
-        if (isTargetMatch) fitScore = Math.max(fitScore, sponsor.verified ? 96 : 92);
+        const fullJd = item.full_jd || item.summary || "";
+        const analysis = analyzeApplication(activeProfile, {
+          company: item.company || "",
+          role: item.title || "",
+          location: item.location || "",
+          fullJd,
+          keySkills: item.key_skills || [],
+        });
 
         return {
           id,
@@ -335,10 +459,12 @@ serve({
           salary: item.salary || "Competitive Market Rate",
           url: item.url,
           posted_date: item.posted_date || item.first_seen,
-          fit_score: fitScore,
-          summary: item.summary || `Senior Cloud / DevOps role at ${item.company} requiring modern cloud architecture and automation.`,
-          full_jd: item.full_jd || item.summary || "",
-          key_skills: item.key_skills || ["AWS", "Kubernetes", "Terraform", "CI/CD"],
+          fit_score: analysis.overallScore,
+          fit_verdict: analysis.verdict,
+          analysis,
+          summary: item.summary || fullJd.slice(0, 260),
+          full_jd: fullJd,
+          key_skills: item.key_skills || analysis.requirements.filter(r => r.category === "technical").map(r => r.requirement),
           sponsor_verified: sponsor.verified,
           sponsor_badge: sponsor.badge,
           sponsor_label: sponsor.label,
@@ -458,44 +584,69 @@ serve({
       }
     }
 
-    // API: POST /api/profiles/import-resume (Parse pasted plain text CV into profile)
-    if (url.pathname === "/api/profiles/import-resume" && req.method === "POST") {
+    // API: POST /api/profiles/import-resume (Parse and optionally persist a resume)
+    if ((url.pathname === "/api/profiles/import-resume" || url.pathname === "/api/profiles/parse-resume") && req.method === "POST") {
       try {
-        const body = await req.json();
-        const { resumeText } = body;
+        const incoming = await readResumeRequest(req);
+        const resumeText = incoming.text;
         if (!resumeText || resumeText.trim().length < 50) {
-          return new Response(JSON.stringify({ success: false, error: "Please paste a complete resume or CV text." }), { status: 400 });
+          return new Response(JSON.stringify({ success: false, error: "The resume did not contain enough readable text." }), { status: 400, headers: { "Content-Type": "application/json" } });
         }
 
+        const deterministic = parseResumeDeterministically(resumeText);
         const parsed = await aiService.parseResumeText(resumeText);
         const newProfile: CandidateProfile = {
           id: (parsed.name || "candidate").toLowerCase().replace(/[^a-z0-9]/g, "-") + "-" + Date.now().toString().slice(-4),
-          name: parsed.name || "New Candidate",
-          headline: parsed.headline || "Software / Platform Engineer",
+          name: parsed.name || "",
+          headline: parsed.headline || "",
+          summary: parsed.summary || "",
           email: parsed.email || "",
           phone: parsed.phone || "",
-          location: parsed.location || "United Kingdom",
+          location: parsed.location || "",
           postcode: parsed.postcode || "",
           linkedin: parsed.linkedin || "",
           github: parsed.github || "",
-          portfolio: "",
-          visaSponsorshipRequired: parsed.visaSponsorshipRequired ?? true,
-          targetRoles: parsed.targetRoles || [parsed.headline || "Senior Platform Engineer"],
-          targetLocations: parsed.targetLocations || ["Remote", "London", "Manchester", "Leeds"],
-          preferredRadiusMiles: parsed.preferredRadiusMiles || 60,
-          minSalary: parsed.minSalary || 75000,
-          skills: parsed.skills || { cloud: ["AWS"], devops: ["Kubernetes", "Terraform"], languages: ["Python"], tools: ["Git"] },
+          portfolio: parsed.portfolio || "",
+          visaSponsorshipRequired: parsed.visaSponsorshipRequired ?? false,
+          targetRoles: parsed.targetRoles?.filter(Boolean) || (parsed.headline ? [parsed.headline] : []),
+          targetLocations: parsed.targetLocations?.filter(Boolean) || [],
+          preferredRadiusMiles: parsed.preferredRadiusMiles || 50,
+          minSalary: parsed.minSalary || 0,
+          skills: parsed.skills || { cloud: [], devops: [], languages: [], tools: [] },
           experience: (parsed.experience as any) || [],
+          projects: (parsed.projects as any) || [],
           education: (parsed.education as any) || [],
           certifications: (parsed.certifications as any) || [],
+          spokenLanguages: parsed.spokenLanguages || ["English"],
+          latexBackbone: createLatexBackbone(),
+          profileVersion: 1,
+          sourceResume: {
+            fileName: incoming.fileName,
+            mediaType: incoming.mediaType,
+            importedAt: new Date().toISOString(),
+            sha256: createHash("sha256").update(resumeText).digest("hex"),
+            text: resumeText,
+            ...(incoming.fileName.toLowerCase().endsWith(".tex") ? { originalLatex: resumeText } : {}),
+          },
           tracker: {},
-          scenarioHistory: ["Imported from raw resume"]
+          scenarioHistory: [`Imported from ${incoming.fileName}`]
         };
+
+        const warnings = [...deterministic.warnings];
+        if (!newProfile.name) warnings.push("Name is required before this profile can be saved.");
+        if (!newProfile.experience.length) warnings.push("No work-experience entries were confirmed.");
+        const response = { success: true, profile: newProfile, warnings: [...new Set(warnings)], confidence: deterministic.confidence };
+        if (url.pathname === "/api/profiles/parse-resume" || incoming.previewOnly) {
+          return new Response(JSON.stringify(response), { headers: { "Content-Type": "application/json" } });
+        }
+        if (!newProfile.name) {
+          return new Response(JSON.stringify({ success: false, error: "Review the parsed resume and add the candidate name before saving.", ...response }), { status: 422, headers: { "Content-Type": "application/json" } });
+        }
 
         const saved = profilesManager.saveProfile(newProfile);
         profilesManager.setActiveProfile(saved.id);
 
-        return new Response(JSON.stringify({ success: true, profile: saved }), {
+        return new Response(JSON.stringify({ ...response, profile: saved }), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err: any) {
@@ -585,23 +736,40 @@ serve({
     if (url.pathname === "/api/scrape" && req.method === "POST") {
       try {
         console.log("Starting automated live search across priority locations...");
-        // 1. LinkedIn Search across priority UK regions & nationwide
-        const liQueries = [
-          { q: "Senior Platform Engineer", l: "United Kingdom" },
-          { q: "Senior DevOps Engineer", l: "United Kingdom" },
-          { q: "Site Reliability Engineer", l: "United Kingdom" },
-          { q: "Senior Platform Engineer", l: "Remote, United Kingdom" },
-          { q: "Senior Platform Engineer", l: "Newcastle upon Tyne" },
-          { q: "Senior DevOps Engineer", l: "Leeds" },
-          { q: "Platform Engineer", l: "Edinburgh" },
-          { q: "Senior Platform Engineer", l: "London" },
-          { q: "Senior DevOps Engineer", l: "Manchester" }
-        ];
+        const activeProfile = profilesManager.getActiveProfile();
+        const targetRoles = (activeProfile?.targetRoles && activeProfile.targetRoles.length > 0)
+          ? activeProfile.targetRoles.slice(0, 4)
+          : [activeProfile?.headline || "Software Engineer"];
+
+        const targetLocations = (activeProfile?.targetLocations && activeProfile.targetLocations.length > 0)
+          ? activeProfile.targetLocations.slice(0, 3)
+          : [activeProfile?.location || "United Kingdom"];
+
+        // Dynamically build search queries from active candidate's target roles and locations
+        const liQueries: Array<{ q: string; l: string }> = [];
+        for (const role of targetRoles) {
+          liQueries.push({ q: role, l: "United Kingdom" });
+          for (const loc of targetLocations) {
+            if (loc.toLowerCase() !== "united kingdom" && loc.toLowerCase() !== "remote") {
+              liQueries.push({ q: role, l: loc });
+            }
+          }
+        }
+        if (targetRoles.length > 0) {
+          liQueries.push({ q: targetRoles[0], l: "Remote, United Kingdom" });
+        }
 
         const liCliPath = join(ROOT_DIR, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
         let addedCount = 0;
         let enrichedCount = 0;
         const seen = readSeenJobs();
+
+        // Top candidate skills for default tagging if posting has none
+        const activeSkills = Object.values(activeProfile?.skills || {})
+          .flat()
+          .filter(Boolean)
+          .slice(0, 6) as string[];
+        const defaultSkills = activeSkills.length ? activeSkills : ["Software Engineering", "Full Stack", "Problem Solving"];
 
         for (const query of liQueries) {
           const res = spawnSync("bun", ["run", liCliPath, "search", "-q", query.q, "-l", query.l, "--jobage", "7", "--limit", "8"], {
@@ -622,6 +790,7 @@ serve({
 
                   if (!existingKey && !seen[jobId]) {
                     const sponsor = checkSponsor(r.company);
+                    const fullJd = fetchJobDescription({ url: r.url, portal: "linkedin-search" }) || "";
                     seen[jobId] = {
                       title: r.title,
                       company: r.company,
@@ -632,7 +801,8 @@ serve({
                       fit: "high",
                       fit_score: sponsor.verified ? 94 : 88,
                       summary: `Live posting from ${r.company} for ${r.title} in ${r.location}.`,
-                      key_skills: ["AWS", "Kubernetes", "DevOps", "CI/CD"],
+                      full_jd: fullJd,
+                      key_skills: defaultSkills,
                       status: "new",
                       portal: "linkedin-search",
                       source: "cli"
@@ -650,13 +820,19 @@ serve({
         // 2. Freehire ATS Aggregator Search (~50 ATS boards: Greenhouse, Lever, Ashby, Workable, Workday)
         const freehireCliPath = join(ROOT_DIR, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
         if (existsSync(freehireCliPath)) {
-          const freehireArgsList = [
-            ["search", "-q", "Platform Engineer", "--country", "GB", "--jobage", "7", "--limit", "15"],
-            ["search", "-q", "DevOps Engineer", "--country", "GB", "--jobage", "7", "--limit", "15"],
-            ["search", "-q", "Site Reliability Engineer", "--country", "GB", "--jobage", "7", "--limit", "15"],
-            ["search", "-q", "Cloud Infrastructure", "--country", "GB", "--jobage", "7", "--limit", "15"],
-            ["search", "--skill", "kubernetes,aws,terraform", "--country", "GB", "--jobage", "7", "--limit", "15"]
-          ];
+          const freehireArgsList: Array<string[]> = [];
+          for (const role of targetRoles.slice(0, 3)) {
+            freehireArgsList.push(["search", "-q", role, "--country", "GB", "--jobage", "7", "--limit", "15"]);
+          }
+
+          const candidateSkillsFaceted = activeSkills
+            .map(s => s.toLowerCase().split(/[\s(/,]/)[0])
+            .filter(s => s && s.length > 2 && s.length < 15)
+            .slice(0, 4);
+
+          if (candidateSkillsFaceted.length > 0) {
+            freehireArgsList.push(["search", "--skill", candidateSkillsFaceted.join(","), "--country", "GB", "--jobage", "7", "--limit", "15"]);
+          }
 
           for (const args of freehireArgsList) {
             const res = spawnSync("bun", ["run", freehireCliPath, ...args], {
@@ -731,12 +907,38 @@ serve({
     if (url.pathname === "/api/tailor" && req.method === "POST") {
       try {
         const body = await req.json();
-        const { jobId, company, role, location, keySkills, force } = body;
+        const { jobId, force } = body;
         const activeProfile = profilesManager.getActiveProfile();
+        const seen = readSeenJobs();
+        const storedJob = seen[jobId] || {};
+
+        const company = body.company || storedJob.company || "Company";
+        const role = body.role || storedJob.role || storedJob.title || "Platform Engineer";
+        const location = body.location || storedJob.location || "United Kingdom";
+        const keySkills = (body.keySkills && body.keySkills.length) ? body.keySkills : (storedJob.key_skills || storedJob.keySkills || []);
+
+        let fullJd = String(body.fullJd || storedJob.full_jd || storedJob.summary || "").trim();
+        if (fullJd.length < 150) {
+          const fetchedJd = fetchJobDescription(storedJob);
+          if (fetchedJd && fetchedJd.length > 50) {
+            fullJd = fetchedJd;
+            storedJob.full_jd = fullJd;
+            seen[jobId] = { ...storedJob, full_jd: fullJd };
+            saveSeenJobs(seen);
+          }
+        }
+        if (fullJd.length < 40) {
+          const defaultFocus = keySkills.length ? keySkills.join(", ") : (activeProfile.targetRoles || []).join(", ") || "core technical requirements";
+          fullJd = `Role: ${role} at ${company} in ${location}. Focus competencies and requirements: ${defaultFocus}. High quality delivery, production reliability, and cross-functional collaboration.`;
+        }
+        const analysis = analyzeApplication(activeProfile, { company, role, location, keySkills, fullJd });
+        if (!force && (analysis.gates.eligibility.verdict === "FAIL" || analysis.gates.language.verdict === "FAIL")) {
+          return new Response(JSON.stringify({ success: false, error: "This role fails a mandatory eligibility or language gate.", analysis }), { status: 409, headers: { "Content-Type": "application/json" } });
+        }
         
         const candidateSlug = (activeProfile.name || "candidate").toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
         const cleanCompany = (company || "Company").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-        const cleanRole = (role || "DevOps").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+        const cleanRole = (role || "Role").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         
         const cvPath = `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
         const coverPath = `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
@@ -750,7 +952,7 @@ serve({
         // Regenerate if force requested, file doesn't exist, or file is a legacy basic stub (< 100 lines)
         const isCvStale = !existsSync(cvFullPath) || force || (existsSync(cvFullPath) && readFileSync(cvFullPath, "utf-8").split("\n").length < 100);
         if (isCvStale) {
-          cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills });
+          cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd });
           writeFileSync(cvFullPath, cvContent);
         } else {
           cvContent = readFileSync(cvFullPath, "utf-8");
@@ -758,23 +960,22 @@ serve({
 
         const isCoverStale = !existsSync(coverFullPath) || force || (existsSync(coverFullPath) && readFileSync(coverFullPath, "utf-8").split("\n").length < 30);
         if (isCoverStale) {
-          coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills });
+          coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd });
           writeFileSync(coverFullPath, coverContent);
         } else {
           coverContent = readFileSync(coverFullPath, "utf-8");
         }
 
         // Update Tracker
-        updateTracker(company, role, "drafted", cvPath, coverPath, 94);
+        updateTracker(company, role, "drafted", cvPath, coverPath, analysis.overallScore);
         profilesManager.updateActiveProfileTracker(jobId || `${cleanCompany}_${cleanRole}`, {
           status: "drafted",
           cvFile: cvPath,
           coverFile: coverPath,
-          fitRating: "94"
+          fitRating: String(analysis.overallScore)
         });
 
         // Update seen_jobs
-        const seen = readSeenJobs();
         if (seen[jobId]) {
           seen[jobId].status = "drafted";
           seen[jobId].cv_file = cvPath;
@@ -788,7 +989,8 @@ serve({
           coverPath,
           cvContent,
           coverContent,
-          candidate: activeProfile.name
+          candidate: activeProfile.name,
+          analysis
         }), {
           headers: { "Content-Type": "application/json" }
         });
@@ -803,9 +1005,19 @@ serve({
         const body = await req.json();
         const { jobId, company, role, status, url: jobUrl } = body;
         
-        updateTracker(company, role, status, "", "", 94, jobUrl);
+        const activeProfile = profilesManager.getActiveProfile();
+        const seenForScore = readSeenJobs();
+        const sourceJob = seenForScore[jobId] || { company, title: role, url: jobUrl };
+        const statusAnalysis = analyzeApplication(activeProfile, {
+          company: company || sourceJob.company || "",
+          role: role || sourceJob.title || "",
+          location: sourceJob.location || "",
+          fullJd: sourceJob.full_jd || sourceJob.summary || "",
+          keySkills: sourceJob.key_skills || [],
+        });
+        updateTracker(company, role, status, "", "", statusAnalysis.overallScore, jobUrl);
 
-        const seen = readSeenJobs();
+        const seen = seenForScore;
         const targetDedup = getJobDedupKey({ company, title: role, url: jobUrl });
 
         let updatedCount = 0;
@@ -849,18 +1061,169 @@ serve({
       }
     }
 
+    // API: POST /api/jobs/hydrate-jd (Fetch complete description from portal on demand)
+    if (url.pathname === "/api/jobs/hydrate-jd" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { jobId } = body;
+        if (!jobId) {
+          return new Response(JSON.stringify({ success: false, error: "Missing jobId" }), { status: 400 });
+        }
+        const seen = readSeenJobs();
+        const stored = seen[jobId];
+        if (!stored) {
+          return new Response(JSON.stringify({ success: false, error: "Job ID not found" }), { status: 404 });
+        }
+
+        if (stored.full_jd && stored.full_jd.length > 200) {
+          const activeProfile = profilesManager.getActiveProfile();
+          const analysis = analyzeApplication(activeProfile, {
+            company: stored.company || "",
+            role: stored.title || "",
+            location: stored.location || "",
+            fullJd: stored.full_jd,
+            keySkills: stored.key_skills || []
+          });
+          return new Response(JSON.stringify({ success: true, fullJd: stored.full_jd, alreadyHydrated: true, analysis }), {
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+
+        const fetched = fetchJobDescription(stored);
+        if (fetched && fetched.length > 50) {
+          stored.full_jd = fetched;
+          seen[jobId] = stored;
+          saveSeenJobs(seen);
+          const activeProfile = profilesManager.getActiveProfile();
+          const analysis = analyzeApplication(activeProfile, {
+            company: stored.company || "",
+            role: stored.title || "",
+            location: stored.location || "",
+            fullJd: fetched,
+            keySkills: stored.key_skills || []
+          });
+          return new Response(JSON.stringify({ success: true, fullJd: fetched, analysis }), {
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+
+        return new Response(JSON.stringify({ success: false, error: "Unable to retrieve description from posting portal." }), { status: 404 });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+      }
+    }
+
     // API: GET /api/document
     if (url.pathname === "/api/document" && req.method === "GET") {
       const docPath = url.searchParams.get("path");
       if (!docPath) return new Response(JSON.stringify({ error: "Missing path" }), { status: 400 });
-      const fullPath = join(ROOT_DIR, docPath);
-      if (existsSync(fullPath)) {
+      if (!isAllowedWorkspacePath(docPath)) return new Response(JSON.stringify({ error: "Path is outside allowed document folders" }), { status: 403 });
+      const fullPath = resolve(ROOT_DIR, docPath);
+      if (existsSync(fullPath) && !fullPath.toLowerCase().endsWith(".pdf")) {
         const content = readFileSync(fullPath, "utf-8");
         return new Response(JSON.stringify({ content, path: docPath }), {
           headers: { "Content-Type": "application/json" }
         });
       }
       return new Response(JSON.stringify({ error: "File not found" }), { status: 404 });
+    }
+
+    if (url.pathname === "/api/pdf" && req.method === "GET") {
+      const docPath = url.searchParams.get("path");
+      const isDownload = url.searchParams.get("download") === "1";
+      if (!docPath || !isAllowedWorkspacePath(docPath) || !docPath.toLowerCase().endsWith(".pdf")) {
+        return new Response(JSON.stringify({ error: "Invalid PDF path" }), { status: 403, headers: { "Content-Type": "application/json" } });
+      }
+      const fullPath = resolve(ROOT_DIR, docPath);
+      if (!existsSync(fullPath)) return new Response(JSON.stringify({ error: "File not found" }), { status: 404 });
+      return new Response(readFileSync(fullPath), {
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `${isDownload ? "attachment" : "inline"}; filename="${basename(fullPath)}"`,
+        },
+      });
+    }
+
+    // API: POST /api/open-file (Open file in macOS Preview or system default viewer)
+    if (url.pathname === "/api/open-file" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const docPath = body.path;
+        if (!docPath || !isAllowedWorkspacePath(docPath)) {
+          return new Response(JSON.stringify({ success: false, error: "Invalid path" }), { status: 403 });
+        }
+        const fullPath = resolve(ROOT_DIR, docPath);
+        if (existsSync(fullPath)) {
+          spawnSync("open", [fullPath]);
+          return new Response(JSON.stringify({ success: true, message: "File opened in system viewer" }), {
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        return new Response(JSON.stringify({ success: false, error: "File not found" }), { status: 404 });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+      }
+    }
+
+    // API: POST /api/reveal-file (Reveal file in macOS Finder)
+    if (url.pathname === "/api/reveal-file" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const docPath = body.path;
+        if (!docPath || !isAllowedWorkspacePath(docPath)) {
+          return new Response(JSON.stringify({ success: false, error: "Invalid path" }), { status: 403 });
+        }
+        const fullPath = resolve(ROOT_DIR, docPath);
+        if (existsSync(fullPath)) {
+          spawnSync("open", ["-R", fullPath]);
+          return new Response(JSON.stringify({ success: true, message: "File revealed in Finder" }), {
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        return new Response(JSON.stringify({ success: false, error: "File not found" }), { status: 404 });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+      }
+    }
+
+    // API: POST /api/save-to-downloads (Copy compiled file directly to user's ~/Downloads directory)
+    if (url.pathname === "/api/save-to-downloads" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const docPath = body.path;
+        if (!docPath || !isAllowedWorkspacePath(docPath)) {
+          return new Response(JSON.stringify({ success: false, error: "Invalid path" }), { status: 403 });
+        }
+        const fullSourcePath = resolve(ROOT_DIR, docPath);
+        if (!existsSync(fullSourcePath)) {
+          return new Response(JSON.stringify({ success: false, error: "Source file not found" }), { status: 404 });
+        }
+        const targetFilename = body.filename || basename(fullSourcePath);
+        const downloadsDir = join(homedir(), "Downloads");
+        if (!existsSync(downloadsDir)) {
+          mkdirSync(downloadsDir, { recursive: true });
+        }
+        const targetPath = join(downloadsDir, targetFilename);
+        copyFileSync(fullSourcePath, targetPath);
+
+        // Optionally open in Preview or reveal in Finder
+        if (body.open) {
+          spawnSync("open", [targetPath]);
+        } else {
+          spawnSync("open", ["-R", targetPath]);
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          targetPath,
+          filename: targetFilename,
+          message: `Saved to Downloads: ${targetFilename}`
+        }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+      }
     }
 
     // API: GET /api/stats
@@ -883,61 +1246,90 @@ serve({
       });
     }
 
-    // API: POST /api/compile (Direct LaTeX to PDF Compiler Engine - Photomaker Integration)
+    // API: POST /api/compile (local-only LaTeX compiler supporting Tectonic, LuaLaTeX, XeLaTeX, PDFLaTeX)
     if (url.pathname === "/api/compile" && req.method === "POST") {
       try {
         const body = await req.json();
-        const { latexCode, filename = "document.pdf" } = body;
+        const { latexCode, filename = "document.pdf", kind = "cv" } = body;
         
         if (!latexCode || typeof latexCode !== "string") {
           return new Response(JSON.stringify({ error: "Missing latexCode" }), { status: 400 });
         }
 
-        const fd = new FormData();
-        fd.append("filecontents[]", latexCode);
-        fd.append("filename[]", "document.tex");
-        fd.append("engine", "pdflatex");
-        fd.append("return", "pdf");
+        // Compiler discovery: Prefer modern self-contained tectonic, then lualatex/xelatex/pdflatex
+        const candidates = [
+          { name: "tectonic", paths: ["/opt/homebrew/bin/tectonic", "/usr/local/bin/tectonic", "tectonic"], isTectonic: true },
+          { name: kind === "cover" ? "xelatex" : "lualatex", paths: [`/Library/TeX/texbin/${kind === "cover" ? "xelatex" : "lualatex"}`], isTectonic: false },
+          { name: "xelatex", paths: ["/Library/TeX/texbin/xelatex", "/usr/local/bin/xelatex", "xelatex"], isTectonic: false },
+          { name: "pdflatex", paths: ["/Library/TeX/texbin/pdflatex", "/usr/local/bin/pdflatex", "pdflatex"], isTectonic: false },
+        ];
 
-        const compileRes = await fetch("https://texlive.net/cgi-bin/latexcgi", {
-          method: "POST",
-          body: fd
-        });
+        let compiler: { name: string; path: string; isTectonic: boolean } | null = null;
+        for (const cand of candidates) {
+          for (const p of cand.paths) {
+            try {
+              const chk = spawnSync(p, ["--version"], { encoding: "utf-8" });
+              if (!chk.error && chk.status === 0) {
+                compiler = { name: cand.name, path: p, isTectonic: cand.isTectonic };
+                break;
+              }
+            } catch {}
+          }
+          if (compiler) break;
+        }
 
-        const buf = await compileRes.arrayBuffer();
-        const header = Buffer.from(buf.slice(0, 5)).toString();
+        if (!compiler) {
+          return new Response(JSON.stringify({
+            error: "No LaTeX compiler found on system. Install tectonic via 'brew install tectonic' or TeX Live.",
+            engine: "none",
+          }), { status: 503, headers: { "Content-Type": "application/json" } });
+        }
 
-        if (compileRes.ok && header === "%PDF-") {
-          const uint8 = new Uint8Array(buf);
-          
-          // 1. Save directly to ~/Downloads/
-          const downloadsDir = join(homedir(), "Downloads");
-          const downloadFilePath = join(downloadsDir, filename);
-          writeFileSync(downloadFilePath, uint8);
+        const workDir = mkdtempSync(join(tmpdir(), "ai-job-search-tex-"));
+        try {
+          const texPath = join(workDir, "document.tex");
+          let cleanLatex = latexCode;
+          if (compiler.isTectonic && !cleanLatex.includes("\\ifx\\pdfgentounicode")) {
+            cleanLatex = cleanLatex
+              .replace(/\\input\{glyphtounicode\}/g, "\\ifx\\pdfgentounicode\\undefined\\else\\input{glyphtounicode}\\fi")
+              .replace(/\\pdfgentounicode=1/g, "\\ifx\\pdfgentounicode\\undefined\\else\\pdfgentounicode=1\\fi");
+          }
+          writeFileSync(texPath, cleanLatex, "utf-8");
 
-          // 2. Also save to workspace cv/ or cover_letters/
-          const folder = filename.toLowerCase().includes("cover") ? "cover_letters" : "cv";
-          const repoFilePath = join(ROOT_DIR, folder, filename);
-          writeFileSync(repoFilePath, uint8);
+          const cmdArgs = compiler.isTectonic
+            ? ["--outdir", workDir, texPath]
+            : ["-interaction=nonstopmode", "-halt-on-error", "-output-directory", workDir, texPath];
 
-          // 3. Open in macOS Preview immediately
-          spawnSync("open", [downloadFilePath]);
+          const result = spawnSync(compiler.path, cmdArgs, {
+            cwd: ROOT_DIR,
+            encoding: "utf-8",
+            timeout: 120000,
+          });
 
+          const pdfPath = join(workDir, "document.pdf");
+          if (result.status !== 0 || !existsSync(pdfPath)) {
+            return new Response(JSON.stringify({
+              error: "LaTeX compilation failed.",
+              engine: compiler.name,
+              details: `${result.stdout || ""}\n${result.stderr || ""}`.slice(-12000),
+            }), { status: 422, headers: { "Content-Type": "application/json" } });
+          }
+
+          const folder = kind === "cover" ? "cover_letters" : "cv";
+          const safeName = basename(filename).replace(/[^a-zA-Z0-9._-]/g, "-").replace(/\.tex$/i, ".pdf");
+          const repoFilePath = join(ROOT_DIR, folder, safeName.toLowerCase().endsWith(".pdf") ? safeName : `${safeName}.pdf`);
+          writeFileSync(repoFilePath, readFileSync(pdfPath));
+          const repoRelative = relative(ROOT_DIR, repoFilePath).split("\\").join("/");
           return new Response(JSON.stringify({
             success: true,
-            filename,
-            downloadPath: downloadFilePath,
-            repoPath: repoFilePath,
-            message: `PDF saved to ~/Downloads/${filename} and opened in Preview`
-          }), {
-            headers: { "Content-Type": "application/json" }
-          });
-        } else {
-          const errMsg = Buffer.from(buf).toString();
-          return new Response(JSON.stringify({ error: "LaTeX compilation error", details: errMsg }), {
-            status: 422,
-            headers: { "Content-Type": "application/json" }
-          });
+            filename: basename(repoFilePath),
+            repoPath: repoRelative,
+            downloadUrl: `/api/pdf?download=1&path=${encodeURIComponent(repoRelative)}`,
+            engine: compiler.name,
+            message: "Native ATS vector PDF compiled successfully.",
+          }), { headers: { "Content-Type": "application/json" } });
+        } finally {
+          rmSync(workDir, { recursive: true, force: true });
         }
       } catch (err: any) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500 });
@@ -945,8 +1337,11 @@ serve({
     }
 
     // Serve Static UI Assets from app/public
-    let filePath = join(ROOT_DIR, "app", "public", url.pathname === "/" ? "index.html" : url.pathname);
-    if (existsSync(filePath)) {
+    const publicDir = resolve(ROOT_DIR, "app", "public");
+    const requestedAsset = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/+/, "");
+    const filePath = resolve(publicDir, requestedAsset);
+    const assetRelative = relative(publicDir, filePath);
+    if (!assetRelative.startsWith("..") && !isAbsolute(assetRelative) && existsSync(filePath)) {
       const ext = filePath.split(".").pop();
       const contentType = ext === "css" ? "text/css" : ext === "js" ? "application/javascript" : ext === "svg" ? "image/svg+xml" : "text/html";
       return new Response(readFileSync(filePath), {
@@ -958,12 +1353,9 @@ serve({
   }
 });
 
-console.log(`\n========================================================`);
-console.log(`🍎 AI Job Search Mac Desktop App is running live!`);
-console.log(`🌐 Local URL: http://localhost:${PORT}`);
-console.log(`========================================================\n`);
+console.log(`AI Job Search Studio is running at http://127.0.0.1:${PORT}`);
 
-function updateTracker(company: string, role: string, status: string, cvFile = "", coverFile = "", fit = 94, sourceUrl = "") {
+function updateTracker(company: string, role: string, status: string, cvFile = "", coverFile = "", fit = 0, sourceUrl = "") {
   const today = new Date().toISOString().split("T")[0];
   if (!existsSync(TRACKER_FILE)) {
     writeFileSync(TRACKER_FILE, "date,company,sector,role,role_type,channel,status,contact_person,fit_rating,notes,cv_file,cover_letter_file,source,deadline\n");
@@ -982,28 +1374,31 @@ function updateTracker(company: string, role: string, status: string, cvFile = "
     if (cols.length >= 4 && normTrackComp === targetComp && normTrackRole === targetRole) {
       found = true;
       cols[6] = status;
+      if (fit) cols[8] = fit.toString();
       if (cvFile) cols[10] = cvFile;
       if (coverFile) cols[11] = coverFile;
       if (sourceUrl && !cols[12]) cols[12] = sourceUrl;
-      return cols.map(c => c.includes(",") ? `"${c}"` : c).join(",");
+      return cols.map(c => (c || "").includes(",") ? `"${c}"` : (c || "")).join(",");
     }
     return line;
   });
 
   if (!found) {
+    const safeComp = company || "Company";
+    const safeRole = role || "Role";
     const row = [
       today,
-      company.includes(",") ? `"${company}"` : company,
+      safeComp.includes(",") ? `"${safeComp}"` : safeComp,
       "Technology & Cloud Engineering",
-      role.includes(",") ? `"${role}"` : role,
+      safeRole.includes(",") ? `"${safeRole}"` : safeRole,
       "Permanent / Hybrid",
       "portal",
-      status,
+      status || "drafted",
       "",
-      fit.toString(),
-      `A-rated Sponsor verified. Curated via Mac Studio.`,
-      cvFile,
-      coverFile,
+      (fit || 0).toString(),
+      `Created by AI Job Search Studio. Review sponsorship and document evidence before submission.`,
+      cvFile || "",
+      coverFile || "",
       sourceUrl ? (sourceUrl.includes(",") ? `"${sourceUrl}"` : sourceUrl) : "",
       ""
     ].join(",");

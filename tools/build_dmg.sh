@@ -134,14 +134,17 @@ fi
 echo "Bundling web app resources into .app bundle..."
 cp -R "$REPO_DIR/app" "$APP_BUNDLE/Contents/Resources/"
 mkdir -p "$APP_BUNDLE/Contents/Resources/data"
-if [ -f "$REPO_DIR/data/profiles.json" ]; then
-    cp "$REPO_DIR/data/profiles.json" "$APP_BUNDLE/Contents/Resources/data/profiles.json"
-elif [ -f "$REPO_DIR/data/profiles.template.json" ]; then
-    cp "$REPO_DIR/data/profiles.template.json" "$APP_BUNDLE/Contents/Resources/data/profiles.json"
-fi
+cp -R "$REPO_DIR/data" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 if [ -d "$REPO_DIR/cv" ]; then
     cp -R "$REPO_DIR/cv" "$APP_BUNDLE/Contents/Resources/"
 fi
+if [ -d "$REPO_DIR/cover_letters" ]; then
+    cp -R "$REPO_DIR/cover_letters" "$APP_BUNDLE/Contents/Resources/"
+fi
+if [ -d "$REPO_DIR/job_scraper" ]; then
+    cp -R "$REPO_DIR/job_scraper" "$APP_BUNDLE/Contents/Resources/"
+fi
+cp "$REPO_DIR/job_search_tracker.csv" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 cp "$REPO_DIR/package.json" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 
 # 4. Prepare Staging Directory for DMG

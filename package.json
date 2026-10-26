@@ -1,11 +1,14 @@
 {
   "name": "ai-job-search",
   "version": "1.0.0",
-  "description": "AI-Powered Job Search Studio with macOS Apple Design, Automated Daily Scraping, Multi-Candidate Profiles, and Humanized CV Tailoring",
+  "description": "Local evidence-first job search studio with deterministic ATS analysis and grounded LaTeX tailoring",
   "scripts": {
     "dev": "bun run app/server.ts",
     "start": "bun run app/server.ts",
     "app": "bash bin/launch-app.sh",
+    "app:windows": "powershell -ExecutionPolicy Bypass -File bin/launch-app.ps1",
+    "test:app": "bun test app/tests",
+    "check:app": "bun build app/public/app.js --outfile=/tmp/ai-job-search-ui.js && bun build --target=bun app/server.ts --outfile=/tmp/ai-job-search-server.js",
     "build:dmg": "bash tools/build_dmg.sh",
     "scrape": "bun run .agents/skills/linkedin-search/cli/src/cli.ts search -q 'Senior Platform Engineer' -l 'Remote'"
   },

@@ -17,7 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
 
     func ensureServerRunning() {
         // Check if port 3333 is reachable
-        let url = URL(string: "http://localhost:3333/api/jobs")!
+        let url = URL(string: "http://127.0.0.1:3333/api/jobs")!
         var request = URLRequest(url: url)
         request.timeoutInterval = 0.5
         
@@ -103,16 +103,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         webView.navigationDelegate = self
         webView.uiDelegate = self
 
-        // Dark background matching Apple design system
-        window.backgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1.0)
+        window.backgroundColor = .windowBackgroundColor
         webView.setValue(false, forKey: "drawsBackground")
 
         window.contentView?.addSubview(webView)
         window.makeKeyAndOrderFront(nil)
+
+        // Fail-safe keyboard monitor: pressing Escape key (keyCode 53) returns to root app if stuck
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
+            if event.keyCode == 53 {
+                if let currentURL = self.webView.url, currentURL.path != "/" && currentURL.path != "" {
+                    self.loadApp()
+                    return nil
+                }
+            }
+            return event
+        }
     }
 
     func loadApp() {
-        let url = URL(string: "http://localhost:3333")!
+        let url = URL(string: "http://127.0.0.1:3333/")!
         webView.load(URLRequest(url: url))
     }
 
@@ -148,12 +159,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
-        // View Menu (Reload / Zoom)
+        // View Menu (Reload / Navigation)
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "View")
         viewMenuItem.submenu = viewMenu
+        let homeItem = NSMenuItem(title: "Return to Job Studio (Home)", action: #selector(returnToHome), keyEquivalent: "0")
+        homeItem.keyEquivalentModifierMask = [.command]
+        viewMenu.addItem(homeItem)
+        let backItem = NSMenuItem(title: "Back to App", action: #selector(goBack), keyEquivalent: "[")
+        backItem.keyEquivalentModifierMask = [.command]
+        viewMenu.addItem(backItem)
+        let fwdItem = NSMenuItem(title: "Forward", action: #selector(goForward), keyEquivalent: "]")
+        fwdItem.keyEquivalentModifierMask = [.command]
+        viewMenu.addItem(fwdItem)
+        viewMenu.addItem(NSMenuItem.separator())
         let reloadItem = NSMenuItem(title: "Reload Page", action: #selector(reloadApp), keyEquivalent: "r")
+        reloadItem.keyEquivalentModifierMask = [.command]
         viewMenu.addItem(reloadItem)
 
         // Window Menu
@@ -168,14 +190,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         NSApp.mainMenu = mainMenu
     }
 
+    @objc func returnToHome() {
+        loadApp()
+    }
+
     @objc func reloadApp() {
         webView.reload()
     }
 
+    @objc func goBack() {
+        if webView.canGoBack {
+            webView.goBack()
+        } else {
+            loadApp()
+        }
+    }
+
+    @objc func goForward() {
+        if webView.canGoForward {
+            webView.goForward()
+        }
+    }
+
     // Handle target="_blank" links: Open in external browser (Safari/Chrome)
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
-            if (url.scheme == "http" || url.scheme == "https") && url.host != "localhost" && url.host != "127.0.0.1" {
+        if let url = navigationAction.request.url {
+            if url.scheme == "http" || url.scheme == "https" {
                 NSWorkspace.shared.open(url)
             }
         }
@@ -183,19 +223,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = navigationAction.request.url {
-            // Ignore non-http/https schemes like blob, data, about
-            if url.scheme != "http" && url.scheme != "https" {
-                decisionHandler(.allow)
-                return
-            }
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.cancel)
+            return
+        }
 
-            // If user clicks an external link like linkedin, github, overleaf, etc., open in default browser
-            if url.host != "localhost" && url.host != "127.0.0.1" {
-                NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
-                return
-            }
+        let isLocal = (url.host == "localhost" || url.host == "127.0.0.1")
+        let isRoot = (url.path == "/" || url.path == "" || url.path == "/index.html")
+
+        // 1. Allow the initial load and reloads of the root SPA application
+        if (url.scheme == "http" || url.scheme == "https") && isLocal && isRoot {
+            decisionHandler(.allow)
+            return
+        }
+
+        // 2. Open external web links in macOS default browser (Safari, Chrome, etc.)
+        if (url.scheme == "http" || url.scheme == "https") && !isLocal {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+            return
+        }
+
+        // 3. For any PDF or document endpoints, open in macOS Preview.app rather than navigating WKWebView
+        if url.path.hasPrefix("/api/pdf") || url.path.hasSuffix(".pdf") {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+            return
+        }
+
+        // 4. BLOCK any other top-level navigation (blob:, file:, data:, non-root local URLs)
+        // This guarantees that WKWebView NEVER replaces the application with a PDF viewer or blank page!
+        decisionHandler(.cancel)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        // Block PDF MIME type from rendering inside WKWebView
+        if let mimeType = navigationResponse.response.mimeType, mimeType == "application/pdf" {
+            decisionHandler(.cancel)
+            return
         }
         decisionHandler(.allow)
     }

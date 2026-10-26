@@ -48,6 +48,7 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+.impeccable/
 
 # Memory files (Claude Code user-specific)
 .claude/projects/

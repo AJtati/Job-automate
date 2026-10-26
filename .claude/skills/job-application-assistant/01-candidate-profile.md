@@ -57,3 +57,19 @@ Location / Hybrid
 
 ### Languages & Frameworks
 - TypeScript, Python, Go, Bash, SQL
+
+## Independent Projects
+
+Add only projects supported by the source resume or confirmed by the candidate.
+
+## Publications
+
+None recorded.
+
+## Awards
+
+None recorded.
+
+## References
+
+Available on request.
