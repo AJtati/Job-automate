@@ -282,7 +282,7 @@ export class AIService {
     return "";
   }
 
-  // Handle natural language scenarios
+  // Handle natural language scenarios & Universal Agent Commands
   public async processScenario(
     userPrompt: string,
     currentProfile: CandidateProfile
@@ -290,28 +290,46 @@ export class AIService {
     explanation: string;
     profileUpdates: Partial<CandidateProfile>;
     feedFilters?: { query?: string; location?: string; minSalary?: number };
+    jobUrl?: string;
+    action?: "scrape_and_tailor" | "update_profile" | "filter_feed";
   }> {
-    const promptLower = userPrompt.toLowerCase();
+    const promptTrimmed = userPrompt.trim();
+    const promptLower = promptTrimmed.toLowerCase();
     const updates: Partial<CandidateProfile> = {};
     const filters: { query?: string; location?: string; minSalary?: number } = {};
     const explanationParts: string[] = [];
 
-    // Try LLM parsing if configured
+    // 1. Instant URL Detection for Scrape & Tailor
+    const urlMatch = promptTrimmed.match(/https?:\/\/[^\s"'<>]+/i);
+    if (urlMatch) {
+      const url = urlMatch[0];
+      return {
+        explanation: `🌐 Job posting link detected. Fetching posting details and generating bespoke tailored ATS application...`,
+        profileUpdates: {},
+        jobUrl: url,
+        action: "scrape_and_tailor"
+      };
+    }
+
+    // 2. Try LLM parsing if configured (Ollama / Anthropic / OpenAI)
     if (this.config.provider !== "builtin") {
       try {
-        const systemPrompt = `You are an expert career scenario assistant for an AI Job Search application.
-The user wants to adjust their job search scenario (e.g. they moved to a new city, want higher salary, targeted a new role, gained a new certification, or want specific company types).
+        const systemPrompt = `You are an expert career scenario assistant and resume agent for AI Job Search Studio.
+The user wants to adjust their profile, search preferences, or add/remove skills, certifications, and roles.
 Analyze the user prompt and return a JSON object ONLY with the following schema:
 {
   "location": string or null,
   "postcode": string or null,
   "targetRolesToAdd": string[] or null,
+  "targetRolesToRemove": string[] or null,
   "targetRolesReplace": string[] or null,
   "targetLocationsToAdd": string[] or null,
   "minSalary": number or null,
   "preferredRadiusMiles": number or null,
   "skillsToAdd": { "cloud"?: string[], "devops"?: string[], "languages"?: string[], "tools"?: string[] } or null,
+  "skillsToRemove": string[] or null,
   "certificationsToAdd": [ { "name": string, "issuer": string, "year": string } ] or null,
+  "certificationsToRemove": string[] or "ALL" or null,
   "feedQuery": string or null,
   "explanation": string (brief, friendly summary of what was changed)
 }`;
@@ -327,40 +345,175 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
             filters.minSalary = parsed.minSalary;
           }
           if (parsed.preferredRadiusMiles) updates.preferredRadiusMiles = parsed.preferredRadiusMiles;
+
+          // Target Roles (Add / Remove / Replace)
           if (parsed.targetRolesReplace && parsed.targetRolesReplace.length > 0) {
             updates.targetRoles = parsed.targetRolesReplace;
-          } else if (parsed.targetRolesToAdd && parsed.targetRolesToAdd.length > 0) {
-            updates.targetRoles = Array.from(new Set([...currentProfile.targetRoles, ...parsed.targetRolesToAdd]));
+          } else {
+            let roles = [...(currentProfile.targetRoles || [])];
+            if (parsed.targetRolesToRemove && parsed.targetRolesToRemove.length > 0) {
+              const toRemove = new Set((parsed.targetRolesToRemove as string[]).map(r => r.toLowerCase()));
+              roles = roles.filter(r => !toRemove.has(r.toLowerCase()));
+            }
+            if (parsed.targetRolesToAdd && parsed.targetRolesToAdd.length > 0) {
+              roles = Array.from(new Set([...roles, ...parsed.targetRolesToAdd]));
+            }
+            if (roles.length !== (currentProfile.targetRoles || []).length) {
+              updates.targetRoles = roles;
+            }
           }
+
           if (parsed.targetLocationsToAdd && parsed.targetLocationsToAdd.length > 0) {
             updates.targetLocations = Array.from(new Set([...currentProfile.targetLocations, ...parsed.targetLocationsToAdd]));
           }
+
+          // Skills Management (Add & Remove)
+          let currentSkills = {
+            cloud: [...(currentProfile.skills.cloud || [])],
+            devops: [...(currentProfile.skills.devops || [])],
+            languages: [...(currentProfile.skills.languages || [])],
+            tools: [...(currentProfile.skills.tools || [])]
+          };
+
+          if (parsed.skillsToRemove && parsed.skillsToRemove.length > 0) {
+            const remLower = (parsed.skillsToRemove as string[]).map(s => s.toLowerCase());
+            const filterSkills = (arr: string[]) => arr.filter(s => !remLower.some(r => s.toLowerCase().includes(r)));
+            currentSkills = {
+              cloud: filterSkills(currentSkills.cloud),
+              devops: filterSkills(currentSkills.devops),
+              languages: filterSkills(currentSkills.languages),
+              tools: filterSkills(currentSkills.tools)
+            };
+            updates.skills = currentSkills;
+          }
+
           if (parsed.skillsToAdd) {
             updates.skills = {
-              cloud: Array.from(new Set([...currentProfile.skills.cloud, ...(parsed.skillsToAdd.cloud || [])])),
-              devops: Array.from(new Set([...currentProfile.skills.devops, ...(parsed.skillsToAdd.devops || [])])),
-              languages: Array.from(new Set([...currentProfile.skills.languages, ...(parsed.skillsToAdd.languages || [])])),
-              tools: Array.from(new Set([...currentProfile.skills.tools, ...(parsed.skillsToAdd.tools || [])]))
+              cloud: Array.from(new Set([...currentSkills.cloud, ...(parsed.skillsToAdd.cloud || [])])),
+              devops: Array.from(new Set([...currentSkills.devops, ...(parsed.skillsToAdd.devops || [])])),
+              languages: Array.from(new Set([...currentSkills.languages, ...(parsed.skillsToAdd.languages || [])])),
+              tools: Array.from(new Set([...currentSkills.tools, ...(parsed.skillsToAdd.tools || [])]))
             };
           }
-          if (parsed.certificationsToAdd && parsed.certificationsToAdd.length > 0) {
-            updates.certifications = [...(currentProfile.certifications || []), ...parsed.certificationsToAdd];
+
+          // Certifications Management (Add & Remove)
+          let certs = [...(currentProfile.certifications || [])];
+          if (parsed.certificationsToRemove === "ALL") {
+            updates.certifications = [];
+          } else if (Array.isArray(parsed.certificationsToRemove) && parsed.certificationsToRemove.length > 0) {
+            const remTerms = (parsed.certificationsToRemove as string[]).map(t => t.toLowerCase());
+            updates.certifications = certs.filter(c => !remTerms.some(t => c.name.toLowerCase().includes(t)));
           }
+
+          if (parsed.certificationsToAdd && parsed.certificationsToAdd.length > 0) {
+            const existing = updates.certifications !== undefined ? updates.certifications : certs;
+            updates.certifications = [...existing, ...parsed.certificationsToAdd];
+          }
+
           if (parsed.feedQuery) filters.query = parsed.feedQuery;
 
           return {
-            explanation: parsed.explanation || "Updated profile and search preferences.",
+            explanation: parsed.explanation || "Profile and scenario updated successfully.",
             profileUpdates: updates,
-            feedFilters: filters
+            feedFilters: filters,
+            action: "update_profile"
           };
         }
       } catch (err) {
-        console.warn("LLM scenario parsing failed, falling back to heuristic parsing:", err);
+        console.warn("LLM scenario parsing error, falling back to deterministic engine:", err);
       }
     }
 
-    // High-performance heuristic / regex natural language scenario parser
-    // 1. Relocation / Location Change
+    // 3. High-Performance Deterministic Fallback Engine (Works offline or without AI)
+    const isRemoveIntent = /\b(remove|delete|drop|clear|no|omit|strip)\b/i.test(promptLower);
+
+    // Certifications Removal / Deletion
+    if (isRemoveIntent && (promptLower.includes("cert") || promptLower.includes("cka") || promptLower.includes("kubernetes") || promptLower.includes("aws"))) {
+      if (promptLower.includes("all") || promptLower.includes("certifications") || promptLower.includes("clear cert") || promptLower.includes("no cert")) {
+        updates.certifications = [];
+        explanationParts.push("🗑️ Cleared all certifications from candidate profile.");
+      } else if (promptLower.includes("cka") || promptLower.includes("certified kubernetes administrator") || promptLower.includes("kubernetes")) {
+        updates.certifications = (currentProfile.certifications || []).filter(c => 
+          !c.name.toLowerCase().includes("cka") && 
+          !c.name.toLowerCase().includes("kubernetes")
+        );
+        // Also prune CKA tag from devops skills if present
+        const filteredDevops = (currentProfile.skills.devops || []).filter(s => 
+          !s.toLowerCase().includes("cka") && !s.toLowerCase().includes("container security")
+        );
+        updates.skills = { ...currentProfile.skills, devops: filteredDevops };
+        explanationParts.push("🗑️ Removed Certified Kubernetes Administrator (CKA) from certifications.");
+      } else if (promptLower.includes("aws") || promptLower.includes("solution")) {
+        updates.certifications = (currentProfile.certifications || []).filter(c => 
+          !c.name.toLowerCase().includes("aws")
+        );
+        explanationParts.push("🗑️ Removed AWS certification from certifications.");
+      } else {
+        const certMatch = promptLower.match(/(?:remove|delete|drop)\s+(?:cert(?:ification)?\s+)?([a-z0-9\s-]+)/i);
+        if (certMatch && certMatch[1]) {
+          const target = certMatch[1].trim();
+          updates.certifications = (currentProfile.certifications || []).filter(c => !c.name.toLowerCase().includes(target));
+          explanationParts.push(`🗑️ Removed "${target}" from certifications.`);
+        }
+      }
+    }
+
+    // Skill Removal
+    if (isRemoveIntent && (promptLower.includes("skill") || promptLower.includes("remove ") || promptLower.includes("delete "))) {
+      const matchSkill = promptLower.match(/(?:remove|delete|drop)\s+(?:skill\s+)?([a-z0-9+#.-]+)/i);
+      if (matchSkill && matchSkill[1] && !matchSkill[1].includes("cert")) {
+        const targetSkill = matchSkill[1].trim().toLowerCase();
+        const filterGroup = (arr?: string[]) => (arr || []).filter(s => s.toLowerCase() !== targetSkill && !s.toLowerCase().includes(targetSkill));
+        updates.skills = {
+          cloud: filterGroup(currentProfile.skills.cloud),
+          devops: filterGroup(currentProfile.skills.devops),
+          languages: filterGroup(currentProfile.skills.languages),
+          tools: filterGroup(currentProfile.skills.tools),
+        };
+        explanationParts.push(`🗑️ Removed skill "${targetSkill}" across technical categories.`);
+      }
+    }
+
+    // Certifications Addition (Only when NOT removing)
+    if (!isRemoveIntent && (promptLower.includes("cka") || promptLower.includes("certified kubernetes administrator"))) {
+      const existingCerts = currentProfile.certifications || [];
+      if (!existingCerts.some(c => c.name.includes("CKA"))) {
+        updates.certifications = [...existingCerts, { name: "Certified Kubernetes Administrator (CKA)", issuer: "Cloud Native Computing Foundation (CNCF)", year: "2024" }];
+      }
+      updates.skills = {
+        ...currentProfile.skills,
+        devops: Array.from(new Set([...currentProfile.skills.devops, "Kubernetes (CKA)", "Container Security"]))
+      };
+      explanationParts.push(`🎓 Added Certified Kubernetes Administrator (CKA) to certifications.`);
+    } else if (!isRemoveIntent && (promptLower.startsWith("add cert") || promptLower.includes("got certified in") || promptLower.includes("added cert"))) {
+      const addCertMatch = promptLower.match(/(?:add|got|earned|passed)\s+(?:cert(?:ification)?\s+)?([a-z0-9\s-]+)/i);
+      if (addCertMatch && addCertMatch[1] && !addCertMatch[1].includes("cka")) {
+        const certName = addCertMatch[1].trim().toUpperCase();
+        updates.certifications = [...(currentProfile.certifications || []), { name: certName, issuer: "Accredited Body", year: "2024" }];
+        explanationParts.push(`🎓 Added "${certName}" to certifications.`);
+      }
+    }
+
+    // Skill Addition (Only when NOT removing)
+    if (!isRemoveIntent && (promptLower.includes("terraform") && !promptLower.includes("remove"))) {
+      updates.skills = {
+        ...currentProfile.skills,
+        devops: Array.from(new Set([...currentProfile.skills.devops, "Terraform", "Terragrunt", "IaC"]))
+      };
+      explanationParts.push(`⚡ Prioritized Terraform & Infrastructure as Code across profile.`);
+    } else if (!isRemoveIntent && promptLower.startsWith("add skill")) {
+      const addSkillMatch = promptLower.match(/(?:add|include)\s+(?:skill\s+)?([a-z0-9+#.-]+)/i);
+      if (addSkillMatch && addSkillMatch[1]) {
+        const skill = addSkillMatch[1].trim();
+        updates.skills = {
+          ...currentProfile.skills,
+          tools: Array.from(new Set([...currentProfile.skills.tools, skill]))
+        };
+        explanationParts.push(`⚡ Added "${skill}" to technical skills.`);
+      }
+    }
+
+    // Relocation / Location Change
     const ukCities = [
       { name: "Manchester", postcode: "M1", radius: 50 },
       { name: "London", postcode: "EC1A", radius: 40 },
@@ -381,12 +534,12 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
         updates.preferredRadiusMiles = city.radius;
         updates.targetLocations = Array.from(new Set(["Remote", city.name, ...currentProfile.targetLocations]));
         filters.location = city.name;
-        explanationParts.push(`📍 Home base updated to ${city.name} (${city.postcode}). Commute distances and hybrid roles now calculate from ${city.name}.`);
+        explanationParts.push(`📍 Home base updated to ${city.name} (${city.postcode}).`);
         break;
       }
     }
 
-    // 2. Salary adjustments
+    // Salary adjustments
     const salaryMatch = promptLower.match(/(?:>|above|at least|minimum|min salary|paying)?\s*(?:£|\$)?\s*(\d{2,3})k\b/) ||
                         promptLower.match(/(?:>|above|at least|minimum|min salary|paying)?\s*(?:£|\$)?\s*(\d{5,6})\b/);
     if (salaryMatch) {
@@ -397,28 +550,7 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
       explanationParts.push(`💰 Minimum target salary set to £${val.toLocaleString()}.`);
     }
 
-    // 3. New Certification or Skill
-    if (promptLower.includes("cka") || promptLower.includes("certified kubernetes administrator")) {
-      const existingCerts = currentProfile.certifications || [];
-      if (!existingCerts.some(c => c.name.includes("CKA"))) {
-        updates.certifications = [...existingCerts, { name: "Certified Kubernetes Administrator (CKA)", issuer: "Cloud Native Computing Foundation (CNCF)", year: "2024" }];
-      }
-      updates.skills = {
-        ...currentProfile.skills,
-        devops: Array.from(new Set([...currentProfile.skills.devops, "Kubernetes (CKA)", "Container Security"]))
-      };
-      explanationParts.push(`🎓 Added Certified Kubernetes Administrator (CKA) to certifications and highlighted Kubernetes expertise.`);
-    }
-
-    if (promptLower.includes("terraform")) {
-      updates.skills = {
-        ...currentProfile.skills,
-        devops: Array.from(new Set([...currentProfile.skills.devops, "Terraform", "Terragrunt", "IaC"]))
-      };
-      explanationParts.push(`⚡ Prioritized Terraform & Infrastructure as Code across profile.`);
-    }
-
-    // 4. Role target updates (e.g. "focus on lead", "staff", "architect", "sre")
+    // Role target updates
     if (promptLower.includes("lead") || promptLower.includes("staff") || promptLower.includes("principal")) {
       updates.headline = `Lead / Staff Platform Engineer`;
       updates.targetRoles = ["Staff Platform Engineer", "Lead DevOps Engineer", "Principal Infrastructure Engineer", ...currentProfile.targetRoles];
@@ -431,7 +563,7 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
       explanationParts.push(`🎯 Target roles adjusted to Cloud Infrastructure Architect.`);
     }
 
-    // 5. Remote only
+    // Remote only
     if (promptLower.includes("only remote") || promptLower.includes("fully remote")) {
       updates.targetLocations = ["Remote"];
       filters.location = "remote";
@@ -446,7 +578,8 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
     return {
       explanation: explanationParts.join(" "),
       profileUpdates: updates,
-      feedFilters: filters
+      feedFilters: filters,
+      action: "update_profile"
     };
   }
 

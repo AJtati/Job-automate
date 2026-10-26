@@ -707,10 +707,24 @@ async function runScenarioPrompt() {
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`✨ ${data.explanation}`);
       scenarioInput.value = "";
-      await fetchProfiles();
-      await fetchJobs();
+      if (data.action === "scrape_and_tailor" && data.job) {
+        await fetchProfiles();
+        await fetchJobs();
+        const targetJob = allJobs.find(j => j.id === data.job.id) || data.job;
+        selectJob(targetJob);
+        showToast(`✨ ${data.explanation}`);
+        await tailorCurrentJob();
+      } else {
+        showToast(`✨ ${data.explanation}`);
+        await fetchProfiles();
+        await fetchJobs();
+        if (selectedJob) {
+          if (currentStudioTab === "cv") renderCVTab();
+          if (currentStudioTab === "cover") renderCoverTab();
+          if (currentStudioTab === "ats") renderATSTab();
+        }
+      }
     } else {
       showToast(data.error || "Failed to run scenario");
     }
