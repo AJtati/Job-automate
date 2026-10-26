@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Job Search Studio — Multi-Profile & Scenario AI</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="macos-window">
+    <!-- macOS Titlebar -->
+    <header class="titlebar">
+      <div class="traffic-lights">
+        <div class="traffic-dot close" title="Close"></div>
+        <div class="traffic-dot minimize" title="Minimize"></div>
+        <div class="traffic-dot maximize" title="Zoom"></div>
+      </div>
+      
+      <!-- Profile Switcher Dropdown in Titlebar -->
+      <div class="titlebar-profile-container">
+        <button class="profile-switcher-btn" id="btnProfileDropdown">
+          <span class="profile-avatar">👤</span>
+          <span class="profile-btn-name" id="topProfileName">Candidate Profile</span>
+          <span class="dropdown-chevron">▾</span>
+        </button>
+        <div class="profile-dropdown-menu" id="profileDropdownMenu" style="display: none;">
+          <div class="dropdown-header">Candidate Profiles</div>
+          <div class="dropdown-profile-list" id="dropdownProfileList">
+            <!-- Populated via JS -->
+          </div>
+          <div class="dropdown-divider"></div>
+          <button class="dropdown-action-btn" id="btnOpenNewProfileModal">
+            <span>➕</span> Add New Profile
+          </button>
+          <button class="dropdown-action-btn" id="btnOpenImportResumeModal">
+            <span>📄</span> Import Resume with AI
+          </button>
+          <button class="dropdown-action-btn" id="btnOpenEditProfileModal">
+            <span>✏️</span> Edit Current Profile
+          </button>
+          <button class="dropdown-action-btn danger" id="btnDeleteCurrentProfile">
+            <span>🗑️</span> Delete Profile
+          </button>
+        </div>
+      </div>
+
+      <div class="titlebar-center">
+        <button class="ai-status-pill" id="btnAiSettings" title="Configure AI engine (Ollama / Cloud)">
+          <span class="ai-status-dot online" id="aiStatusDot"></span>
+          <span class="ai-status-text" id="aiStatusText">AI: Ollama (qwen2.5-coder)</span>
+          <span class="ai-gear-icon">⚙️</span>
+        </button>
+      </div>
+
+      <div class="titlebar-actions">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="Search roles, skills, companies (⌘K)...">
+        </div>
+        <button class="btn-primary" id="btnScrape" title="Run live search across LinkedIn & portals">
+          <span id="scrapeSpinner" style="display: none;">⏳</span>
+          <span id="scrapeLabel">⚡ Run Daily Scrape</span>
+        </button>
+        <button class="btn-secondary" id="btnRefresh" title="Refresh job feed">🔄</button>
+      </div>
+    </header>
+
+    <!-- Scenario Interactive Prompt Bar -->
+    <div class="scenario-bar">
+      <div class="scenario-bar-inner">
+        <div class="scenario-icon-tag">
+          <span class="scenario-sparkle">✨</span>
+          <span class="scenario-tag-label">Scenario AI</span>
+        </div>
+        <input type="text" id="scenarioInput" placeholder="Prompt a scenario: 'Moved to Manchester', 'Only roles >£85k', 'I got CKA certified', 'Lead roles only'..." />
+        <button class="btn-scenario-run" id="btnScenarioRun">
+          <span id="scenarioSpinner" style="display: none;">⏳</span>
+          <span id="scenarioBtnText">Run ↵</span>
+        </button>
+      </div>
+      <div class="scenario-chips-row">
+        <span class="chip-label">Quick Scenarios:</span>
+        <button class="scenario-chip" data-prompt="I moved to Manchester, United Kingdom, focus on hybrid roles near Manchester">📍 Manchester Hybrid</button>
+        <button class="scenario-chip" data-prompt="Focus on roles with minimum salary >£85,000">💰 Salary >£85k</button>
+        <button class="scenario-chip" data-prompt="Target Lead / Staff Platform Engineer roles">🎯 Target Lead/Staff</button>
+        <button class="scenario-chip" data-prompt="I earned CKA certification, add Kubernetes CKA to my skills">🎓 Add CKA Cert</button>
+        <button class="scenario-chip" data-prompt="Filter feed to fully remote roles only">🌐 Remote Only</button>
+        <button class="scenario-chip" data-prompt="Reset home base to London, United Kingdom (EC1A)">🔄 Reset to London</button>
+      </div>
+    </div>
+
+    <!-- Main 3-Pane Body -->
+    <div class="app-body">
+      <!-- Pane 1: Sidebar -->
+      <aside class="sidebar">
+        <div class="profile-card">
+          <div class="profile-card-top">
+            <div class="profile-name" id="sidebarProfileName">Candidate Profile</div>
+            <button class="profile-card-edit-btn" id="sidebarEditProfileBtn" title="Edit Profile Details">✏️</button>
+          </div>
+          <div class="profile-role" id="sidebarProfileRole">Cloud & Platform Engineer</div>
+          <div class="profile-location-tag" id="sidebarProfileLocation">📍 London, United Kingdom</div>
+          <div class="profile-visa" id="sidebarProfileVisa">🛡️ Skilled Worker Sponsor Required</div>
+          <button class="btn-sidebar-upload" id="btnSidebarUploadResume">📄 Upload / Import Candidate Resume</button>
+        </div>
+
+        <div class="nav-section-header">
+          <div class="nav-section-title">📍 Priority Locations</div>
+          <button class="btn-micro-edit" id="btnCustomizeLocations" title="Customize Location Priorities for this Candidate">⚙️ Customize</button>
+        </div>
+        <ul class="nav-list" id="navListLocations">
+          <!-- Dynamically populated from active candidate profile -->
+          <li class="nav-item active" data-filter="all">
+            <span class="nav-item-left">💼 All Opportunities</span>
+            <span class="nav-badge" id="countAll">0</span>
+          </li>
+          <li class="nav-item" data-filter="remote">
+            <span class="nav-item-left">🌐 Priority 1: Remote (UK)</span>
+            <span class="nav-badge" id="countRemote">0</span>
+          </li>
+          <li class="nav-item" data-filter="nearby">
+            <span class="nav-item-left" id="navLabelNear">📍 Priority 2: Near Candidate</span>
+            <span class="nav-badge" id="countNear">0</span>
+          </li>
+          <li class="nav-item" data-filter="uk_hybrid_sponsored">
+            <span class="nav-item-left">🇬🇧 Nationwide (Sponsored)</span>
+            <span class="nav-badge" id="countUkHybridSponsored">0</span>
+          </li>
+        </ul>
+
+        <div class="nav-section-title">Application Pipeline</div>
+        <ul class="nav-list" id="navListPipeline">
+          <li class="nav-item" data-filter="drafted">
+            <span class="nav-item-left">📝 Drafted Applications</span>
+            <span class="nav-badge" id="countDrafted">0</span>
+          </li>
+          <li class="nav-item" data-filter="applied">
+            <span class="nav-item-left">🚀 Applied & Active</span>
+            <span class="nav-badge" id="countApplied">0</span>
+          </li>
+          <li class="nav-item" data-filter="sponsor_verified">
+            <span class="nav-item-left">🛡️ Verified A-Sponsors</span>
+            <span class="nav-badge" id="countSponsors">0</span>
+          </li>
+        </ul>
+
+        <div class="sidebar-stats">
+          <div class="stat-row">
+            <span>Home Base:</span>
+            <b id="sidebarStatBase">London, EC1A</b>
+          </div>
+          <div class="stat-row">
+            <span>Preferred Radius:</span>
+            <b id="sidebarStatRadius">70 miles</b>
+          </div>
+          <div class="stat-row">
+            <span>Min Salary Target:</span>
+            <b id="sidebarStatSalary">£75,000</b>
+          </div>
+          <div class="stat-row">
+            <span>Sponsor Ratio:</span>
+            <b id="sponsorStatRatio">100%</b>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Pane 2: Job Feed -->
+      <section class="job-feed">
+        <div class="feed-header">
+          <span class="feed-title" id="feedTitle">All Opportunities</span>
+          <span class="feed-count" id="feedCount">0 roles</span>
+        </div>
+        <div class="job-list" id="jobList">
+          <!-- Job Cards rendered via JS -->
+        </div>
+      </section>
+
+      <!-- Pane 3: Curator Studio -->
+      <main class="curator-studio" id="curatorStudio">
+        <div class="studio-header" id="studioHeader">
+          <div class="studio-header-top">
+            <div class="studio-title-area">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <h2 id="studioJobTitle" style="margin: 0;">Select a Role to View & Curate</h2>
+                <div class="studio-ats-badge" id="studioAtsBadge" style="display: none;">🎯 <span id="studioAtsScore">95%</span> Match</div>
+              </div>
+              <div class="studio-company-line">
+                <span class="studio-company-name" id="studioCompanyName">—</span>
+                <span class="studio-location" id="studioLocation">—</span>
+              </div>
+            </div>
+            <a href="#" target="_blank" class="btn-secondary" id="studioLinkBtn" style="display: none;">
+              Open on Job Portal ↗
+            </a>
+          </div>
+
+          <div class="sponsor-banner" id="studioSponsorBanner" style="display: none;">
+            <span>🛡️</span>
+            <span id="studioSponsorText">UK Home Office Verified A-Rated Licensed Sponsor</span>
+          </div>
+
+          <div class="studio-actions-bar" id="studioActionsBar" style="display: none;">
+            <button class="btn-primary" id="btnTailor">⚡ Tailor CV & Cover Letter</button>
+            <button class="btn-secondary" id="btnMarkApplied">✅ Mark as Applied</button>
+            <button class="btn-secondary" id="btnCopyRecruiterMsg">💬 Copy Outreach Note</button>
+          </div>
+        </div>
+
+        <!-- Studio Navigation Tabs -->
+        <div class="studio-tabs" id="studioTabs" style="display: none;">
+          <button class="tab-btn active" data-tab="tab-cv">📄 Curated ATS CV</button>
+          <button class="tab-btn" data-tab="tab-cover">✉️ Tailored Cover Letter</button>
+          <button class="tab-btn" data-tab="tab-details">🎯 ATS Score & Job Description</button>
+          <button class="tab-btn" data-tab="tab-answers">💡 Application Q&A</button>
+        </div>
+
+        <!-- Tab Content -->
+        <div class="studio-content" id="studioContent">
+          <div style="text-align: center; color: var(--text-tertiary); margin-top: 100px;">
+            Select any job from the middle feed to view full details, audit fit, and generate curated materials.
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Modal 1: Profile Editor / Creator -->
+  <div class="modal-backdrop" id="profileModal" style="display: none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <h3 id="profileModalTitle">Candidate Profile</h3>
+        <button class="modal-close-btn" id="btnCloseProfileModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="profileForm">
+          <input type="hidden" id="formProfileId" />
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label>Full Name</label>
+              <input type="text" id="formName" required placeholder="e.g. Jane Doe" />
+            </div>
+            <div class="form-group">
+              <label>Professional Headline</label>
+              <input type="text" id="formHeadline" required placeholder="e.g. Senior Platform & DevOps Engineer" />
+            </div>
+            <div class="form-group">
+              <label>Email Address</label>
+              <input type="email" id="formEmail" required placeholder="e.g. jane.doe@example.com" />
+            </div>
+            <div class="form-group">
+              <label>Phone Number</label>
+              <input type="text" id="formPhone" placeholder="e.g. +44 7123 456789" />
+            </div>
+            <div class="form-group">
+              <label>Home Base Location</label>
+              <input type="text" id="formLocation" required placeholder="e.g. Manchester, United Kingdom" />
+            </div>
+            <div class="form-group">
+              <label>Postcode Area</label>
+              <input type="text" id="formPostcode" placeholder="e.g. EC1A or M1" />
+            </div>
+            <div class="form-group">
+              <label>LinkedIn URL</label>
+              <input type="url" id="formLinkedin" placeholder="https://linkedin.com/in/..." />
+            </div>
+            <div class="form-group">
+              <label>GitHub URL</label>
+              <input type="url" id="formGithub" placeholder="https://github.com/..." />
+            </div>
+            <div class="form-group">
+              <label>Preferred Max Radius (Miles)</label>
+              <input type="number" id="formRadius" value="70" />
+            </div>
+            <div class="form-group">
+              <label>Minimum Target Salary (£)</label>
+              <input type="number" id="formMinSalary" value="75000" />
+            </div>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="formVisaRequired" checked />
+              <span>Requires UK Skilled Worker Visa Sponsorship</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label>Target Roles (Comma-separated)</label>
+            <input type="text" id="formTargetRoles" placeholder="Senior Platform Engineer, DevOps Engineer, Cloud Architect, SRE" />
+          </div>
+
+          <div class="form-group">
+            <label>Target Locations (Comma-separated)</label>
+            <input type="text" id="formTargetLocations" placeholder="Remote, Manchester, London, Leeds, Newcastle" />
+          </div>
+
+          <div class="form-group">
+            <label>Key Technical Skills (Comma-separated)</label>
+            <textarea id="formSkills" rows="3" placeholder="AWS, Kubernetes, Terraform, Docker, ArgoCD, Python, TypeScript, CI/CD, Prometheus"></textarea>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn-secondary" id="btnCancelProfileModal">Cancel</button>
+            <button type="submit" class="btn-primary" id="btnSaveProfile">💾 Save Candidate Profile</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: Import Resume with AI -->
+  <div class="modal-backdrop" id="importResumeModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>📄 Import Candidate Resume with AI</h3>
+        <button class="modal-close-btn" id="btnCloseImportModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-intro">
+          Upload any candidate resume file (.tex, .pdf, .txt, .md) or paste resume text below. The in-app AI engine automatically parses contact details, work history, technical skills, and projects into a complete candidate profile.
+        </p>
+
+        <!-- Drag & Drop Zone -->
+        <div class="resume-dropzone" id="resumeDropzone">
+          <input type="file" id="resumeFileInput" accept=".tex,.txt,.md,.pdf" style="display: none;" />
+          <div class="dropzone-icon">📁</div>
+          <div class="dropzone-text"><b>Click to select</b> or <b>drag & drop</b> resume file</div>
+          <div class="dropzone-hint">Supports LaTeX (.tex), Plain Text (.txt), Markdown (.md), or PDF</div>
+        </div>
+
+        <div style="font-size: 11.5px; color: var(--text-tertiary); margin: 10px 0 4px 0; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px;">Or Paste Resume / LaTeX Text:</div>
+        <textarea id="rawResumeInput" class="resume-textarea" rows="8" placeholder="Paste full resume text or LaTeX code here..."></textarea>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" id="btnCancelImportModal">Cancel</button>
+          <button type="button" class="btn-primary" id="btnParseResumeRun">
+            <span id="importSpinner" style="display: none;">⏳</span>
+            <span>✨ Parse & Create Profile</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2.5: Customize Location Priorities -->
+  <div class="modal-backdrop" id="locationPrefsModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>📍 Customize Location Priorities</h3>
+        <button class="modal-close-btn" id="btnCloseLocationPrefsModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-intro">
+          Set up candidate-specific location ranks. Commute distances and priority filters update instantly to match where this candidate wants to live and work.
+        </p>
+
+        <form id="locationPrefsForm">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label>Home Base City / Town</label>
+              <input type="text" id="locFormHomeCity" required placeholder="e.g. Manchester, United Kingdom" />
+            </div>
+            <div class="form-group">
+              <label>Home Postcode Area</label>
+              <input type="text" id="locFormPostcode" placeholder="e.g. M1, LS1, NE1, EC1A" />
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-top: 10px;">
+            <label style="display: flex; justify-content: space-between;">
+              <span>Max Commute Radius (Miles)</span>
+              <span id="locRadiusDisplay" style="font-weight: 700; color: var(--apple-blue);">50 miles</span>
+            </label>
+            <input type="range" id="locFormRadiusSlider" min="15" max="150" step="5" value="50" style="width: 100%; accent-color: var(--apple-blue); cursor: pointer;" />
+          </div>
+
+          <div class="form-group" style="margin-top: 10px;">
+            <label>Priority Target Locations (Comma-separated)</label>
+            <input type="text" id="locFormTargetLocations" placeholder="Remote, Manchester, Leeds, London, Edinburgh, Birmingham" />
+            <div style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 4px;">
+              In order of preference. These generate your ranked sidebar filters (e.g. Priority 1: Remote, Priority 2: Near Home, Priority 3: Leeds, Priority 4: London...).
+            </div>
+          </div>
+
+          <div class="form-group checkbox-group" style="margin-top: 12px;">
+            <label>
+              <input type="checkbox" id="locFormVisaRequired" checked />
+              <span>Prioritize UK Skilled Worker Visa Sponsorship</span>
+            </label>
+          </div>
+
+          <div class="modal-footer" style="margin-top: 18px;">
+            <button type="button" class="btn-secondary" id="btnCancelLocationPrefsModal">Cancel</button>
+            <button type="submit" class="btn-primary" id="btnSaveLocationPrefs">💾 Save Location Priorities</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: AI Configuration -->
+  <div class="modal-backdrop" id="aiConfigModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>⚙️ AI Engine Configuration</h3>
+        <button class="modal-close-btn" id="btnCloseAiModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="ai-provider-selector">
+          <label class="provider-option">
+            <input type="radio" name="aiProvider" value="ollama" checked />
+            <div class="provider-box">
+              <div class="provider-title">🦙 Local Ollama (Private & Free)</div>
+              <div class="provider-desc">Runs 100% locally on your Mac Apple Silicon via Ollama. Zero API cost, zero cloud leaks.</div>
+            </div>
+          </label>
+          <label class="provider-option">
+            <input type="radio" name="aiProvider" value="anthropic" />
+            <div class="provider-box">
+              <div class="provider-title">🧠 Anthropic Claude (Cloud API)</div>
+              <div class="provider-desc">Uses Claude 3.5 Sonnet for state-of-the-art humanized tailoring and reasoning.</div>
+            </div>
+          </label>
+          <label class="provider-option">
+            <input type="radio" name="aiProvider" value="openai" />
+            <div class="provider-box">
+              <div class="provider-title">🌐 OpenAI (GPT-4o / Compatible)</div>
+              <div class="provider-desc">Uses OpenAI GPT-4o or DeepSeek compatible endpoint.</div>
+            </div>
+          </label>
+          <label class="provider-option">
+            <input type="radio" name="aiProvider" value="builtin" />
+            <div class="provider-box">
+              <div class="provider-title">⚡ Built-in Semantic Engine (Offline)</div>
+              <div class="provider-desc">High-speed deterministic natural language parser and LaTeX compiler. Zero external dependencies.</div>
+            </div>
+          </div>
+
+          <!-- Ollama settings -->
+          <div class="provider-settings" id="ollamaSettings">
+            <div class="form-group">
+              <label>Ollama Host URL</label>
+              <input type="text" id="aiOllamaHost" value="http://localhost:11434" />
+            </div>
+            <div class="form-group">
+              <label>Selected Model</label>
+              <select id="aiOllamaModelSelect">
+                <option value="qwen2.5-coder:3b">qwen2.5-coder:3b</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Anthropic settings -->
+          <div class="provider-settings" id="anthropicSettings" style="display: none;">
+            <div class="form-group">
+              <label>Anthropic API Key</label>
+              <input type="password" id="aiAnthropicKey" placeholder="sk-ant-api..." />
+            </div>
+            <div class="form-group">
+              <label>Select Claude Model</label>
+              <select id="aiAnthropicModelSelect">
+                <option value="claude-3-5-sonnet-20241022" selected>Claude 3.5 Sonnet (Recommended - Best Quality)</option>
+                <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Fast & Lowest Cost)</option>
+                <option value="claude-3-opus-20240229">Claude 3 Opus (Most Comprehensive)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- OpenAI settings -->
+          <div class="provider-settings" id="openaiSettings" style="display: none;">
+            <div class="form-group">
+              <label>OpenAI API Key</label>
+              <input type="password" id="aiOpenAiKey" placeholder="sk-proj-..." />
+            </div>
+            <div class="form-group">
+              <label>Select OpenAI / Compatible Model</label>
+              <select id="aiOpenAiModelSelect">
+                <option value="gpt-4o" selected>GPT-4o (Flagship Multimodal)</option>
+                <option value="gpt-4o-mini">GPT-4o-mini (Lightweight & Economical)</option>
+                <option value="o1-preview">o1-preview (Advanced Reasoning)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="ai-health-status" id="aiHealthBox">
+            <span class="health-icon" id="aiHealthIcon">🟢</span>
+            <span class="health-message" id="aiHealthMsg">Checking connection...</span>
+          </div>
+
+          <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <button type="button" class="btn-secondary" id="btnAutoSelectBestModel" style="border-color: rgba(48, 209, 88, 0.4); color: var(--apple-green);">⚡ Auto-Select Best & Cheap Model</button>
+            <div style="display: flex; gap: 8px;">
+              <button type="button" class="btn-secondary" id="btnTestAiConnection">Test Connection</button>
+              <button type="button" class="btn-primary" id="btnSaveAiConfig">💾 Save Configuration</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastContainer"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

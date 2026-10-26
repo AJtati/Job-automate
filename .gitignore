@@ -66,9 +66,21 @@ skills-lock.json
 cv/main_*.*
 !cv/main_example.tex
 cv/*.txt
+cv/*_master.tex
+!cv/jake_master.tex
+cv/*ajith*
 cover_letters/cover_*.*
 cover_letters/Cover_*.*
 !cover_letters/cover_example.tex
+
+# Studio App Data & AI Configuration (User API keys & active profiles)
+data/*.json
+!data/profiles.template.json
+
+# Studio Native macOS Builds & Staging
+dist/
+native_app/*_bin
+native_app/test.swift
 
 # documents/ subfolder contents are personal — only README and folder structure are tracked
 documents/cv/**
