@@ -52,62 +52,57 @@
 
 body {
   font-family: var(--font-family);
-  background: #090a0d;
+  background: var(--bg-window);
   color: var(--text-primary);
-  min-height: 100vh;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
   display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 16px;
   overflow: hidden;
 }
 
-/* macOS Window Shell */
+/* macOS Window Shell (True Native Layout) */
 .macos-window {
-  width: 100%;
-  max-width: 1540px;
-  height: 94vh;
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
   background: var(--bg-window);
-  border-radius: var(--radius-window);
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-window);
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   position: relative;
 }
 
-/* Titlebar & Traffic Lights */
+/* Native Draggable Titlebar with Cocoa Traffic Light Offset */
 .titlebar {
-  height: 48px;
-  background: rgba(26, 29, 37, 0.95);
+  height: 50px;
+  background: rgba(26, 29, 37, 0.98);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
-  padding: 0 16px;
+  padding: 0 16px 0 84px; /* 84px creates clean spacing for native macOS traffic lights */
   user-select: none;
   z-index: 10;
+  -webkit-app-region: drag; /* Drag native window by clicking anywhere in titlebar */
 }
 
 .traffic-lights {
-  display: flex;
-  gap: 8px;
-  margin-right: 20px;
+  display: none !important;
 }
 
-.traffic-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.18);
-  cursor: pointer;
-  transition: transform 0.15s ease;
+/* Non-draggable interactive controls in titlebar */
+.titlebar-profile-container,
+.titlebar-center,
+.titlebar-actions,
+.titlebar button,
+.titlebar input {
+  -webkit-app-region: no-drag;
 }
-.traffic-dot:hover { transform: scale(1.1); }
-.traffic-dot.close { background: #ff5f56; }
-.traffic-dot.minimize { background: #ffbd2e; }
-.traffic-dot.maximize { background: #27c93f; }
 
 .titlebar-center {
   flex: 1;
@@ -374,11 +369,18 @@ body {
 }
 
 .feed-header {
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+}
+
+.feed-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .feed-title {
@@ -387,8 +389,44 @@ body {
 }
 
 .feed-count {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-secondary);
+}
+
+.feed-sort-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.feed-sort-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.feed-sort-select {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.feed-sort-select:hover {
+  border-color: var(--apple-blue);
+}
+
+.feed-sort-select:focus {
+  border-color: var(--apple-blue);
+  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.25);
 }
 
 .job-list {
@@ -1259,5 +1297,182 @@ body {
   font-size: 11px;
   color: var(--text-tertiary);
   margin-top: 4px;
+}
+
+/* ATS Scorecard Components */
+.ats-scorecard {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ats-overview-card {
+  background: linear-gradient(135deg, rgba(10, 132, 255, 0.08) 0%, rgba(48, 209, 88, 0.08) 100%);
+  border: 1px solid rgba(48, 209, 88, 0.25);
+  border-radius: 8px;
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ats-overall-number {
+  font-size: 28px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -0.5px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.ats-radar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.ats-dim-card {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.ats-dim-card:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  transform: translateY(-1px);
+}
+
+.ats-dim-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.4px;
+}
+
+.ats-dim-score {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.ats-dim-bar {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.ats-dim-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--apple-blue);
+  transition: width 0.4s ease;
+}
+
+.ats-dim-note {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.sponsor-detail-card {
+  background: rgba(191, 90, 242, 0.08);
+  border: 1px solid rgba(191, 90, 242, 0.25);
+  border-radius: 8px;
+  padding: 14px 18px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.sponsor-detail-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #e9d5ff;
+}
+
+.sponsor-detail-text {
+  font-size: 12px;
+  color: #d8b4fe;
+  line-height: 1.5;
+  margin-top: 2px;
+}
+
+/* Print Stylesheet for ATS CV Export */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #111827 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    min-height: auto !important;
+    overflow: visible !important;
+  }
+  .macos-window {
+    border: none !important;
+    box-shadow: none !important;
+    max-width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .titlebar, .scenario-bar, .sidebar, .job-feed, .studio-header, .studio-tabs, .studio-actions-bar, .sponsor-banner, .modal-backdrop, #btnToggleCVMode, #btnCopyCV, #btnDownloadCVPdf, #btnOpenOverleaf, #btnToggleCoverMode, #btnCopyCover, #btnDownloadCoverPdf {
+    display: none !important;
+  }
+  .app-body {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .curator-studio {
+    display: block !important;
+    background: #ffffff !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+  .studio-content {
+    padding: 0 !important;
+    max-width: 100% !important;
+    background: transparent !important;
+  }
+  .doc-preview-container {
+    background: #ffffff !important;
+    color: #111827 !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 10mm 12mm !important;
+    margin: 0 auto !important;
+    max-width: 210mm !important;
+    min-height: 297mm !important;
+  }
+  .doc-preview-container * {
+    color: #111827 !important;
+  }
+  .doc-section-title {
+    border-bottom: 1.5px solid #111827 !important;
+    color: #111827 !important;
+  }
+  .doc-section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    margin-bottom: 12px !important;
+  }
+  a {
+    text-decoration: none !important;
+    color: #111827 !important;
+  }
 }
 

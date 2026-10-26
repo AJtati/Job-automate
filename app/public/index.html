@@ -10,12 +10,6 @@
   <div class="macos-window">
     <!-- macOS Titlebar -->
     <header class="titlebar">
-      <div class="traffic-lights">
-        <div class="traffic-dot close" title="Close"></div>
-        <div class="traffic-dot minimize" title="Minimize"></div>
-        <div class="traffic-dot maximize" title="Zoom"></div>
-      </div>
-      
       <!-- Profile Switcher Dropdown in Titlebar -->
       <div class="titlebar-profile-container">
         <button class="profile-switcher-btn" id="btnProfileDropdown">
@@ -167,8 +161,18 @@
       <!-- Pane 2: Job Feed -->
       <section class="job-feed">
         <div class="feed-header">
-          <span class="feed-title" id="feedTitle">All Opportunities</span>
-          <span class="feed-count" id="feedCount">0 roles</span>
+          <div class="feed-header-left">
+            <span class="feed-title" id="feedTitle">All Opportunities</span>
+            <span class="feed-count" id="feedCount">0 roles</span>
+          </div>
+          <div class="feed-sort-wrapper">
+            <label for="feedSortSelect" class="feed-sort-label">Sort:</label>
+            <select id="feedSortSelect" class="feed-sort-select" title="Sort job listings">
+              <option value="days" selected>📅 Newest (Days Wise)</option>
+              <option value="score">🎯 Match % (Score Wise)</option>
+              <option value="pipeline">📝 Application Pipeline</option>
+            </select>
+          </div>
         </div>
         <div class="job-list" id="jobList">
           <!-- Job Cards rendered via JS -->
@@ -323,9 +327,19 @@
         <!-- Drag & Drop Zone -->
         <div class="resume-dropzone" id="resumeDropzone">
           <input type="file" id="resumeFileInput" accept=".tex,.txt,.md,.pdf" style="display: none;" />
-          <div class="dropzone-icon">📁</div>
-          <div class="dropzone-text"><b>Click to select</b> or <b>drag & drop</b> resume file</div>
-          <div class="dropzone-hint">Supports LaTeX (.tex), Plain Text (.txt), Markdown (.md), or PDF</div>
+          <div id="dropzoneDefaultState">
+            <div class="dropzone-icon">📁</div>
+            <div class="dropzone-text"><b>Click to select</b> or <b>drag & drop</b> resume file</div>
+            <div class="dropzone-hint">Supports PDF (.pdf), LaTeX (.tex), Markdown (.md), or Plain Text (.txt)</div>
+          </div>
+          <div id="dropzoneSelectedState" style="display: none; align-items: center; justify-content: center; gap: 12px; padding: 6px;">
+            <span style="font-size: 26px;" id="selectedFileIcon">📄</span>
+            <div style="text-align: left;">
+              <div id="selectedFileName" style="font-size: 13px; font-weight: 600; color: #fff;">resume.pdf</div>
+              <div id="selectedFileSize" style="font-size: 11px; color: var(--apple-green);">124 KB · Ready to parse</div>
+            </div>
+            <button type="button" id="btnRemoveSelectedFile" style="background: rgba(255, 69, 58, 0.15); border: 1px solid rgba(255, 69, 58, 0.3); color: #ff453a; border-radius: 4px; padding: 4px 10px; font-size: 11px; cursor: pointer; margin-left: 8px;">✕ Remove</button>
+          </div>
         </div>
 
         <div style="font-size: 11.5px; color: var(--text-tertiary); margin: 10px 0 4px 0; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px;">Or Paste Resume / LaTeX Text:</div>

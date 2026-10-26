@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
+import { createLatexBackbone } from "./resume_engine";
 
 export interface WorkExperience {
   company: string;
@@ -49,15 +50,32 @@ export interface CandidateProfile {
   preferredRadiusMiles: number;
   minSalary: number;
   skills: {
-    cloud: string[];
-    devops: string[];
-    languages: string[];
-    tools: string[];
+    cloud?: string[];
+    containers?: string[];
+    iac?: string[];
+    cicd?: string[];
+    monitoring?: string[];
+    security?: string[];
+    languages?: string[];
+    devops?: string[];
+    tools?: string[];
+    [key: string]: string[] | undefined;
   };
   experience: WorkExperience[];
   projects?: ProjectItem[];
   education: EducationItem[];
   certifications: CertificationItem[];
+  spokenLanguages?: string[];
+  sourceResume?: {
+    fileName: string;
+    mediaType: string;
+    importedAt: string;
+    sha256: string;
+    text: string;
+    originalLatex?: string;
+  };
+  latexBackbone?: string;
+  profileVersion?: number;
   tracker?: Record<string, {
     status: string;
     cvFile?: string;
@@ -74,126 +92,92 @@ export interface ProfilesData {
   profiles: CandidateProfile[];
 }
 
-const ROOT_DIR = process.cwd();
-const DATA_DIR = join(ROOT_DIR, "data");
-const PROFILES_FILE = join(DATA_DIR, "profiles.json");
-const PROFILES_TEMPLATE_FILE = join(DATA_DIR, "profiles.template.json");
-
-export const DEFAULT_SAMPLE_PROFILE: CandidateProfile = {
-  id: "alex-taylor",
-  name: "Alex Taylor",
-  headline: "Senior Platform & DevOps Engineer",
-  email: "alex.taylor@example.com",
-  phone: "+44 7000 000000",
-  location: "London, United Kingdom",
-  postcode: "EC1A",
-  linkedin: "https://www.linkedin.com/in/example",
-  github: "https://github.com/example",
+export const EMPTY_PROFILE: CandidateProfile = {
+  id: "candidate-profile",
+  name: "",
+  headline: "",
+  email: "",
+  phone: "",
+  location: "",
+  postcode: "",
+  linkedin: "",
+  github: "",
   portfolio: "",
-  visaSponsorshipRequired: true,
-  targetRoles: [
-    "Senior Platform Engineer",
-    "Senior DevOps Engineer",
-    "Staff Platform Engineer",
-    "Senior SRE",
-    "Cloud Infrastructure Engineer"
-  ],
-  targetLocations: [
-    "Remote",
-    "London",
-    "Manchester",
-    "Leeds",
-    "Edinburgh",
-    "Birmingham"
-  ],
+  visaSponsorshipRequired: false,
+  targetRoles: [],
+  targetLocations: [],
   preferredRadiusMiles: 50,
-  minSalary: 75000,
+  minSalary: 0,
   skills: {
-    cloud: ["AWS (EKS, EC2, RDS, Lambda, S3, IAM)", "GCP", "Azure"],
-    devops: ["Kubernetes", "Terraform", "Docker", "Helm", "ArgoCD", "GitOps"],
-    languages: ["TypeScript", "Python", "Bash/Shell", "Go"],
-    tools: ["GitHub Actions", "Jenkins", "Prometheus", "Grafana", "Datadog"]
+    cloud: [],
+    devops: [],
+    languages: [],
+    tools: []
   },
-  experience: [
-    {
-      company: "Cloud Systems Ltd",
-      role: "Senior Platform Engineer",
-      location: "London, UK / Hybrid",
-      startDate: "2023",
-      endDate: "Present",
-      bullets: [
-        "Scale and maintain multi-cluster Kubernetes infrastructure and CI/CD automation supporting high-throughput platform services.",
-        "Executed multi-version in-place upgrades of production Kubernetes clusters with zero downtime.",
-        "Modernized application services to GitOps architecture using ArgoCD, Helm, and GitHub Actions."
-      ]
-    }
-  ],
-  education: [
-    {
-      degree: "BSc / MSc in Computer Science",
-      institution: "University of Technology",
-      startDate: "2018",
-      endDate: "2022",
-      details: "Cloud Computing, Distributed Architecture"
-    }
-  ],
-  certifications: [
-    {
-      name: "AWS Certified Solutions Architect",
-      issuer: "Amazon Web Services",
-      year: "2023"
-    }
-  ],
+  experience: [],
+  education: [],
+  certifications: [],
+  spokenLanguages: [],
+  latexBackbone: createLatexBackbone(),
+  profileVersion: 1,
   tracker: {},
   scenarioHistory: []
 };
 
 export class ProfilesManager {
   private data: ProfilesData;
+  private dataDir: string;
+  private profilesFile: string;
+  private profilesTemplateFile: string;
 
-  constructor() {
+  constructor(rootDir = process.env.AI_JOB_SEARCH_ROOT || process.cwd()) {
+    this.dataDir = join(rootDir, "data");
+    this.profilesFile = join(this.dataDir, "profiles.json");
+    this.profilesTemplateFile = join(this.dataDir, "profiles.template.json");
     this.ensureDataDir();
     this.data = this.loadProfiles();
   }
 
   private ensureDataDir() {
-    if (!existsSync(DATA_DIR)) {
-      mkdirSync(DATA_DIR, { recursive: true });
+    if (!existsSync(this.dataDir)) {
+      mkdirSync(this.dataDir, { recursive: true });
     }
   }
 
   private loadProfiles(): ProfilesData {
-    if (!existsSync(PROFILES_FILE)) {
-      if (existsSync(PROFILES_TEMPLATE_FILE)) {
+    if (!existsSync(this.profilesFile)) {
+      if (existsSync(this.profilesTemplateFile)) {
         try {
-          const tmpl = JSON.parse(readFileSync(PROFILES_TEMPLATE_FILE, "utf-8"));
+          const tmpl = JSON.parse(readFileSync(this.profilesTemplateFile, "utf-8"));
+          tmpl.profiles = (tmpl.profiles || []).map((profile: CandidateProfile) => this.normalizeProfile(profile));
           this.saveProfiles(tmpl);
           return tmpl;
         } catch {}
       }
 
       const initial: ProfilesData = {
-        activeProfileId: DEFAULT_SAMPLE_PROFILE.id,
-        profiles: [DEFAULT_SAMPLE_PROFILE]
+        activeProfileId: EMPTY_PROFILE.id,
+        profiles: [EMPTY_PROFILE]
       };
       this.saveProfiles(initial);
       return initial;
     }
 
     try {
-      const raw = readFileSync(PROFILES_FILE, "utf-8");
+      const raw = readFileSync(this.profilesFile, "utf-8");
       const parsed = JSON.parse(raw);
       if (!parsed.profiles || parsed.profiles.length === 0) {
-        parsed.profiles = [DEFAULT_SAMPLE_PROFILE];
-        parsed.activeProfileId = DEFAULT_SAMPLE_PROFILE.id;
+        parsed.profiles = [EMPTY_PROFILE];
+        parsed.activeProfileId = EMPTY_PROFILE.id;
         this.saveProfiles(parsed);
       }
+      parsed.profiles = parsed.profiles.map((profile: CandidateProfile) => this.normalizeProfile(profile));
       return parsed;
     } catch (e) {
       console.error("Failed to parse profiles.json, resetting to default:", e);
       const initial: ProfilesData = {
-        activeProfileId: DEFAULT_SAMPLE_PROFILE.id,
-        profiles: [DEFAULT_SAMPLE_PROFILE]
+        activeProfileId: EMPTY_PROFILE.id,
+        profiles: [EMPTY_PROFILE]
       };
       this.saveProfiles(initial);
       return initial;
@@ -202,7 +186,38 @@ export class ProfilesManager {
 
   private saveProfiles(data: ProfilesData) {
     this.ensureDataDir();
-    writeFileSync(PROFILES_FILE, JSON.stringify(data, null, 2), "utf-8");
+    const tempFile = `${this.profilesFile}.tmp`;
+    writeFileSync(tempFile, JSON.stringify(data, null, 2), "utf-8");
+    renameSync(tempFile, this.profilesFile);
+  }
+
+  private normalizeProfile(profile: CandidateProfile): CandidateProfile {
+    return {
+      ...profile,
+      targetRoles: profile.targetRoles || [],
+      targetLocations: profile.targetLocations || [],
+      skills: {
+        ...(profile.skills || {}),
+        cloud: profile.skills?.cloud || [],
+        containers: profile.skills?.containers || profile.skills?.devops || [],
+        devops: profile.skills?.devops || profile.skills?.containers || [],
+        iac: profile.skills?.iac || [],
+        cicd: profile.skills?.cicd || [],
+        monitoring: profile.skills?.monitoring || [],
+        security: profile.skills?.security || [],
+        languages: profile.skills?.languages || [],
+        tools: profile.skills?.tools || [],
+      },
+      experience: profile.experience || [],
+      projects: profile.projects || [],
+      education: profile.education || [],
+      certifications: profile.certifications || [],
+      spokenLanguages: profile.spokenLanguages || ["English"],
+      latexBackbone: profile.latexBackbone || createLatexBackbone(),
+      profileVersion: profile.profileVersion || 1,
+      tracker: profile.tracker || {},
+      scenarioHistory: profile.scenarioHistory || [],
+    };
   }
 
   public getAll(): ProfilesData {
@@ -212,7 +227,7 @@ export class ProfilesManager {
   public getActiveProfile(): CandidateProfile {
     const found = this.data.profiles.find(p => p.id === this.data.activeProfileId);
     if (found) return found;
-    return this.data.profiles[0] || DEFAULT_SAMPLE_PROFILE;
+    return this.data.profiles[0] || EMPTY_PROFILE;
   }
 
   public setActiveProfile(id: string): CandidateProfile {
@@ -229,6 +244,7 @@ export class ProfilesManager {
     if (!profile.id) {
       profile.id = profile.name.toLowerCase().replace(/[^a-z0-9]/g, "-") + "-" + Date.now().toString().slice(-4);
     }
+    profile = this.normalizeProfile(profile);
     const idx = this.data.profiles.findIndex(p => p.id === profile.id);
     if (idx >= 0) {
       this.data.profiles[idx] = { ...this.data.profiles[idx], ...profile };
