@@ -1,0 +1,24 @@
+{
+  "name": "ai-job-search",
+  "version": "1.0.0",
+  "description": "AI-Powered Job Search Studio with macOS Apple Design, Automated Daily Scraping, Multi-Candidate Profiles, and Humanized CV Tailoring",
+  "scripts": {
+    "dev": "bun run app/server.ts",
+    "start": "bun run app/server.ts",
+    "app": "bash bin/launch-app.sh",
+    "build:dmg": "bash tools/build_dmg.sh",
+    "scrape": "bun run .agents/skills/linkedin-search/cli/src/cli.ts search -q 'Senior Platform Engineer' -l 'Remote'"
+  },
+  "keywords": [
+    "job-search",
+    "ai-agent",
+    "multi-profile",
+    "latex",
+    "ats-resume"
+  ],
+  "author": "AI Job Search Studio",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "^1.4.4"
+  }
+}

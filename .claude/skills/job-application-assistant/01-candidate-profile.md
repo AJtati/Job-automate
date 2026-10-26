@@ -2,72 +2,58 @@
 framework_version: 1.1.1
 ---
 
-# Candidate Profile
-
-<!-- SETUP: This file is populated by running /setup -->
-<!-- After running /setup, all sections will be filled with your actual information -->
+# Candidate Profile Template
 
 ## Identity
 - **Name:** [YOUR_NAME]
-- **Location:** [YOUR_ADDRESS]
-- **Phone:** [YOUR_PHONE]
-- **Email:** [YOUR_EMAIL]
-- **LinkedIn:** [YOUR_LINKEDIN_URL]
-- **GitHub:** [YOUR_GITHUB_URL]
-- **Status:** [YOUR_EMPLOYMENT_STATUS]
-- **Constraints:** [YOUR_COMMUTE_OR_LOCATION_CONSTRAINTS]
+- **Location:** [YOUR_LOCATION] (e.g. London, United Kingdom)
+- **Phone:** [YOUR_PHONE] (e.g. +44 7000 000000)
+- **Email:** [YOUR_EMAIL] (e.g. candidate@example.com)
+- **LinkedIn:** https://www.linkedin.com/in/[YOUR_PROFILE]
+- **GitHub:** https://github.com/[YOUR_USERNAME]
+- **Work Authorization & Constraints:** [E.g. Eligible to work in the UK / Requires Skilled Worker Visa sponsorship. Remote & Hybrid preferences.]
 
 ### Languages
-<!-- Every language you can work in professionally, with your honest level. Used by the
-Language Gate in 04-job-evaluation.md and by job-scraper/search-queries.md's query-language
-generation. Omit any language you don't actually work in - an undeclared language is treated as
-a hard no, not a gap to smooth over. -->
 
 | Language | Level | Notes |
 |----------|-------|-------|
-| [LANGUAGE] | [LEVEL, e.g. "Native" / "C2" / "B1/B2 (conversational)"] | [optional] |
+| English | Professional working proficiency | Workplace communication and technical documentation |
 
 ## Education
 
 | Degree | Period | Institution | Key Topics |
 |--------|--------|-------------|------------|
-| [DEGREE] | [YEARS] | [INSTITUTION] | [TOPICS] |
+| Bachelor or Master of Science | 2018 – 2022 | University Name | Computer Science, Engineering, or relevant field |
 
 ## Professional Experience
 
-### [JOB_TITLE] - [COMPANY] ([START] - [END])
-[LOCATION]
-- [RESPONSIBILITY_OR_ACHIEVEMENT_1]
-- [RESPONSIBILITY_OR_ACHIEVEMENT_2]
-- [RESPONSIBILITY_OR_ACHIEVEMENT_3]
+### Senior Engineer – Technology Company (2022 – Present)
+Location / Remote
+- Led cloud platform infrastructure and modern container deployments.
+- Implemented automated CI/CD pipelines, reducing delivery turnaround time.
+- Standardized infrastructure as code using Terraform and modern orchestration tools.
 
-<!-- Add more roles as needed -->
-
-## Independent Projects
-<!-- Projects outside of employment: freelance, open source, personal -->
-- **[PROJECT_NAME]**: [DESCRIPTION]
+### Software / DevOps Engineer – Enterprise Solutions (2019 – 2022)
+Location / Hybrid
+- Automated testing and deployment workflows across distributed microservices.
+- Implemented centralized monitoring and observability dashboards.
 
 ## Technical Skills
 
-### Programming & ML
-- **[LANGUAGE]** ([PROFICIENCY]): [FRAMEWORKS_AND_LIBRARIES]
-- [OTHER_SKILLS]
+### Cloud & Platforms
+- AWS, GCP, Microsoft Azure
 
-### Domain Expertise
-- [DOMAIN_1]
-- [DOMAIN_2]
+### Containers & GitOps
+- Kubernetes, Docker, Helm, ArgoCD
 
-### Software & Tools
-- [TOOL_LIST]
+### Infrastructure as Code
+- Terraform, CloudFormation, Ansible
 
-## Publications
-<!-- List peer-reviewed publications, if any -->
-1. [AUTHOR_LIST] ([YEAR]). [TITLE]. [JOURNAL]. [DOI_LINK]
+### CI/CD & DevSecOps
+- GitHub Actions, GitLab CI, Jenkins
 
-## Awards
-- [AWARD] - [EVENT] ([YEAR])
+### Observability & SRE
+- Prometheus, Grafana, Alertmanager, Datadog
 
-## References
-- [NAME], [TITLE], [COMPANY] ([EMAIL], [PHONE])
-
-More references available upon request.
+### Languages & Frameworks
+- TypeScript, Python, Go, Bash, SQL
