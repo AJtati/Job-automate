@@ -144,8 +144,10 @@ export function classifyVacancySponsorship(description: string): { status: Vacan
   return { status: "not-stated", evidence: [] };
 }
 
-export function assessSponsorship(records: SponsorRecord[], company: string, description: string): SponsorshipAssessment {
-  const employer = findSponsor(records, company);
+export function assessSponsorship(recordsOrRegistry: SponsorRecord[] | SponsorRegistry, company: string, description: string): SponsorshipAssessment {
+  const employer = recordsOrRegistry instanceof SponsorRegistry
+    ? recordsOrRegistry.find(company)
+    : findSponsor(recordsOrRegistry, company);
   const vacancy = classifyVacancySponsorship(description);
   return {
     employer,
@@ -164,10 +166,13 @@ export function matchesSponsorshipMode(assessment: SponsorshipAssessment, mode: 
 export class SponsorRegistry {
   private cache: SponsorCache;
   private cacheFile: string;
+  private exactIndex = new Map<string, SponsorRecord[]>();
+  private tokenIndex = new Map<string, Array<{ targetNorm: string; record: SponsorRecord }>>();
 
   constructor(rootDir: string) {
     this.cacheFile = join(rootDir, "data", "sponsor_register.json");
     this.cache = this.load();
+    this.rebuildIndex();
   }
 
   private load(): SponsorCache {
@@ -177,12 +182,71 @@ export class SponsorRegistry {
     return { fetchedAt: "", sourceUrl: CONTENT_API, records: [] };
   }
 
+  private rebuildIndex() {
+    this.exactIndex.clear();
+    this.tokenIndex.clear();
+    const records = this.cache.records || [];
+    for (const record of records) {
+      const norm = normalizeOrganisation(record.organisation);
+      if (!norm) continue;
+
+      let exact = this.exactIndex.get(norm);
+      if (!exact) {
+        exact = [];
+        this.exactIndex.set(norm, exact);
+      }
+      exact.push(record);
+
+      const firstToken = norm.split(" ")[0];
+      if (firstToken && firstToken.length >= 3) {
+        let list = this.tokenIndex.get(firstToken);
+        if (!list) {
+          list = [];
+          this.tokenIndex.set(firstToken, list);
+        }
+        list.push({ targetNorm: norm, record });
+      }
+    }
+  }
+
   public records(): SponsorRecord[] {
     return this.cache.records || [];
   }
 
   public status() {
     return { fetchedAt: this.cache.fetchedAt || null, publishedAt: this.cache.publishedAt || null, count: this.records().length, sourceUrl: this.cache.sourceUrl };
+  }
+
+  public find(company: string): SponsorMatch {
+    const target = normalizeOrganisation(company);
+    if (!target) return { verified: false, source: "none" };
+
+    const exact = this.exactIndex.get(target);
+    if (exact && exact.length > 0) {
+      const best = exact.find(r => /skilled worker/i.test(r.route)) || exact[0];
+      return { verified: true, organisation: best.organisation, rating: best.rating, route: best.route, source: "gov-uk-register" };
+    }
+
+    const targetTokens = target.split(" ");
+    const firstToken = targetTokens[0];
+    const prefixSafe = targetTokens.length >= 2 || target.length >= 8;
+    if (firstToken && prefixSafe) {
+      const candidates = this.tokenIndex.get(firstToken);
+      if (candidates) {
+        const matches: SponsorRecord[] = [];
+        for (const item of candidates) {
+          if (item.targetNorm.startsWith(`${target} `) || target.startsWith(`${item.targetNorm} `)) {
+            matches.push(item.record);
+          }
+        }
+        if (matches.length > 0) {
+          const best = matches.find(r => /skilled worker/i.test(r.route)) || matches[0];
+          return { verified: true, organisation: best.organisation, rating: best.rating, route: best.route, source: "gov-uk-register" };
+        }
+      }
+    }
+
+    return { verified: false, source: "none" };
   }
 
   public async refresh(force = false): Promise<{ refreshed: boolean; error?: string } & ReturnType<SponsorRegistry["status"]>> {
@@ -204,6 +268,7 @@ export class SponsorRegistry {
         sourceUrl: attachment.url,
         records,
       };
+      this.rebuildIndex();
       mkdirSync(dirname(this.cacheFile), { recursive: true });
       writeFileSync(this.cacheFile, JSON.stringify(this.cache), "utf-8");
       return { refreshed: true, ...this.status() };

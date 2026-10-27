@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { ProfilesManager, type CandidateProfile } from "../profiles_manager";
@@ -29,5 +29,23 @@ describe("uploaded resume persistence", () => {
     expect(saved.spokenLanguages).toEqual([]);
     expect(saved.skills.containers).toEqual([]);
     expect(stored.activeProfileId).toBe("jordan");
+  });
+
+  test("preserves an unreadable profile file and exposes a recovery warning", () => {
+    const root = mkdtempSync(join(tmpdir(), "profile-recovery-test-"));
+    try {
+      mkdirSync(join(root, "data"), { recursive: true });
+      writeFileSync(join(root, "data", "profiles.json"), "{not valid json", "utf-8");
+      const manager = new ProfilesManager(root);
+      const recovery = readdirSync(join(root, "data")).find(name => name.startsWith("profiles.corrupt-"));
+
+      expect(recovery).toBeTruthy();
+      expect(existsSync(join(root, "data", recovery!))).toBe(true);
+      expect(readFileSync(join(root, "data", recovery!), "utf-8")).toBe("{not valid json");
+      expect(manager.getLoadWarning()).toContain("preserved at");
+      expect(manager.getActiveProfile().id).toBe("candidate-profile");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

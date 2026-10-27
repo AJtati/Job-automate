@@ -129,6 +129,7 @@ export class ProfilesManager {
   private dataDir: string;
   private profilesFile: string;
   private profilesTemplateFile: string;
+  private loadWarning: string | null = null;
 
   constructor(rootDir = process.env.AI_JOB_SEARCH_ROOT || process.cwd()) {
     this.dataDir = join(rootDir, "data");
@@ -145,7 +146,26 @@ export class ProfilesManager {
   }
 
   private loadProfiles(): ProfilesData {
+    const trySeedFromAppRoot = (): ProfilesData | null => {
+      const appRoot = process.env.AI_JOB_SEARCH_APP_ROOT;
+      if (!appRoot) return null;
+      const seedFile = join(appRoot, "data", "profiles.json");
+      if (resolve(seedFile) === resolve(this.profilesFile) || !existsSync(seedFile)) return null;
+      try {
+        const seedData = JSON.parse(readFileSync(seedFile, "utf-8"));
+        if (Array.isArray(seedData.profiles) && seedData.profiles.some((p: any) => p.name && p.name.trim().length > 0)) {
+          seedData.profiles = seedData.profiles.map((profile: CandidateProfile) => this.normalizeProfile(profile));
+          this.saveProfiles(seedData);
+          return seedData;
+        }
+      } catch {}
+      return null;
+    };
+
     if (!existsSync(this.profilesFile)) {
+      const seeded = trySeedFromAppRoot();
+      if (seeded) return seeded;
+
       if (existsSync(this.profilesTemplateFile)) {
         try {
           const tmpl = JSON.parse(readFileSync(this.profilesTemplateFile, "utf-8"));
@@ -171,10 +191,25 @@ export class ProfilesManager {
         parsed.activeProfileId = EMPTY_PROFILE.id;
         this.saveProfiles(parsed);
       }
+
+      // If the current profile data is merely an unconfigured empty placeholder, seed from APP_ROOT if available
+      const isUnconfigured = parsed.profiles.every((p: any) => !p.name || p.name.trim().length === 0);
+      if (isUnconfigured) {
+        const seeded = trySeedFromAppRoot();
+        if (seeded) return seeded;
+      }
+
       parsed.profiles = parsed.profiles.map((profile: CandidateProfile) => this.normalizeProfile(profile));
       return parsed;
     } catch (e) {
-      console.error("Failed to parse profiles.json, resetting to default:", e);
+      const recoveryFile = join(this.dataDir, `profiles.corrupt-${Date.now()}.json`);
+      try {
+        renameSync(this.profilesFile, recoveryFile);
+        this.loadWarning = `The candidate profile file could not be read. The original was preserved at ${recoveryFile}.`;
+      } catch {
+        this.loadWarning = `The candidate profile file could not be read and could not be moved. Back up ${this.profilesFile} before editing it.`;
+      }
+      console.error(this.loadWarning, e);
       const initial: ProfilesData = {
         activeProfileId: EMPTY_PROFILE.id,
         profiles: [EMPTY_PROFILE]
@@ -222,6 +257,10 @@ export class ProfilesManager {
 
   public getAll(): ProfilesData {
     return this.data;
+  }
+
+  public getLoadWarning(): string | null {
+    return this.loadWarning;
   }
 
   public getActiveProfile(): CandidateProfile {

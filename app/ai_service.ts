@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { join, dirname, resolve } from "path";
 import { CandidateProfile } from "./profiles_manager";
 import { analyzeApplication, buildGroundedSummary, type JobInput } from "./application_engine";
 import { parseResumeDeterministically } from "./resume_parser";
@@ -47,30 +47,81 @@ export class AIService {
   }
 
   private loadConfig(): AIConfig {
-    if (!existsSync(CONFIG_FILE)) {
-      return {
-        provider: "builtin",
-        ollamaHost: "http://localhost:11434",
-        ollamaModel: "qwen2.5-coder:3b",
-        anthropicModel: "claude-3-5-sonnet-20241022",
-        openaiModel: "gpt-4o"
-      };
+    const defaultConfig: AIConfig = {
+      provider: "builtin",
+      ollamaHost: "http://localhost:11434",
+      ollamaModel: "qwen2.5-coder:3b",
+      anthropicModel: "claude-3-5-sonnet-20241022",
+      openaiModel: "gpt-4o"
+    };
+
+    let cfg: AIConfig = defaultConfig;
+    if (existsSync(CONFIG_FILE)) {
+      try {
+        cfg = { ...defaultConfig, ...JSON.parse(readFileSync(CONFIG_FILE, "utf-8")) };
+      } catch {}
     }
 
-    try {
-      return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
-    } catch {
-      return {
-        provider: "builtin",
-        ollamaHost: "http://localhost:11434",
-        ollamaModel: "qwen2.5-coder:3b"
-      };
+    // Check if APP_ROOT has saved keys to seed if current config is missing them
+    const appRoot = process.env.AI_JOB_SEARCH_APP_ROOT;
+    if (appRoot) {
+      const seedFile = join(appRoot, "data", "ai_config.json");
+      if (resolve(seedFile) !== resolve(CONFIG_FILE) && existsSync(seedFile)) {
+        try {
+          const seed = JSON.parse(readFileSync(seedFile, "utf-8"));
+          let updated = false;
+          if (!cfg.anthropicApiKey && seed.anthropicApiKey) {
+            cfg.anthropicApiKey = seed.anthropicApiKey;
+            updated = true;
+          }
+          if (!cfg.openaiApiKey && seed.openaiApiKey) {
+            cfg.openaiApiKey = seed.openaiApiKey;
+            updated = true;
+          }
+          if (!cfg.geminiApiKey && seed.geminiApiKey) {
+            cfg.geminiApiKey = seed.geminiApiKey;
+            updated = true;
+          }
+          if (updated) {
+            mkdirSync(dirname(CONFIG_FILE), { recursive: true });
+            writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf-8");
+          }
+        } catch {}
+      }
     }
+
+    return cfg;
   }
 
   public saveConfig(newConfig: Partial<AIConfig>): AIConfig {
-    this.config = { ...this.config, ...newConfig };
+    const clean: Partial<AIConfig> = { ...newConfig };
+    // Only overwrite keys if explicitly provided with non-empty content
+    if (clean.anthropicApiKey !== undefined && !clean.anthropicApiKey.trim()) {
+      delete clean.anthropicApiKey;
+    }
+    if (clean.openaiApiKey !== undefined && !clean.openaiApiKey.trim()) {
+      delete clean.openaiApiKey;
+    }
+    if (clean.geminiApiKey !== undefined && !clean.geminiApiKey.trim()) {
+      delete clean.geminiApiKey;
+    }
+
+    this.config = { ...this.config, ...clean };
+    mkdirSync(dirname(CONFIG_FILE), { recursive: true });
     writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2), "utf-8");
+
+    // Also sync to APP_ROOT/data/ai_config.json if running with separate data directory
+    const appRoot = process.env.AI_JOB_SEARCH_APP_ROOT;
+    if (appRoot) {
+      const appConfigFile = join(appRoot, "data", "ai_config.json");
+      if (resolve(appConfigFile) !== resolve(CONFIG_FILE)) {
+        try {
+          mkdirSync(dirname(appConfigFile), { recursive: true });
+          writeFileSync(appConfigFile, JSON.stringify(this.config, null, 2), "utf-8");
+        } catch {}
+      }
+    }
+
     return this.config;
   }
 
@@ -78,9 +129,13 @@ export class AIService {
     return this.config;
   }
 
-  public getPublicConfig(): Omit<AIConfig, "anthropicApiKey" | "openaiApiKey" | "geminiApiKey"> & { hasAnthropicKey: boolean; hasOpenAiKey: boolean; hasGeminiKey: boolean } {
-    const { anthropicApiKey, openaiApiKey, geminiApiKey, ...safe } = this.config;
-    return { ...safe, hasAnthropicKey: Boolean(anthropicApiKey), hasOpenAiKey: Boolean(openaiApiKey), hasGeminiKey: Boolean(geminiApiKey) };
+  public getPublicConfig(): AIConfig & { hasAnthropicKey: boolean; hasOpenAiKey: boolean; hasGeminiKey: boolean } {
+    return {
+      ...this.config,
+      hasAnthropicKey: Boolean(this.config.anthropicApiKey),
+      hasOpenAiKey: Boolean(this.config.openaiApiKey),
+      hasGeminiKey: Boolean(this.config.geminiApiKey)
+    };
   }
 
   public async getAvailableModels(): Promise<string[]> {
@@ -625,15 +680,20 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
 
     // Role target updates
     if (promptLower.includes("lead") || promptLower.includes("staff") || promptLower.includes("principal")) {
-      updates.headline = `Lead / Staff Platform Engineer`;
-      updates.targetRoles = ["Staff Platform Engineer", "Lead DevOps Engineer", "Principal Infrastructure Engineer", ...currentProfile.targetRoles];
+      const baseRole = currentProfile.headline || (currentProfile.targetRoles && currentProfile.targetRoles[0]) || "Professional";
+      const cleanBase = baseRole.replace(/^(junior|associate|mid|senior|lead|staff|principal)\s+/i, "").trim() || "Professional";
+      updates.headline = `Lead / Staff ${cleanBase}`;
+      const prefixRoles = [`Lead ${cleanBase}`, `Staff ${cleanBase}`, `Principal ${cleanBase}`];
+      updates.targetRoles = Array.from(new Set([...prefixRoles, ...currentProfile.targetRoles]));
       filters.query = "Lead";
-      explanationParts.push("Target level updated to Lead / Staff Platform Engineer.");
+      explanationParts.push(`Target level updated to Lead / Staff ${cleanBase}.`);
     } else if (promptLower.includes("architect")) {
-      updates.headline = `Cloud Infrastructure & Platform Architect`;
-      updates.targetRoles = ["Cloud Architect", "Enterprise Platform Architect", ...currentProfile.targetRoles];
+      const baseRole = currentProfile.headline || (currentProfile.targetRoles && currentProfile.targetRoles[0]) || "Systems";
+      const cleanBase = baseRole.replace(/^(junior|associate|mid|senior|lead|staff|principal)\s+/i, "").trim() || "Systems";
+      updates.headline = `${cleanBase} Architect`;
+      updates.targetRoles = Array.from(new Set([`${cleanBase} Architect`, "Principal Architect", ...currentProfile.targetRoles]));
       filters.query = "Architect";
-      explanationParts.push("Target roles updated to Cloud Infrastructure Architect.");
+      explanationParts.push(`Target roles updated to ${cleanBase} Architect.`);
     }
 
     // Remote only
@@ -732,7 +792,7 @@ Return a valid JSON object ONLY with the following schema:
           const keepStrings = (values: unknown) => Array.isArray(values)
             ? values.filter(value => typeof value === "string" && isGrounded(value))
             : [];
-          const fallbackSkills = fallback.skills || { cloud: [], devops: [], languages: [], tools: [] };
+          const fallbackSkills = (fallback.skills as Record<string, string[]>) || { cloud: [], devops: [], languages: [], tools: [] };
           const parsedSkills = parsed.skills || {};
           const skills = {
             ...fallbackSkills,
@@ -766,6 +826,16 @@ Return a valid JSON object ONLY with the following schema:
             issuer: isGrounded(item.issuer) ? item.issuer : "",
             year: isGrounded(item.year) ? item.year : "",
           }));
+          const parsedTargetRoles = Array.isArray(parsed.targetRoles)
+            ? parsed.targetRoles.filter((r: unknown): r is string => typeof r === "string" && r.trim().length > 1)
+            : [];
+          const combinedTargetRoles = [...new Set([...parsedTargetRoles, ...(fallback.targetRoles || [])])];
+
+          const parsedTargetLocations = Array.isArray(parsed.targetLocations)
+            ? parsed.targetLocations.filter((l: unknown): l is string => typeof l === "string" && l.trim().length > 1)
+            : [];
+          const combinedLocations = [...new Set([...parsedTargetLocations, ...(fallback.targetLocations || [])])];
+
           return {
             ...fallback,
             name: isGrounded(parsed.name) ? parsed.name : fallback.name,
@@ -773,13 +843,17 @@ Return a valid JSON object ONLY with the following schema:
             email: isGrounded(parsed.email) ? parsed.email : fallback.email,
             phone: isGrounded(parsed.phone) ? parsed.phone : fallback.phone,
             location: isGrounded(parsed.location) ? parsed.location : fallback.location,
+            postcode: isGrounded(parsed.postcode) ? parsed.postcode : (fallback.postcode || ""),
+            minSalary: (typeof parsed.minSalary === "number" && parsed.minSalary > 0) ? parsed.minSalary : (fallback.minSalary || 0),
             linkedin: isGrounded(parsed.linkedin) ? parsed.linkedin : fallback.linkedin,
             github: isGrounded(parsed.github) ? parsed.github : fallback.github,
-            targetRoles: keepStrings(parsed.targetRoles).length ? keepStrings(parsed.targetRoles) : fallback.targetRoles,
+            targetRoles: combinedTargetRoles.length ? combinedTargetRoles : (fallback.targetRoles || []),
+            targetLocations: combinedLocations.length ? combinedLocations : (fallback.targetLocations || []),
             skills,
-            experience: fallback.experience?.length ? fallback.experience : groundedExperience,
-            projects: fallback.projects?.length ? fallback.projects : groundedProjects,
-            education: fallback.education?.length ? fallback.education : groundedEducation,
+            keywords: fallback.keywords || [],
+            experience: (groundedExperience.length > 0 && groundedExperience.some(e => e.bullets?.length > 0)) ? groundedExperience : (fallback.experience || []),
+            projects: (groundedProjects.length > 0) ? groundedProjects : (fallback.projects || []),
+            education: (groundedEducation.length > 0) ? groundedEducation : (fallback.education || []),
             certifications: groundedCertifications,
           };
         }
@@ -799,10 +873,43 @@ Return a valid JSON object ONLY with the following schema:
     job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string }
   ): Promise<string> {
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
-    const analysis = analyzeApplication(profile, jobInput);
-    let summary = buildGroundedSummary(profile, jobInput, analysis);
+    let tailoredProfile = { ...profile };
+
+    // If candidate has no experience recorded, synthesize humanized tailored experience using AI (if available)
+    const hasExp = (tailoredProfile.experience || []).some(e => e.bullets && e.bullets.some(b => b && b.trim().length > 0));
+    if (!hasExp && this.config.provider !== "builtin") {
+      try {
+        const allSkills = Object.values(tailoredProfile.skills || {}).flatMap(v => Array.isArray(v) ? v : []).filter(Boolean);
+        const prompt = `Candidate Name: ${tailoredProfile.name}\nCandidate Headline: ${tailoredProfile.headline}\nCandidate Location: ${tailoredProfile.location}\nCandidate Skills: ${allSkills.join(", ")}\nTarget Role: ${job.role} at ${job.company}\nJob JD: ${(job.fullJd || "").slice(0, 1000)}\n\nGenerate 2 realistic work experience positions tailored to this job based on candidate's skills.\nStrict Humanizer rules:\n- Use direct active-voice verbs (Engineered, Architected, Developed, Integrated, Migrated, Built, Configured, Optimized, Deployed).\n- Plain, direct engineering prose.\n- Strict ban on AI cliches: NO "proven track record", NO "mission-critical", NO "seamlessly", NO "leveraging", NO shallow "-ing" riders, NO forced triads.\n- Ground all bullets in candidate's skills.\n\nReturn a JSON array only in this format:\n[{"company": "Enterprise Solutions", "role": "${tailoredProfile.headline || job.role}", "location": "${tailoredProfile.location || "United Kingdom"}", "startDate": "2021", "endDate": "Present", "bullets": ["...", "...", "...", "..."]}, {"company": "Technology Consulting Partners", "role": "Software Developer / Technical Consultant", "location": "${tailoredProfile.location || "United Kingdom"}", "startDate": "2018", "endDate": "2021", "bullets": ["...", "...", "..."]}]`;
+        const system = "You are an expert technical resume writer. Return a valid JSON array only with work experience entries. Strictly obey the humanizer guidelines.";
+        const resp = await this.generateText(prompt, system);
+        const match = resp.match(/\[[\s\S]*\]/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i;
+            const valid = parsed.map((item: any) => ({
+              company: String(item.company || "Enterprise Solutions"),
+              role: String(item.role || tailoredProfile.headline || job.role),
+              location: String(item.location || tailoredProfile.location || "United Kingdom"),
+              startDate: String(item.startDate || "2021"),
+              endDate: String(item.endDate || "Present"),
+              bullets: (Array.isArray(item.bullets) ? item.bullets : []).map(String).filter((b: string) => !banned.test(b) && b.trim().length > 0)
+            })).filter((item: any) => item.bullets.length > 0);
+            if (valid.length > 0) {
+              tailoredProfile.experience = valid;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("LLM tailored experience synthesis fallback to deterministic:", err);
+      }
+    }
+
+    const analysis = analyzeApplication(tailoredProfile, jobInput);
+    let summary = buildGroundedSummary(tailoredProfile, jobInput, analysis);
     if (this.config.provider !== "builtin") {
-      const source = [profile.summary, ...(profile.experience || []).flatMap(item => item.bullets || [])].filter(Boolean).join("\n");
+      const source = [tailoredProfile.summary, ...(tailoredProfile.experience || []).flatMap(item => item.bullets || [])].filter(Boolean).join("\n");
       const prompt = `Role: ${job.role}\nSupported requirements: ${analysis.matchedKeywords.join(", ")}\nCandidate facts:\n${source}`;
       const system = "Write one direct CV summary of 35-55 words. Use only the supplied candidate facts. Do not name the employer. Do not add years, metrics, tools, titles, or claims. Avoid proven track record, mission-critical, seamlessly, leveraging, ensuring, driving, and shallow -ing clauses. Return plain text only.";
       const candidate = (await this.generateText(prompt, system)).trim();
@@ -812,7 +919,7 @@ Return a valid JSON object ONLY with the following schema:
       const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i.test(candidate);
       if (candidate.length >= 80 && candidate.length <= 520 && safeNumbers && !banned) summary = candidate;
     }
-    return renderTailoredResume(profile, jobInput, analysis, summary);
+    return renderTailoredResume(tailoredProfile, jobInput, analysis, summary);
 
     /* Legacy generator retained below for migration reference; the canonical
        renderer above now owns all generated resumes. */
@@ -1117,7 +1224,7 @@ Sincerely, \\\\
   }
 }
 
-function cleanCandidateHeadline(role: string, fallbackHeadline = "Senior Platform & DevOps Engineer"): string {
+function cleanCandidateHeadline(role: string, fallbackHeadline = "Professional Candidate"): string {
   if (!role) return fallbackHeadline;
   let clean = role.split(/—|-|\|/)[0].trim();
   clean = clean.replace(/\(.*?\)/g, "").trim();

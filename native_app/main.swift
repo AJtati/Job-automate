@@ -1,75 +1,218 @@
 import Cocoa
 import WebKit
+import UniformTypeIdentifiers
 
 class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var serverProcess: Process?
+    var serverURL = URL(string: "http://127.0.0.1:3333")!
+    var serverLogURL: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        ensureServerRunning()
+        guard ensureServerRunning() else {
+            setupMenu()
+            showStartupFailure()
+            NSApp.terminate(nil)
+            return
+        }
         setupMenu()
         setupWindow()
         loadApp()
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func ensureServerRunning() {
-        // Check if port 3333 is reachable
-        let url = URL(string: "http://127.0.0.1:3333/api/jobs")!
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 0.5
-        
-        let semaphore = DispatchSemaphore(value: 0)
-        var isAlive = false
-        
-        let task = URLSession.shared.dataTask(with: request) { _, response, _ in
-            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                isAlive = true
-            }
-            semaphore.signal()
-        }
-        task.resume()
-        _ = semaphore.wait(timeout: .now() + 0.6)
-
-        if !isAlive {
-            startServerProcess()
-        }
-    }
-
-    func startServerProcess() {
+    func ensureServerRunning() -> Bool {
         let fileManager = FileManager.default
         var repoPath = fileManager.currentDirectoryPath
-        
+        var isBundledApp = false
+
         if let resURL = Bundle.main.resourceURL, fileManager.fileExists(atPath: resURL.appendingPathComponent("app/server.ts").path) {
             repoPath = resURL.path
+            isBundledApp = true
         } else if !fileManager.fileExists(atPath: "\(repoPath)/app/server.ts") {
             let bundleParent = Bundle.main.bundleURL.deletingLastPathComponent().path
             if fileManager.fileExists(atPath: "\(bundleParent)/app/server.ts") {
                 repoPath = bundleParent
+                isBundledApp = true
             }
         }
 
+        let dataRoot: URL
+        if !isBundledApp && fileManager.fileExists(atPath: "\(repoPath)/data/profiles.json") {
+            dataRoot = URL(fileURLWithPath: repoPath)
+            serverLogURL = dataRoot.appendingPathComponent("data/server.log")
+        } else {
+            guard let prepared = prepareDataDirectory(appRoot: repoPath) else { return false }
+            dataRoot = prepared
+        }
+
+        let bunCandidates = [
+            "\(repoPath)/bin/bun",
+            "/opt/homebrew/bin/bun",
+            "/usr/local/bin/bun",
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".bun/bin/bun").path,
+        ]
+        guard let bunPath = bunCandidates.first(where: { fileManager.isExecutableFile(atPath: $0) }) else { return false }
+
+        for _ in 0..<8 {
+            let port = Int.random(in: 41000...49999)
+            let token = UUID().uuidString
+            if startServerProcess(bunPath: bunPath, appRoot: repoPath, dataRoot: dataRoot.path, port: port, token: token), waitForHealth(port: port, token: token) {
+                serverURL = URL(string: "http://127.0.0.1:\(port)")!
+                return true
+            }
+            if let proc = serverProcess, proc.isRunning { proc.terminate() }
+            serverProcess = nil
+        }
+        return false
+    }
+
+    func prepareDataDirectory(appRoot: String) -> URL? {
+        let fileManager = FileManager.default
+        guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let dataRoot = support.appendingPathComponent("AI Job Search Studio", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: dataRoot, withIntermediateDirectories: true)
+            for name in ["data", "cv", "cover_letters", "job_scraper"] {
+                let source = URL(fileURLWithPath: appRoot).appendingPathComponent(name)
+                let destination = dataRoot.appendingPathComponent(name)
+                if fileManager.fileExists(atPath: source.path) && !fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.copyItem(at: source, to: destination)
+                }
+            }
+
+            // Ensure profiles.json is seeded from workspace if available and destination is missing or empty
+            let destProfiles = dataRoot.appendingPathComponent("data/profiles.json")
+            var needsSeed = !fileManager.fileExists(atPath: destProfiles.path)
+            if !needsSeed, let data = try? Data(contentsOf: destProfiles),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let profiles = json["profiles"] as? [[String: Any]],
+               profiles.allSatisfy({ ($0["name"] as? String)?.trimmingCharacters(in: .whitespaces).isEmpty ?? true }) {
+                needsSeed = true
+            }
+            if needsSeed {
+                let seed = URL(fileURLWithPath: appRoot).appendingPathComponent("data/profiles.json")
+                if fileManager.fileExists(atPath: seed.path) {
+                    try? fileManager.createDirectory(at: dataRoot.appendingPathComponent("data"), withIntermediateDirectories: true)
+                    try? fileManager.removeItem(at: destProfiles)
+                    try? fileManager.copyItem(at: seed, to: destProfiles)
+                }
+            }
+
+            // Ensure ai_config.json is seeded from workspace if available and destination is missing or unconfigured
+            let destAiConfig = dataRoot.appendingPathComponent("data/ai_config.json")
+            var needsAiSeed = !fileManager.fileExists(atPath: destAiConfig.path)
+            if !needsAiSeed, let data = try? Data(contentsOf: destAiConfig),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let anthropic = (json["anthropicApiKey"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+                let openai = (json["openaiApiKey"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+                if anthropic.isEmpty && openai.isEmpty { needsAiSeed = true }
+            }
+            if needsAiSeed {
+                let seed = URL(fileURLWithPath: appRoot).appendingPathComponent("data/ai_config.json")
+                if fileManager.fileExists(atPath: seed.path) {
+                    try? fileManager.createDirectory(at: dataRoot.appendingPathComponent("data"), withIntermediateDirectories: true)
+                    try? fileManager.removeItem(at: destAiConfig)
+                    try? fileManager.copyItem(at: seed, to: destAiConfig)
+                }
+            }
+
+            // Ensure search_config.json is seeded from workspace if available and destination is missing or unconfigured
+            let destSearchConfig = dataRoot.appendingPathComponent("data/search_config.json")
+            var needsSearchSeed = !fileManager.fileExists(atPath: destSearchConfig.path)
+            if !needsSearchSeed, let data = try? Data(contentsOf: destSearchConfig),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let cvKey = (json["cvLibraryApiKey"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+                let reedKey = (json["reedApiKey"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+                let serpKey = (json["serpApiKey"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+                let adzunaKey = (json["adzunaAppKey"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+                if cvKey.isEmpty && reedKey.isEmpty && serpKey.isEmpty && adzunaKey.isEmpty {
+                    needsSearchSeed = true
+                }
+            }
+            if needsSearchSeed {
+                let seed = URL(fileURLWithPath: appRoot).appendingPathComponent("data/search_config.json")
+                if fileManager.fileExists(atPath: seed.path) {
+                    try? fileManager.createDirectory(at: dataRoot.appendingPathComponent("data"), withIntermediateDirectories: true)
+                    try? fileManager.removeItem(at: destSearchConfig)
+                    try? fileManager.copyItem(at: seed, to: destSearchConfig)
+                }
+            }
+
+            let trackerSource = URL(fileURLWithPath: appRoot).appendingPathComponent("job_search_tracker.csv")
+            let trackerDestination = dataRoot.appendingPathComponent("job_search_tracker.csv")
+            if fileManager.fileExists(atPath: trackerSource.path) && !fileManager.fileExists(atPath: trackerDestination.path) {
+                try fileManager.copyItem(at: trackerSource, to: trackerDestination)
+            }
+            serverLogURL = dataRoot.appendingPathComponent("server.log")
+            return dataRoot
+        } catch {
+            return nil
+        }
+    }
+
+    func startServerProcess(bunPath: String, appRoot: String, dataRoot: String, port: Int, token: String) -> Bool {
+        let fileManager = FileManager.default
+
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        
-        let script = """
-        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin:$PATH"
-        if [ -d "\(repoPath)" ]; then
-            cd "\(repoPath)"
-            exec bun run app/server.ts
-        fi
-        """
-        proc.arguments = ["-c", script]
+        proc.executableURL = URL(fileURLWithPath: bunPath)
+        proc.currentDirectoryURL = URL(fileURLWithPath: appRoot)
+        proc.arguments = ["run", "app/server.ts"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PORT"] = String(port)
+        environment["AI_JOB_SEARCH_APP_ROOT"] = appRoot
+        environment["AI_JOB_SEARCH_ROOT"] = dataRoot
+        environment["AI_JOB_SEARCH_INSTANCE_TOKEN"] = token
+        proc.environment = environment
+        if let logURL = serverLogURL {
+            fileManager.createFile(atPath: logURL.path, contents: nil)
+            if let handle = try? FileHandle(forWritingTo: logURL) {
+                proc.standardOutput = handle
+                proc.standardError = handle
+            }
+        }
         
         do {
             try proc.run()
             self.serverProcess = proc
-            Thread.sleep(forTimeInterval: 0.8)
+            return true
         } catch {
-            print("Failed to start server: \(error)")
+            return false
         }
+    }
+
+    func waitForHealth(port: Int, token: String) -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/api/health") else { return false }
+        for _ in 0..<30 {
+            let semaphore = DispatchSemaphore(value: 0)
+            var matches = false
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 0.4
+            URLSession.shared.dataTask(with: request) { data, response, _ in
+                if let http = response as? HTTPURLResponse, http.statusCode == 200,
+                   let data = data,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   json["instanceToken"] as? String == token {
+                    matches = true
+                }
+                semaphore.signal()
+            }.resume()
+            _ = semaphore.wait(timeout: .now() + 0.5)
+            if matches { return true }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        return false
+    }
+
+    func showStartupFailure() {
+        let alert = NSAlert()
+        alert.messageText = "AI Job Search Studio could not start"
+        alert.informativeText = "Reinstall the latest app package and try again. If the problem continues, install Bun from https://bun.sh and review the server log at:\n\n\(serverLogURL?.path ?? "~/Library/Application Support/AI Job Search Studio/server.log")"
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     func setupWindow() {
@@ -123,7 +266,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     }
 
     func loadApp() {
-        let url = URL(string: "http://127.0.0.1:3333/")!
+        let url = serverURL.appendingPathComponent("")
         webView.load(URLRequest(url: url))
     }
 
@@ -220,6 +363,74 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
             }
         }
         return nil
+    }
+
+    // Handle HTML5 <input type="file"> file selection dialogs (NSOpenPanel)
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = true
+        openPanel.canChooseDirectories = false
+        openPanel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        openPanel.prompt = "Select"
+        openPanel.message = "Choose your resume file (.pdf, .tex, .txt, .md)"
+        openPanel.allowsOtherFileTypes = true
+
+        if #available(macOS 12.0, *) {
+            var types: [UTType] = [.pdf, .plainText, .text]
+            if let texType = UTType(filenameExtension: "tex") { types.append(texType) }
+            if let mdType = UTType(filenameExtension: "md") { types.append(mdType) }
+            openPanel.allowedContentTypes = types
+        }
+
+        if let win = self.window {
+            openPanel.beginSheetModal(for: win) { response in
+                if response == .OK {
+                    completionHandler(openPanel.urls)
+                } else {
+                    completionHandler(nil)
+                }
+            }
+        } else {
+            let response = openPanel.runModal()
+            if response == .OK {
+                completionHandler(openPanel.urls)
+            } else {
+                completionHandler(nil)
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "AI Job Search Studio"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        if let win = self.window {
+            alert.beginSheetModal(for: win) { response in
+                completionHandler(response == .alertFirstButtonReturn)
+            }
+        } else {
+            let response = alert.runModal()
+            completionHandler(response == .alertFirstButtonReturn)
+        }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "AI Job Search Studio"
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        if let win = self.window {
+            alert.beginSheetModal(for: win) { _ in
+                completionHandler()
+            }
+        } else {
+            _ = alert.runModal()
+            completionHandler()
+        }
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {

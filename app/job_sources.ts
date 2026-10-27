@@ -19,7 +19,10 @@ export interface SourceReport {
   status: "ok" | "failed" | "skipped";
   found: number;
   added?: number;
+  enriched?: number;
+  filtered?: number;
   reason?: string;
+  guidance?: string;
 }
 
 function text(value: unknown): string {

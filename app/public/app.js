@@ -16,6 +16,7 @@ let searchConfig = null;
 let allProfiles = [];
 let activeProfile = null;
 let selectedResumeFile = null;
+let pendingModalProfileData = null;
 
 // AI Config State
 let aiConfig = null;
@@ -124,12 +125,15 @@ const btnCloseSearchConfig = document.getElementById("btnCloseSearchConfig");
 const btnSaveSearchConfig = document.getElementById("btnSaveSearchConfig");
 const btnRefreshSponsors = document.getElementById("btnRefreshSponsors");
 const sponsorRegistryStatus = document.getElementById("sponsorRegistryStatus");
+const runtimeIssues = document.getElementById("runtimeIssues");
+const sourceRunStatus = document.getElementById("sourceRunStatus");
 
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
   await fetchProfiles();
   await fetchAiConfig();
   await fetchSearchConfig();
+  await fetchDiagnostics();
   await fetchJobs();
   setupEventListeners();
 });
@@ -165,7 +169,10 @@ function setupEventListeners() {
 
   // Scrape button
   btnScrape.addEventListener("click", triggerScrape);
-  btnSearchSettings?.addEventListener("click", () => searchConfigModal.style.display = "flex");
+  btnSearchSettings?.addEventListener("click", async () => {
+    await fetchSearchConfig();
+    searchConfigModal.style.display = "flex";
+  });
   btnCloseSearchConfig?.addEventListener("click", () => searchConfigModal.style.display = "none");
   btnSaveSearchConfig?.addEventListener("click", saveSearchConfig);
   btnRefreshSponsors?.addEventListener("click", refreshSponsorRegister);
@@ -232,6 +239,42 @@ function setupEventListeners() {
     rawResumeInput.value = "";
     importResumeModal.style.display = "flex";
   });
+  // In-Modal Profile Resume Dropzone & AI Auto-Fill Listeners
+  const profileDropzone = document.getElementById("profileModalDropzone");
+  const profileFileInput = document.getElementById("profileModalFileInput");
+  const btnModalAutoFill = document.getElementById("btnProfileModalAutoFill");
+
+  if (profileDropzone && profileFileInput) {
+    profileDropzone.addEventListener("click", (e) => {
+      if (e.target === profileFileInput || e.target === btnModalAutoFill) return;
+      profileFileInput.click();
+    });
+    profileFileInput.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (file) handleProfileModalAutofill(file);
+    });
+    profileDropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      profileDropzone.classList.add("dragover");
+    });
+    profileDropzone.addEventListener("dragleave", () => profileDropzone.classList.remove("dragover"));
+    profileDropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      profileDropzone.classList.remove("dragover");
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) handleProfileModalAutofill(file);
+    });
+  }
+
+  btnModalAutoFill?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (profileFileInput?.files && profileFileInput.files[0]) {
+      handleProfileModalAutofill(profileFileInput.files[0]);
+    } else {
+      profileFileInput?.click();
+    }
+  });
+
   btnCloseImportModal.addEventListener("click", () => importResumeModal.style.display = "none");
   btnCancelImportModal.addEventListener("click", () => importResumeModal.style.display = "none");
   btnParseResumeRun.addEventListener("click", handleImportResume);
@@ -243,6 +286,7 @@ function setupEventListeners() {
 
   if (dropzone && fileInput) {
     dropzone.addEventListener("click", (e) => {
+      if (e.target === fileInput) return;
       if (e.target && e.target.id === "btnRemoveSelectedFile") return;
       fileInput.click();
     });
@@ -266,7 +310,10 @@ function setupEventListeners() {
   btnRemoveSelected?.addEventListener("click", (e) => {
     e.stopPropagation();
     selectedResumeFile = null;
-    if (fileInput) fileInput.value = "";
+    if (fileInput) {
+      fileInput.value = "";
+      fileInput.style.display = "";
+    }
     const defaultState = document.getElementById("dropzoneDefaultState");
     const selectedState = document.getElementById("dropzoneSelectedState");
     if (defaultState) defaultState.style.display = "block";
@@ -445,14 +492,57 @@ function renderProfileDropdownList() {
   allProfiles.forEach(p => {
     const item = document.createElement("div");
     item.className = `dropdown-profile-item ${p.id === activeProfile?.id ? "active" : ""}`;
-    item.innerHTML = `
-      <div>
-        <div style="font-weight: 600;">${escapeHtml(p.name)}</div>
-        <div style="font-size: 11px; opacity: 0.8;">${escapeHtml(p.headline)}</div>
-      </div>
-      ${p.id === activeProfile?.id ? '<span>✓</span>' : ''}
+    item.style.display = "flex";
+    item.style.alignItems = "center";
+    item.style.justifyContent = "space-between";
+    item.style.padding = "8px 12px";
+
+    const left = document.createElement("div");
+    left.style.flex = "1";
+    left.style.minWidth = "0";
+    left.style.cursor = "pointer";
+    left.innerHTML = `
+      <div style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(p.name)}</div>
+      <div style="font-size: 11px; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(p.headline || "Candidate Profile")}</div>
     `;
-    item.addEventListener("click", () => switchActiveProfile(p.id));
+    left.addEventListener("click", () => switchActiveProfile(p.id));
+
+    const right = document.createElement("div");
+    right.style.display = "flex";
+    right.style.alignItems = "center";
+    right.style.gap = "8px";
+    right.style.marginLeft = "8px";
+
+    if (p.id === activeProfile?.id) {
+      const check = document.createElement("span");
+      check.textContent = "✓";
+      check.style.color = "#22c55e";
+      check.style.fontWeight = "bold";
+      right.appendChild(check);
+    }
+
+    if (allProfiles.length > 1) {
+      const btnDel = document.createElement("button");
+      btnDel.title = `Delete profile: ${p.name}`;
+      btnDel.innerHTML = "🗑️";
+      btnDel.style.background = "transparent";
+      btnDel.style.border = "none";
+      btnDel.style.cursor = "pointer";
+      btnDel.style.padding = "2px 4px";
+      btnDel.style.fontSize = "12px";
+      btnDel.style.opacity = "0.6";
+      btnDel.style.borderRadius = "4px";
+      btnDel.addEventListener("mouseenter", () => { btnDel.style.opacity = "1"; btnDel.style.background = "rgba(239, 68, 68, 0.2)"; });
+      btnDel.addEventListener("mouseleave", () => { btnDel.style.opacity = "0.6"; btnDel.style.background = "transparent"; });
+      btnDel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteProfileById(p.id, p.name);
+      });
+      right.appendChild(btnDel);
+    }
+
+    item.appendChild(left);
+    item.appendChild(right);
     dropdownProfileList.appendChild(item);
   });
 
@@ -482,7 +572,146 @@ async function switchActiveProfile(profileId) {
   }
 }
 
+function extractAllSkillsFlat(skillsObj, keywords) {
+  const set = new Set();
+  if (Array.isArray(keywords)) {
+    for (const k of keywords) {
+      if (typeof k === "string" && k.trim()) set.add(k.trim());
+    }
+  }
+  if (skillsObj && typeof skillsObj === "object") {
+    for (const [key, val] of Object.entries(skillsObj)) {
+      if (Array.isArray(val)) {
+        for (const s of val) {
+          if (typeof s === "string" && s.trim()) set.add(s.trim());
+        }
+      }
+    }
+  }
+  return Array.from(set);
+}
+
+function groupManualSkills(rawSkills, baseSkills) {
+  const skills = baseSkills ? JSON.parse(JSON.stringify(baseSkills)) : { cloud: [], devops: [], languages: [], tools: [] };
+  const existingSet = new Set(extractAllSkillsFlat(skills).map(s => s.toLowerCase()));
+
+  const cloudKw = ["aws", "azure", "gcp", "cloud", "google cloud", "bicep", "cloudformation"];
+  const langKw = ["python", "c#", ".net", "dotnet", "java", "typescript", "javascript", "golang", "go", "php", "ruby", "rust", "c++", "sql", "html", "css", "react", "angular", "vue", "fastapi", "django", "flask", "spring"];
+  const devopsKw = ["kubernetes", "k8s", "docker", "terraform", "ci/cd", "git", "ansible", "jenkins", "argocd", "linux", "dynamics", "power platform", "power apps", "power automate", "dataverse", "crm", "erp", "salesforce"];
+
+  for (const s of rawSkills) {
+    if (existingSet.has(s.toLowerCase())) continue;
+    const lower = s.toLowerCase();
+    if (cloudKw.some(k => lower.includes(k))) {
+      if (!skills.cloud) skills.cloud = [];
+      skills.cloud.push(s);
+    } else if (langKw.some(k => lower.includes(k))) {
+      if (!skills.languages) skills.languages = [];
+      skills.languages.push(s);
+    } else if (devopsKw.some(k => lower.includes(k))) {
+      if (!skills.devops) skills.devops = [];
+      skills.devops.push(s);
+    } else {
+      if (!skills.tools) skills.tools = [];
+      skills.tools.push(s);
+    }
+    existingSet.add(s.toLowerCase());
+  }
+  return skills;
+}
+
+async function handleProfileModalAutofill(file) {
+  if (!file) return;
+  const statusEl = document.getElementById("profileModalAutofillStatus");
+  const primaryText = document.getElementById("profileDropzonePrimaryText");
+  const icon = document.getElementById("profileDropzoneIcon");
+  const spinner = document.getElementById("profileAutoFillBtnSpinner");
+  const btnText = document.getElementById("profileAutoFillBtnText");
+  const btn = document.getElementById("btnProfileModalAutoFill");
+
+  if (primaryText) primaryText.textContent = `📄 ${file.name} (${Math.round(file.size / 1024) || 1} KB)`;
+  if (icon) icon.textContent = file.name.toLowerCase().endsWith(".pdf") ? "📑" : file.name.toLowerCase().endsWith(".tex") ? "📝" : "📄";
+  if (statusEl) {
+    statusEl.style.display = "flex";
+    statusEl.innerHTML = `<span class="spinner" style="display:inline-block; width:12px; height:12px; margin-right:6px;"></span> Extracting candidate profile with AI...`;
+  }
+  if (spinner) spinner.style.display = "inline-block";
+  if (btnText) btnText.textContent = "Auto-filling...";
+  if (btn) btn.disabled = true;
+
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("previewOnly", "true");
+
+    const res = await fetch("/api/profiles/parse-resume", {
+      method: "POST",
+      body: formData
+    });
+    const data = await res.json();
+    if (data.success && data.profile) {
+      const p = data.profile;
+      pendingModalProfileData = p;
+
+      if (p.name) document.getElementById("formName").value = p.name;
+      if (p.headline) document.getElementById("formHeadline").value = p.headline;
+      if (p.email) document.getElementById("formEmail").value = p.email;
+      if (p.phone) document.getElementById("formPhone").value = p.phone;
+      if (p.location) document.getElementById("formLocation").value = p.location;
+      if (p.postcode) document.getElementById("formPostcode").value = p.postcode;
+      if (p.linkedin) document.getElementById("formLinkedin").value = p.linkedin;
+      if (p.github || p.portfolio) document.getElementById("formGithub").value = p.github || p.portfolio;
+      if (p.preferredRadiusMiles) document.getElementById("formRadius").value = p.preferredRadiusMiles;
+      if (p.minSalary) document.getElementById("formMinSalary").value = p.minSalary;
+      if (typeof p.visaSponsorshipRequired === "boolean") document.getElementById("formVisaRequired").checked = p.visaSponsorshipRequired;
+
+      const roles = (p.targetRoles && p.targetRoles.length) ? p.targetRoles : (p.headline ? [p.headline] : []);
+      if (roles.length) document.getElementById("formTargetRoles").value = roles.join(", ");
+
+      const locations = (p.targetLocations && p.targetLocations.length) ? p.targetLocations : (p.location ? ["Remote", p.location] : []);
+      if (locations.length) document.getElementById("formTargetLocations").value = locations.join(", ");
+
+      const allSkills = extractAllSkillsFlat(p.skills, p.keywords);
+      if (allSkills.length) document.getElementById("formSkills").value = allSkills.join(", ");
+
+      if (statusEl) {
+        statusEl.innerHTML = `<span style="color: var(--apple-green); font-weight: 600;">✅ Auto-filled all fields with AI from ${escapeHtml(file.name)}!</span> <span style="color: var(--text-secondary); margin-left: 6px;">Review or customize any field below before saving.</span>`;
+      }
+      if (icon) icon.textContent = "✨";
+      showToast(`✨ Auto-filled profile fields for ${p.name || "candidate"}!`);
+    } else {
+      if (statusEl) {
+        statusEl.innerHTML = `<span style="color: var(--apple-red); font-weight: 500;">⚠️ ${escapeHtml(data.error || "Could not parse resume")}</span>`;
+      }
+      showToast(data.error || "Failed to parse resume");
+    }
+  } catch (err) {
+    console.error("Auto-fill error:", err);
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color: var(--apple-red); font-weight: 500;">⚠️ Error parsing resume</span>`;
+    }
+    showToast("Error during AI auto-fill");
+  } finally {
+    if (spinner) spinner.style.display = "none";
+    if (btnText) btnText.textContent = "✨ Auto-Fill with AI";
+    if (btn) btn.disabled = false;
+  }
+}
+
 function openProfileModal(profileToEdit) {
+  pendingModalProfileData = null;
+  const statusEl = document.getElementById("profileModalAutofillStatus");
+  if (statusEl) {
+    statusEl.style.display = "none";
+    statusEl.innerHTML = "";
+  }
+  const primaryText = document.getElementById("profileDropzonePrimaryText");
+  if (primaryText) primaryText.textContent = "Upload Resume to Auto-Fill All Fields with AI";
+  const icon = document.getElementById("profileDropzoneIcon");
+  if (icon) icon.textContent = "📁";
+  const fileInput = document.getElementById("profileModalFileInput");
+  if (fileInput) fileInput.value = "";
+
   if (profileToEdit) {
     profileModalTitle.textContent = `Edit Profile: ${profileToEdit.name}`;
     document.getElementById("formProfileId").value = profileToEdit.id;
@@ -500,12 +729,7 @@ function openProfileModal(profileToEdit) {
     document.getElementById("formTargetRoles").value = (profileToEdit.targetRoles || []).join(", ");
     document.getElementById("formTargetLocations").value = (profileToEdit.targetLocations || []).join(", ");
 
-    const allSkills = [
-      ...(profileToEdit.skills?.cloud || []),
-      ...(profileToEdit.skills?.devops || []),
-      ...(profileToEdit.skills?.languages || []),
-      ...(profileToEdit.skills?.tools || [])
-    ];
+    const allSkills = extractAllSkillsFlat(profileToEdit.skills, profileToEdit.keywords);
     document.getElementById("formSkills").value = allSkills.join(", ");
   } else {
     profileModalTitle.textContent = "Create New Candidate Profile";
@@ -536,10 +760,15 @@ async function handleSaveProfileForm(e) {
   const targetLocations = document.getElementById("formTargetLocations").value.split(",").map(s => s.trim()).filter(Boolean);
   const rawSkills = document.getElementById("formSkills").value.split(",").map(s => s.trim()).filter(Boolean);
 
-  const existing = allProfiles.find(p => p.id === id);
+  const existingByName = allProfiles.find(p => p.name.trim().toLowerCase() === name.toLowerCase());
+  const existing = allProfiles.find(p => p.id === id) || existingByName;
+  const resolvedId = id || existingByName?.id || name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+  const baseSkills = pendingModalProfileData?.skills || existing?.skills;
+  const finalSkills = groupManualSkills(rawSkills, baseSkills);
 
   const profilePayload = {
-    id: id || name.toLowerCase().replace(/[^a-z0-9]/g, "-") + "-" + Date.now().toString().slice(-4),
+    id: resolvedId,
     name,
     headline,
     email,
@@ -553,15 +782,22 @@ async function handleSaveProfileForm(e) {
     visaSponsorshipRequired,
     targetRoles: targetRoles.length > 0 ? targetRoles : [headline],
     targetLocations: targetLocations.length > 0 ? targetLocations : ["Remote", location],
-    skills: existing?.skills || {
-      cloud: rawSkills.slice(0, 4),
-      devops: rawSkills.slice(4, 10),
-      languages: [],
-      tools: rawSkills.slice(10)
-    },
-    experience: existing?.experience || [],
-    education: existing?.education || [],
-    certifications: existing?.certifications || []
+    skills: finalSkills,
+    experience: (pendingModalProfileData?.experience && pendingModalProfileData.experience.length > 0)
+      ? pendingModalProfileData.experience
+      : (existing?.experience || []),
+    education: (pendingModalProfileData?.education && pendingModalProfileData.education.length > 0)
+      ? pendingModalProfileData.education
+      : (existing?.education || []),
+    certifications: (pendingModalProfileData?.certifications && pendingModalProfileData.certifications.length > 0)
+      ? pendingModalProfileData.certifications
+      : (existing?.certifications || []),
+    projects: (pendingModalProfileData?.projects && pendingModalProfileData.projects.length > 0)
+      ? pendingModalProfileData.projects
+      : (existing?.projects || []),
+    latexBackbone: pendingModalProfileData?.latexBackbone || existing?.latexBackbone,
+    sourceResume: pendingModalProfileData?.sourceResume || existing?.sourceResume,
+    summary: pendingModalProfileData?.summary || existing?.summary || "",
   };
 
   try {
@@ -572,6 +808,7 @@ async function handleSaveProfileForm(e) {
     });
     const data = await res.json();
     if (data.success) {
+      pendingModalProfileData = null;
       profileModal.style.display = "none";
       showToast(`Saved profile for ${name}`);
       await fetchProfiles();
@@ -582,29 +819,39 @@ async function handleSaveProfileForm(e) {
   }
 }
 
-async function deleteCurrentProfile() {
-  if (!activeProfile) return;
+async function deleteProfileById(profileId, profileName) {
   if (allProfiles.length <= 1) {
     showToast("Cannot delete the only profile");
     return;
   }
-  if (!confirm(`Are you sure you want to delete profile: ${activeProfile.name}?`)) return;
+  const confirmed = confirm(`Are you sure you want to delete profile: ${profileName}? This action cannot be undone.`);
+  if (!confirmed) return;
 
   try {
     const res = await fetch("/api/profiles", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: activeProfile.id })
+      body: JSON.stringify({ id: profileId })
     });
     const data = await res.json();
     if (data.success) {
-      showToast("Profile deleted");
+      showToast(`Deleted profile: ${profileName}`);
       await fetchProfiles();
+      renderProfileDropdownList();
+      updateProfileUI();
       await fetchJobs();
+    } else {
+      showToast(data.error || "Failed to delete profile");
     }
   } catch (err) {
+    console.error("Delete profile error:", err);
     showToast("Error deleting profile");
   }
+}
+
+async function deleteCurrentProfile() {
+  if (!activeProfile) return;
+  await deleteProfileById(activeProfile.id, activeProfile.name);
 }
 
 function handleResumeFileRead(file) {
@@ -613,10 +860,12 @@ function handleResumeFileRead(file) {
 
   const defaultState = document.getElementById("dropzoneDefaultState");
   const selectedState = document.getElementById("dropzoneSelectedState");
+  const fileInput = document.getElementById("resumeFileInput");
   const nameEl = document.getElementById("selectedFileName");
   const sizeEl = document.getElementById("selectedFileSize");
   const iconEl = document.getElementById("selectedFileIcon");
 
+  if (fileInput) fileInput.style.display = "none";
   if (defaultState) defaultState.style.display = "none";
   if (selectedState) selectedState.style.display = "flex";
   if (nameEl) nameEl.textContent = file.name;
@@ -658,6 +907,9 @@ async function handleImportResume() {
     if (selectedResumeFile) {
       const formData = new FormData();
       formData.append("file", selectedResumeFile);
+      if (activeProfile?.id) {
+        formData.append("targetProfileId", activeProfile.id);
+      }
       if (text && !selectedResumeFile.name.toLowerCase().endsWith(".pdf")) {
         formData.append("resumeText", text);
       }
@@ -669,7 +921,7 @@ async function handleImportResume() {
       res = await fetch("/api/profiles/import-resume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resumeText: text })
+        body: JSON.stringify({ resumeText: text, targetProfileId: activeProfile?.id })
       });
     }
 
@@ -744,6 +996,7 @@ async function runScenarioPrompt() {
         });
         const searchData = await searchRes.json();
         if (!searchRes.ok || !searchData.success) throw new Error(searchData.error || "Live search failed");
+        renderSourceStatus(searchData);
         await fetchJobs();
         renderJobs();
         showToast(`${data.explanation} ${searchData.addedCount || 0} new roles added.`);
@@ -840,10 +1093,27 @@ function openAiModal() {
   openaiSettings.style.display = aiConfig.provider === "openai" ? "block" : "none";
 
   aiOllamaHost.value = aiConfig.ollamaHost || "http://localhost:11434";
-  aiAnthropicKey.value = "";
-  aiOpenAiKey.value = "";
-  aiAnthropicKey.placeholder = aiConfig.hasAnthropicKey ? "Configured · leave blank to keep" : "Anthropic API key";
-  aiOpenAiKey.placeholder = aiConfig.hasOpenAiKey ? "Configured · leave blank to keep" : "OpenAI API key";
+  aiAnthropicKey.value = aiConfig.anthropicApiKey || "";
+  aiOpenAiKey.value = aiConfig.openaiApiKey || "";
+  aiAnthropicKey.placeholder = aiConfig.hasAnthropicKey ? "Configured · leave blank to keep" : "Anthropic API key (sk-ant-...)";
+  aiOpenAiKey.placeholder = aiConfig.hasOpenAiKey ? "Configured · leave blank to keep" : "OpenAI API key (sk-...)";
+
+  const btnToggleAnthropicKey = document.getElementById("btnToggleAnthropicKey");
+  if (btnToggleAnthropicKey && !btnToggleAnthropicKey.dataset.bound) {
+    btnToggleAnthropicKey.dataset.bound = "true";
+    btnToggleAnthropicKey.addEventListener("click", () => {
+      aiAnthropicKey.type = aiAnthropicKey.type === "password" ? "text" : "password";
+      btnToggleAnthropicKey.textContent = aiAnthropicKey.type === "password" ? "👁️" : "🔒";
+    });
+  }
+  const btnToggleOpenAiKey = document.getElementById("btnToggleOpenAiKey");
+  if (btnToggleOpenAiKey && !btnToggleOpenAiKey.dataset.bound) {
+    btnToggleOpenAiKey.dataset.bound = "true";
+    btnToggleOpenAiKey.addEventListener("click", () => {
+      aiOpenAiKey.type = aiOpenAiKey.type === "password" ? "text" : "password";
+      btnToggleOpenAiKey.textContent = aiOpenAiKey.type === "password" ? "👁️" : "🔒";
+    });
+  }
 
   const anthropicModelSelect = document.getElementById("aiAnthropicModelSelect");
   if (anthropicModelSelect && aiConfig.anthropicModel) {
@@ -2203,6 +2473,44 @@ function renderSponsorRegistryStatus(status = {}) {
   sponsorRegistryStatus.textContent = `${Number(status.count || 0).toLocaleString()} register rows · updated ${fetched}`;
 }
 
+function renderSourceStatus(search) {
+  if (!sourceRunStatus || !search) return;
+  const reports = search.sources || [];
+  const completed = search.completedAt ? new Date(search.completedAt).toLocaleString() : "just now";
+  const totalFound = reports.reduce((sum, source) => sum + Number(source.found || 0), 0);
+  sourceRunStatus.innerHTML = `
+    <b>Last search · ${escapeHtml(completed)}</b>
+    <div>${totalFound} returned · ${Number(search.addedCount || 0)} new · ${Number(search.enrichedCount || 0)} enriched · ${Number(search.filteredCount || 0)} sponsorship-filtered</div>
+    ${reports.map(source => `
+      <div class="source-report-row ${source.status}">
+        <span>${escapeHtml(source.source)}</span>
+        <span>${escapeHtml(source.status)} · ${Number(source.found || 0)} found · ${Number(source.added || 0)} new</span>
+        ${(source.reason || source.guidance) ? `<span class="source-report-detail">${escapeHtml([source.reason, source.guidance].filter(Boolean).join(" "))}</span>` : ""}
+      </div>`).join("")}
+    ${search.sponsorRegistry?.error ? `<div class="source-report-row failed"><span>Sponsor register</span><span>cached/offline</span><span class="source-report-detail">${escapeHtml(search.sponsorRegistry.error)} Refresh the register from Sources when the internet connection is available.</span></div>` : ""}
+  `;
+}
+
+async function fetchDiagnostics() {
+  try {
+    const res = await fetch("/api/diagnostics");
+    const data = await res.json();
+    const issues = data.runtime?.issues || [];
+    if (runtimeIssues) {
+      runtimeIssues.style.display = issues.length ? "block" : "none";
+      runtimeIssues.innerHTML = issues.length
+        ? `<b>Installation needs attention</b>${issues.map(issue => `<div>${escapeHtml(issue.message)} ${escapeHtml(issue.guidance)}</div>`).join("")}`
+        : "";
+    }
+    if (data.lastSearch) renderSourceStatus(data.lastSearch);
+  } catch {
+    if (runtimeIssues) {
+      runtimeIssues.style.display = "block";
+      runtimeIssues.textContent = "Diagnostics could not be loaded. Reload the app; if this continues, restart it and check the local server log.";
+    }
+  }
+}
+
 async function fetchSearchConfig() {
   try {
     const res = await fetch("/api/search/config");
@@ -2219,6 +2527,25 @@ async function fetchSearchConfig() {
     document.getElementById("sourceArbeitnow").checked = Boolean(sources.arbeitnow);
     document.getElementById("sourceRemotive").checked = Boolean(sources.remotive);
     document.getElementById("sponsorshipMode").value = searchConfig.sponsorshipMode || "all";
+
+    const updateKeyIndicator = (statusId, inputId, isConfigured, name) => {
+      const statusEl = document.getElementById(statusId);
+      const inputEl = document.getElementById(inputId);
+      if (statusEl) {
+        statusEl.textContent = isConfigured ? "✓ Saved" : "Optional";
+        statusEl.className = "source-key-status " + (isConfigured ? "saved" : "missing");
+      }
+      if (inputEl) {
+        inputEl.placeholder = isConfigured ? "✓ Configured · leave blank to keep" : `Enter ${name}`;
+      }
+    };
+
+    updateKeyIndicator("cvLibraryKeyStatus", "cvLibraryApiKey", Boolean(searchConfig.hasCvLibraryKey), "CV-Library API key");
+    updateKeyIndicator("reedKeyStatus", "reedApiKey", Boolean(searchConfig.hasReedKey), "Reed API key");
+    updateKeyIndicator("serpKeyStatus", "serpApiKey", Boolean(searchConfig.hasSerpApiKey), "SerpAPI key");
+    updateKeyIndicator("adzunaIdStatus", "adzunaAppId", Boolean(searchConfig.hasAdzunaCredentials), "Adzuna App ID");
+    updateKeyIndicator("adzunaKeyStatus", "adzunaAppKey", Boolean(searchConfig.hasAdzunaCredentials), "Adzuna App Key");
+
     renderSponsorRegistryStatus(data.sponsorRegistry);
   } catch {
     searchConfig = { sponsorshipMode: "all", sources: { linkedin: true, freehire: true, jobicy: true, arbeitnow: false, remotive: true } };
@@ -2250,6 +2577,7 @@ async function saveSearchConfig() {
   if (!data.success) return showToast(data.error || "Could not save search settings");
   searchConfig = data.config;
   ["cvLibraryApiKey", "reedApiKey", "serpApiKey", "adzunaAppId", "adzunaAppKey"].forEach(id => document.getElementById(id).value = "");
+  await fetchSearchConfig();
   searchConfigModal.style.display = "none";
   showToast("Search sources saved");
 }
@@ -2280,17 +2608,23 @@ async function triggerScrape(request = {}) {
     });
     const data = await res.json();
     if (data.success) {
-      const ok = (data.sources || []).filter(source => source.status === "ok").map(source => source.source).join(", ");
-      const failed = (data.sources || []).filter(source => source.status === "failed").length;
-      showToast(`${data.addedCount} added · ${data.filteredCount || 0} sponsorship-filtered${ok ? ` · ${ok}` : ""}${failed ? ` · ${failed} source failed` : ""}`);
+      renderSourceStatus(data);
+      const totalFound = (data.sources || []).reduce((sum, source) => sum + Number(source.found || 0), 0);
+      const failedSources = (data.sources || []).filter(source => source.status === "failed").map(source => source.source);
+      const outcome = data.addedCount > 0
+        ? `${data.addedCount} new jobs added from ${totalFound} returned`
+        : totalFound > 0
+          ? `${totalFound} jobs returned; 0 were new (already saved or filtered)`
+          : "No jobs were returned";
+      showToast(`${outcome}${failedSources.length ? ` · Failed: ${failedSources.join(", ")}. Open Sources for fixes.` : ""}`);
       if (data.sponsorshipMode === "licensed") currentFilter = "sponsor_verified";
       if (data.sponsorshipMode === "explicit") currentFilter = "sponsorship_explicit";
       await fetchJobs();
     } else {
-      showToast("Scrape completed.");
+      showToast(data.error || "Search failed. Open Sources for diagnostics.");
     }
   } catch (err) {
-    showToast("Scrape error");
+    showToast(`Search could not reach the local server: ${err.message || err}. Restart the app.`);
   } finally {
     scrapeSpinner.style.display = "none";
     scrapeLabel.textContent = "⚡ Run Daily Scrape";
@@ -2323,7 +2657,7 @@ function escapeHtml(text) {
   return text.toString().replace(/[&<>"']/g, m => map[m]);
 }
 
-function cleanCandidateHeadline(role, fallback = "Senior Platform & DevOps Engineer") {
+function cleanCandidateHeadline(role, fallback = "Professional Candidate") {
   if (!role) return fallback;
   let clean = role.split(/—|-|\|/)[0].trim();
   clean = clean.replace(/\(.*?\)/g, "").trim();
