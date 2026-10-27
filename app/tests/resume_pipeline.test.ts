@@ -133,4 +133,44 @@ describe("resume backbone pipeline", () => {
     expect(coverLatex).toContain("Senior Dynamics 365 Developer");
     expect(coverLatex).not.toContain("The uploaded resume does not yet contain direct evidence");
   });
+
+  test("resume parser derives authentic domain roles and location for non-devops candidate", () => {
+    const rawNurse = `SARAH CONNOR
+Manchester, UK | sarah.connor@example.com | +44 7700 900555
+Registered General Nurse
+
+Professional Summary:
+Band 6 Staff Nurse with 7 years clinical experience across acute medical wards.
+
+Work Experience:
+Manchester Royal Infirmary | Manchester, UK
+Staff Nurse | Jan 2021 - Present
+- Delivered acute medical care to cardiology patients.
+
+Salford Royal Hospital | Salford, UK
+Junior Staff Nurse | Aug 2018 - Dec 2020
+- Provided post-operative patient wound care and medication administration.
+
+Skills & Competencies:
+Clinical: Patient Care, Acute Triage, IV Cannulation, Wound Management
+Life Support: BLS, ACLS
+Core: Team Leadership, Patient Advocacy
+
+Education:
+BSc Adult Nursing | University of Manchester | 2015 - 2018
+`;
+
+    const parsed = parseResumeDeterministically(rawNurse);
+    expect(parsed.profile.name).toBe("SARAH CONNOR");
+    expect(parsed.profile.headline).toBe("Registered General Nurse");
+    expect(parsed.profile.location).toBe("Manchester, UK");
+    expect(parsed.profile.postcode).toBe("M1");
+    expect(parsed.profile.targetRoles).toContain("Staff Nurse");
+    expect(parsed.profile.targetRoles).toContain("Senior Staff Nurse");
+    expect(parsed.profile.targetRoles).not.toContain("DevOps Engineer");
+    expect(parsed.profile.targetRoles).not.toContain("Platform Engineer");
+    expect(parsed.profile.keywords?.length).toBeGreaterThan(0);
+    expect(parsed.profile.keywords).toContain("Patient Care");
+  });
 });
+

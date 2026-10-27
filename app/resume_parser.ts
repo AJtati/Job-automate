@@ -57,12 +57,19 @@ function plainLines(rawText: string): string[] {
 
 function findContact(rawText: string) {
   const cleaned = cleanTextArtifacts(rawText);
-  const labelledLocation = cleaned.match(/^(?:location|based in|address)\s*:\s*(.+)$/im)?.[1]?.trim();
-  const contactLocation = cleaned
-    .split(/\r?\n/)
+  const labelledLocation = cleaned.match(/^(?:location|based in|address|residing in|city)\s*[:\-]\s*(.+)$/im)?.[1]?.trim();
+
+  // Check top lines (header / contact area, typically first 15 lines)
+  const headerLines = cleaned.split(/\r?\n/).slice(0, 15);
+  const locationTerms = /\b(?:united kingdom|great britain|england|scotland|wales|northern ireland|ireland|remote|london|hartlepool|middlesbrough|leeds|manchester|birmingham|newcastle|durham|edinburgh|glasgow|bristol|liverpool|sheffield|nottingham|leicester|coventry|belfast|cardiff|southampton|reading|oxford|cambridge|derby|stockton|sunderland|darlington|york|milton keynes|norwich|swansea|bournemouth|swindon|teesside|hull|plymouth|stoke|luton|preston|aberdeen|dundee|dublin|new york|california|san francisco|chicago|austin|toronto|vancouver|sydney|melbourne|berlin|paris|amsterdam|munich|singapore|dubai|india|hyderabad|bangalore|mumbai|delhi|chennai|pune)\b/i;
+
+  const contactLocation = headerLines
     .flatMap(line => line.split(/\s*[|·—–-]\s*/))
     .map(value => value.trim())
-    .find(value => /\b(?:united kingdom|great britain|england|scotland|wales|northern ireland|ireland|remote|london|hartlepool|middlesbrough|leeds|manchester|birmingham|newcastle|durham|edinburgh|glasgow)\b/i.test(value));
+    .find(value => locationTerms.test(value) && !value.includes("@") && !/\d{5,}/.test(value) && value.length < 60);
+
+  // Also check for postal code in header
+  const postcodeMatch = cleaned.match(/\b([A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2})\b/i);
 
   let visaSponsorshipRequired: boolean | undefined = undefined;
   if (/no\s+sponsorship\s+required|right\s+to\s+work\s+in\s+the\s+uk|uk\s+citizen|british\s+citizen|settled\s+status|indefinite\s+leave\s+to\s+remain|no\s+visa\s+required/i.test(cleaned)) {
@@ -77,6 +84,7 @@ function findContact(rawText: string) {
     linkedin: cleaned.match(/https?:\/\/(?:www\.)?linkedin\.com\/in\/[a-zA-Z0-9_%.-]+/i)?.[0] || "",
     github: cleaned.match(/https?:\/\/(?:www\.)?github\.com\/[a-zA-Z0-9_.-]+/i)?.[0] || "",
     location: labelledLocation || contactLocation || "",
+    postcode: postcodeMatch ? postcodeMatch[1].toUpperCase() : "",
     visaSponsorshipRequired,
   };
 }
@@ -100,7 +108,7 @@ function latexExperiences(rawText: string): WorkExperience[] {
 function plainExperiences(rawText: string): WorkExperience[] {
   const lines = sectionSlice(plainLines(rawText), ["experience", "work experience", "professional experience", "work history", "employment", "career history"]);
   const datePattern = /((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[ .-]*)?((?:19|20)\d{2})\s*(?:--|–|—|-|to)\s*((?:present|current)|(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[ .-]*)?(?:19|20)\d{2})/i;
-  const roleWords = /engineer|developer|architect|consultant|manager|lead|analyst|specialist|administrator|director|intern|designer|scientist|researcher|officer|coordinator|accountant|executive|advisor|head|practitioner|nurse|associate|auditor|strategist|writer|editor/i;
+  const roleWords = /engineer|developer|architect|consultant|manager|lead|analyst|specialist|administrator|director|intern|designer|scientist|researcher|officer|coordinator|accountant|executive|advisor|head|practitioner|nurse|associate|auditor|strategist|writer|editor|doctor|physician|therapist|clinician|technician|instructor|teacher|professor|trainer|buyer|merchandiser|planner|assistant|representative|recruiter|controller|worker|chemist|biologist|surveyor|operator|supervisor|agent|mechanic|electrician|builder|chef|cook/i;
   const results: WorkExperience[] = [];
 
   let index = 0;
@@ -301,41 +309,65 @@ export function deriveTargetRoles(headline: string, experiences: WorkExperience[
     }
   }
 
-  const allText = `${headline} ${(experiences || []).map(e => e.role).join(" ")} ${Object.values(skills || {}).flat().join(" ")}`.toLowerCase();
+  const primaryRole = headline || experiences[0]?.role || "";
+  const allRolesAndSkills = `${primaryRole} ${(experiences || []).map(e => e.role).join(" ")} ${Object.values(skills || {}).flat().join(" ")}`.toLowerCase();
 
-  if (/dynamics|power platform|dataverse|power apps|power automate|crm/i.test(allText)) {
+  // Specific domain matches ONLY when primary role or unambiguous skills match
+  if (/dynamics|power platform|dataverse|power apps|power automate|dynamics 365/i.test(allRolesAndSkills)) {
     roles.add("Senior Dynamics Developer");
     roles.add("Dynamics 365 Developer");
     roles.add("Power Platform Developer");
     roles.add("Power Platform Consultant");
     roles.add("Dynamics 365 CRM Technical Consultant");
-  } else if (/devops|platform|kubernetes|terraform|cloud infrastructure|sre/i.test(allText)) {
-    roles.add("Platform Engineer");
+  } else if (/\bdevops\b|kubernetes|terraform|ci\/cd|site reliability engineer|\bsre\b/i.test(allRolesAndSkills)) {
     roles.add("DevOps Engineer");
+    roles.add("Platform Engineer");
     roles.add("Cloud Engineer");
     roles.add("Infrastructure Engineer");
     roles.add("Site Reliability Engineer (SRE)");
-  } else if (/data scientist|machine learning|ml engineer|ai engineer/i.test(allText)) {
+  } else if (/nurse|nursing|healthcare|clinical|patient care/i.test(allRolesAndSkills)) {
+    roles.add("Staff Nurse");
+    roles.add("Senior Staff Nurse");
+    roles.add("Clinical Nurse Specialist");
+    roles.add("Registered General Nurse");
+  } else if (/accountant|accounting|finance|financial analyst|audit|bookkeeper/i.test(allRolesAndSkills)) {
+    roles.add("Financial Analyst");
+    roles.add("Senior Accountant");
+    roles.add("Management Accountant");
+    roles.add("Financial Controller");
+  } else if (/marketing|seo|content creator|copywriter|social media|brand strategist/i.test(allRolesAndSkills)) {
+    roles.add("Marketing Manager");
+    roles.add("Senior Marketing Specialist");
+    roles.add("Digital Marketing Lead");
+    roles.add("Brand Strategist");
+  } else if (/data scientist|machine learning|ml engineer|ai engineer/i.test(allRolesAndSkills)) {
     roles.add("Data Scientist");
     roles.add("Machine Learning Engineer");
     roles.add("AI Engineer");
     roles.add("Data Analyst");
     roles.add("Data Engineer");
-  } else if (/full stack|frontend|backend|software engineer|software developer|\.net|java|c#/i.test(allText)) {
+  } else if (/full stack|frontend|backend|software engineer|software developer|\.net|java|c#/i.test(allRolesAndSkills)) {
     roles.add("Senior Software Engineer");
     roles.add("Full Stack Developer");
     roles.add("Backend Developer");
     roles.add("Software Developer");
-  } else if (/product manager|project manager|scrum master|agile/i.test(allText)) {
-    roles.add("Product Manager");
+  } else if (/product manager|scrum master|agile delivery|project manager/i.test(allRolesAndSkills)) {
     roles.add("Technical Project Manager");
+    roles.add("Product Manager");
     roles.add("Scrum Master");
     roles.add("Agile Delivery Lead");
-  } else if (/qa|test|automation|sdet/i.test(allText)) {
+  } else if (/qa lead|automation test|sdet|quality assurance/i.test(allRolesAndSkills)) {
     roles.add("QA Lead");
     roles.add("Automation Test Engineer");
     roles.add("SDET");
     roles.add("Quality Assurance Engineer");
+  } else if (primaryRole) {
+    // Universal role hierarchy derivation from whatever profession the candidate has
+    roles.add(primaryRole);
+    if (!primaryRole.toLowerCase().startsWith("senior")) roles.add(`Senior ${primaryRole}`);
+    if (!primaryRole.toLowerCase().startsWith("lead")) roles.add(`Lead ${primaryRole}`);
+    roles.add(`${primaryRole} Specialist`);
+    roles.add(`${primaryRole} Consultant`);
   }
 
   return [...roles].filter(Boolean).slice(0, 5);
@@ -382,26 +414,47 @@ export function derivePostcode(location: string, text: string): string {
   if (postcodeMatch) return postcodeMatch[1].toUpperCase();
 
   const loc = (location || "").toLowerCase();
-  if (loc.includes("middlesbrough")) return "TS1";
+  if (loc.includes("middlesbrough") || loc.includes("teesside")) return "TS1";
+  if (loc.includes("stockton")) return "TS18";
   if (loc.includes("hartlepool")) return "TS24";
-  if (loc.includes("leeds")) return "LS1";
-  if (loc.includes("newcastle")) return "NE1";
-  if (loc.includes("manchester")) return "M1";
-  if (loc.includes("london")) return "EC1A";
-  if (loc.includes("birmingham")) return "B1";
+  if (loc.includes("darlington")) return "DL1";
+  if (loc.includes("sunderland")) return "SR1";
   if (loc.includes("durham")) return "DH1";
+  if (loc.includes("newcastle")) return "NE1";
+  if (loc.includes("york")) return "YO1";
+  if (loc.includes("leeds")) return "LS1";
+  if (loc.includes("sheffield")) return "S1";
+  if (loc.includes("manchester")) return "M1";
+  if (loc.includes("liverpool")) return "L1";
+  if (loc.includes("birmingham")) return "B1";
+  if (loc.includes("nottingham")) return "NG1";
+  if (loc.includes("leicester")) return "LE1";
+  if (loc.includes("coventry")) return "CV1";
+  if (loc.includes("bristol")) return "BS1";
+  if (loc.includes("reading")) return "RG1";
+  if (loc.includes("oxford")) return "OX1";
+  if (loc.includes("cambridge")) return "CB1";
+  if (loc.includes("southampton")) return "SO14";
+  if (loc.includes("cardiff")) return "CF10";
+  if (loc.includes("belfast")) return "BT1";
   if (loc.includes("edinburgh")) return "EH1";
   if (loc.includes("glasgow")) return "G1";
-  if (loc.includes("bristol")) return "BS1";
+  if (loc.includes("aberdeen")) return "AB10";
+  if (loc.includes("dundee")) return "DD1";
+  if (loc.includes("london")) return "EC1A";
   return "";
 }
 
 export function deriveMinSalary(headline: string, experiences: WorkExperience[] = []): number {
   const text = `${headline} ${(experiences || []).map(e => e.role).join(" ")}`.toLowerCase();
+  if (/nurse|nursing|healthcare|clinical|nhs/i.test(text)) {
+    if (/lead|senior|specialist|band 7|band 8/i.test(text)) return 45000;
+    return 35000;
+  }
   if (/lead|principal|architect|director|head/i.test(text)) return 85000;
   if (/senior/i.test(text)) return 70000;
   if (/junior|trainee|graduate|intern/i.test(text)) return 35000;
-  return 60000;
+  return 55000;
 }
 
 export function parseResumeDeterministically(rawText: string): ResumeParseResult {
@@ -410,7 +463,25 @@ export function parseResumeDeterministically(rawText: string): ResumeParseResult
   const firstContent = lines.filter(line => !contact.email || !line.includes(contact.email));
   const name = firstContent.find(line => line.length >= 3 && line.length <= 60 && !/^curriculum vitae|resume|cv$/i.test(line)) || "";
   const nameIndex = lines.indexOf(name);
-  const headline = lines.slice(nameIndex + 1).find(line => line.length < 90 && !/[|@]/.test(line) && !SECTION_NAMES.includes(line.toLowerCase().replace(/[:•-]/g, "").trim())) || "";
+
+  let headline = "";
+  if (nameIndex >= 0) {
+    for (let i = nameIndex + 1; i < Math.min(lines.length, nameIndex + 6); i++) {
+      const line = lines[i];
+      if (SECTION_NAMES.includes(line.toLowerCase().replace(/[:•-]/g, "").trim())) break;
+      const parts = line.split(/\s*[|·•]\s*/).map(p => p.trim()).filter(Boolean);
+      for (const part of parts) {
+        if (!part.includes("@") && !/\d{4,}/.test(part) && !/linkedin|github|portfolio|http/i.test(part) && part.length >= 3 && part.length < 80 && !/united kingdom|great britain|london|manchester/i.test(part)) {
+          if (/engineer|developer|architect|consultant|manager|lead|analyst|specialist|administrator|director|designer|scientist|researcher|officer|coordinator|accountant|executive|advisor|head|practitioner|nurse|associate|doctor|physician|therapist|clinician|technician|instructor|teacher|professor|trainer|assistant|recruiter|worker|surveyor|agent|chef/i.test(part) || (!headline && parts.length === 1)) {
+            headline = part;
+            break;
+          }
+        }
+      }
+      if (headline) break;
+    }
+  }
+
   const summaryLines = sectionSlice(lines, ["summary", "profile", "professional summary"]);
   const experiences = latexExperiences(rawText);
   if (!experiences.length) experiences.push(...plainExperiences(rawText));
@@ -431,7 +502,7 @@ export function parseResumeDeterministically(rawText: string): ResumeParseResult
   const derivedHeadline = headline || experiences[0]?.role || "";
   const targetRoles = deriveTargetRoles(derivedHeadline, experiences, groupedSkills.custom);
   const targetLocations = deriveTargetLocations(contact.location);
-  const postcode = derivePostcode(contact.location, rawText);
+  const postcode = contact.postcode || derivePostcode(contact.location, rawText);
   const minSalary = deriveMinSalary(derivedHeadline, experiences);
 
   const seenSkill = new Set<string>();
