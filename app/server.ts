@@ -1,6 +1,6 @@
 import { serve } from "bun";
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, copyFileSync } from "fs";
-import { join, resolve, relative, basename, isAbsolute } from "path";
+import { join, resolve, relative, basename, dirname, isAbsolute } from "path";
 import { tmpdir, homedir } from "os";
 import { spawnSync } from "child_process";
 import { createHash } from "crypto";
@@ -9,6 +9,12 @@ import { AIService } from "./ai_service";
 import { analyzeApplication } from "./application_engine";
 import { createLatexBackbone } from "./resume_engine";
 import { parseResumeDeterministically } from "./resume_parser";
+import { SponsorRegistry, assessSponsorship, matchesSponsorshipMode, type SponsorshipMode } from "./sponsorship";
+import { SearchConfigManager } from "./search_config";
+import {
+  searchAdzuna, searchArbeitnow, searchCvLibrary, searchGoogleJobs,
+  searchJobicy, searchReed, searchRemotive, type SourceJob, type SourceReport,
+} from "./job_sources";
 
 const PORT = Number(process.env.PORT || process.env.AI_JOB_SEARCH_PORT || 3333);
 const ROOT_DIR = process.env.AI_JOB_SEARCH_ROOT || process.cwd();
@@ -18,6 +24,8 @@ const CANDIDATE_PROFILE_FILE = join(ROOT_DIR, ".claude", "skills", "job-applicat
 
 const profilesManager = new ProfilesManager();
 const aiService = new AIService();
+const sponsorRegistry = new SponsorRegistry(ROOT_DIR);
+const searchConfigManager = new SearchConfigManager(ROOT_DIR);
 
 mkdirSync(join(ROOT_DIR, "job_scraper"), { recursive: true });
 mkdirSync(join(ROOT_DIR, "cv"), { recursive: true });
@@ -34,6 +42,42 @@ function isAllowedWorkspacePath(path: string): boolean {
 
 function safeSlug(value: string): string {
   return (value || "item").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "item";
+}
+
+function profileEvidenceText(profile: CandidateProfile): string {
+  return [
+    profile.sourceResume?.text || "",
+    profile.summary || "",
+    Object.values(profile.skills || {}).flat().join(" "),
+    ...(profile.experience || []).flatMap(item => [item.role, item.company, ...(item.bullets || [])]),
+    ...(profile.projects || []).flatMap(item => [item.name, item.tools, ...(item.bullets || [])]),
+  ].join("\n").toLowerCase();
+}
+
+function makeResumeConcise(latex: string): string {
+  let bulletCount = 0;
+  return latex.split("\n").filter(line => {
+    if (line.includes("\\resumeSubheading") || line.includes("\\resumeProjectHeading")) bulletCount = 0;
+    if (line.includes("\\resumeItem{")) {
+      bulletCount += 1;
+      return bulletCount <= 2;
+    }
+    return true;
+  }).join("\n");
+}
+
+function removeGroundedTerm(latex: string, term: string): string {
+  const needle = term.toLowerCase();
+  return latex.split("\n").filter(line => {
+    if (!line.toLowerCase().includes(needle)) return true;
+    return !(line.includes("\\resumeItem{") || (!line.startsWith("\\") && line.trim().length > 0));
+  }).join("\n");
+}
+
+function openSystemPath(filePath: string, reveal = false) {
+  if (process.platform === "darwin") return spawnSync("open", reveal ? ["-R", filePath] : [filePath]);
+  if (process.platform === "win32") return spawnSync("explorer.exe", reveal ? [`/select,${filePath}`] : [filePath]);
+  return spawnSync("xdg-open", [reveal ? dirname(filePath) : filePath]);
 }
 
 function extractPdfText(bytes: Uint8Array, fileName: string): string {
@@ -82,25 +126,6 @@ async function readResumeRequest(req: Request): Promise<{ text: string; fileName
   };
 }
 
-// Known A-rated UK Skilled Worker Licensed Sponsors (North East & Major Tech)
-const KNOWN_SPONSORS: Record<string, { status: string; license: string; notes: string }> = {
-  "opencast software": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "HQ in Newcastle Upon Tyne" },
-  "opencast": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "HQ in Newcastle Upon Tyne" },
-  "scott logic": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "HQ in Newcastle Upon Tyne (The Lumen)" },
-  "version 1": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "Offices in Newcastle & Edinburgh" },
-  "flutter uk&i": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "Current Employer (Leeds)" },
-  "sky betting & gaming": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "Leeds" },
-  "thoughtworks": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "Offices in Newcastle & Manchester" },
-  "accenture": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "Newcastle Advanced Tech Centre" },
-  "sage": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "HQ in Newcastle (Cobalt Park)" },
-  "dwp digital": { status: "Verified", license: "Public Sector (Civil Service)", notes: "Benton Park View, Newcastle" },
-  "balyasny asset management": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "London / Remote" },
-  "robinhood": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "London / Remote" },
-  "rowden": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "Defense & Cloud tech" },
-  "arq": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "London / Remote" },
-  "our future health uk": { status: "Verified", license: "A-Rated (Skilled Worker)", notes: "Remote / Hybrid" },
-};
-
 // Distance matrix from Hartlepool (approx road miles)
 function getDistanceFromHartlepool(locationStr: string): { miles: number; tag: string; isRemote: boolean } {
   const loc = (locationStr || "").toLowerCase();
@@ -123,14 +148,75 @@ function getDistanceFromHartlepool(locationStr: string): { miles: number; tag: s
   return { miles: 50, tag: locationStr || "United Kingdom", isRemote: false };
 }
 
-function checkSponsor(companyStr: string): { verified: boolean; label: string; badge: string } {
-  const comp = (companyStr || "").toLowerCase().trim();
-  for (const [key, val] of Object.entries(KNOWN_SPONSORS)) {
-    if (comp.includes(key)) {
-      return { verified: true, label: val.license, badge: "A-Rated Sponsor" };
+function checkSponsor(company: string, description = "") {
+  const assessment = assessSponsorship(sponsorRegistry.records(), company, description);
+  return {
+    verified: assessment.employer.verified,
+    label: assessment.employer.verified
+      ? [assessment.employer.rating, assessment.employer.route].filter(Boolean).join(" · ")
+      : "Not found on cached GOV.UK register",
+    badge: assessment.employer.verified ? "Licensed employer" : "Not verified",
+    assessment,
+  };
+}
+
+interface DiscoveredJob {
+  id: string;
+  title: string;
+  company: string;
+  url: string;
+  location: string;
+  postedDate?: string;
+  description?: string;
+  summary?: string;
+  skills?: string[];
+  salary?: string;
+  portal: string;
+  source: string;
+}
+
+function ingestDiscoveredJob(
+  seen: Record<string, any>,
+  job: DiscoveredJob,
+  profile: CandidateProfile,
+  sponsorshipMode: SponsorshipMode,
+): "added" | "enriched" | "filtered" | "unchanged" {
+  const description = String(job.description || "").trim();
+  const sponsorship = assessSponsorship(sponsorRegistry.records(), job.company, description);
+  if (!matchesSponsorshipMode(sponsorship, sponsorshipMode)) return "filtered";
+
+  const dedupKey = getJobDedupKey(job);
+  const existingKey = Object.keys(seen).find(key => getJobDedupKey(seen[key]) === dedupKey);
+  if (existingKey) {
+    if (description && (!seen[existingKey].full_jd || seen[existingKey].full_jd.length < description.length)) {
+      seen[existingKey].full_jd = description;
+      if (job.skills?.length) seen[existingKey].key_skills = job.skills.slice(0, 8);
+      return "enriched";
     }
+    return "unchanged";
   }
-  return { verified: false, label: "Check Register", badge: "Verification Needed" };
+
+  const analysis = description.length >= 80
+    ? analyzeApplication(profile, { company: job.company, role: job.title, location: job.location, fullJd: description, keySkills: job.skills || [] })
+    : null;
+  seen[job.id] = {
+    title: job.title,
+    company: job.company,
+    url: job.url,
+    location: job.location,
+    posted_date: job.postedDate || new Date().toISOString().slice(0, 10),
+    first_seen: new Date().toISOString().slice(0, 10),
+    fit: analysis?.verdict === "strong" ? "high" : analysis?.verdict === "possible" ? "medium" : "unscored",
+    fit_score: analysis?.overallScore || 0,
+    summary: job.summary || description.slice(0, 280),
+    full_jd: description,
+    key_skills: (job.skills || []).slice(0, 8),
+    salary: job.salary || "Not advertised",
+    status: "new",
+    portal: job.portal,
+    source: job.source,
+  };
+  return "added";
 }
 
 function readTracker(): Record<string, any> {
@@ -329,9 +415,11 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
     }
   }
 
-  if (!fullJd || fullJd.length < 50) {
-    fullJd = `Role: ${title} at ${company} in ${location}. Ingested directly from URL: ${targetUrl}. Requires cloud platform engineering, automated CI/CD pipelines, container orchestration, and team collaboration.`;
-  }
+  const activeProfile = profilesManager.getActiveProfile();
+  const analysis = fullJd.length >= 80
+    ? analyzeApplication(activeProfile, { company, role: title, location, fullJd, keySkills })
+    : null;
+  const sponsor = checkSponsor(company, fullJd);
 
   const newJob = {
     id: jobId,
@@ -342,12 +430,14 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
     status: "new",
     url: targetUrl,
     full_jd: fullJd,
-    key_skills: keySkills.length ? keySkills : ["Kubernetes", "AWS", "CI/CD", "Terraform", "Docker"],
+    key_skills: keySkills,
     date_scraped: new Date().toISOString(),
     source: "Instant URL Import",
     portal: "external-url",
-    sponsor_verified: true,
-    fit_score: 95
+    sponsor_verified: sponsor.verified,
+    sponsorship_status: sponsor.assessment.vacancyStatus,
+    sponsorship_evidence: sponsor.assessment.vacancyEvidence,
+    fit_score: analysis?.overallScore || 0
   };
 
   seen[jobId] = newJob;
@@ -514,7 +604,8 @@ serve({
 
       const jobsList = Object.entries(seen).map(([id, item]: [string, any]) => {
         const dist = profilesManager.calculateDistance(item.location || "", activeProfile);
-        const sponsor = checkSponsor(item.company || "");
+        const fullJd = item.full_jd || item.summary || "";
+        const sponsor = checkSponsor(item.company || "", fullJd);
         
         // Check if tracker has an entry via dedupKey, simpleKey, or normKey
         const itemDedupKey = getJobDedupKey(item);
@@ -537,7 +628,6 @@ serve({
         const cvFile = (tracked && tracked.cvFile) ? tracked.cvFile : (item.cv_file || "");
         const coverFile = (tracked && tracked.coverFile) ? tracked.coverFile : (item.cover_file || "");
 
-        const fullJd = item.full_jd || item.summary || "";
         const analysis = analyzeApplication(activeProfile, {
           company: item.company || "",
           role: item.title || "",
@@ -566,6 +656,10 @@ serve({
           sponsor_verified: sponsor.verified,
           sponsor_badge: sponsor.badge,
           sponsor_label: sponsor.label,
+          sponsorship_status: sponsor.assessment.vacancyStatus,
+          sponsorship_evidence: sponsor.assessment.vacancyEvidence,
+          sponsorship_employer: sponsor.assessment.employer.organisation || "",
+          sponsorship_source: sponsor.assessment.employer.source,
           status,
           cv_file: cvFile,
           cover_file: coverFile,
@@ -715,7 +809,7 @@ serve({
           projects: (parsed.projects as any) || [],
           education: (parsed.education as any) || [],
           certifications: (parsed.certifications as any) || [],
-          spokenLanguages: parsed.spokenLanguages || ["English"],
+          spokenLanguages: parsed.spokenLanguages || [],
           latexBackbone: createLatexBackbone(),
           profileVersion: 1,
           sourceResume: {
@@ -756,13 +850,61 @@ serve({
     if (url.pathname === "/api/ai/scenario" && req.method === "POST") {
       try {
         const body = await req.json();
-        const { prompt } = body;
+        const { prompt, jobId, currentTab } = body;
         if (!prompt || !prompt.trim()) {
           return new Response(JSON.stringify({ success: false, error: "Missing prompt" }), { status: 400 });
         }
 
         const activeProfile = profilesManager.getActiveProfile();
-        const outcome = await aiService.processScenario(prompt, activeProfile);
+        const outcome = await aiService.processScenario(prompt, activeProfile, { jobId, currentTab });
+
+        if (outcome.action === "unsupported") {
+          return new Response(JSON.stringify({ success: false, error: outcome.explanation }), { status: 422, headers: { "Content-Type": "application/json" } });
+        }
+
+        if (outcome.action === "edit_application") {
+          if (!jobId) {
+            return new Response(JSON.stringify({ success: false, error: "Open a job before asking Scenario AI to edit its application." }), { status: 422, headers: { "Content-Type": "application/json" } });
+          }
+          const seen = readSeenJobs();
+          const job = seen[jobId];
+          if (!job) {
+            return new Response(JSON.stringify({ success: false, error: "The open job is no longer in the saved feed. Refresh and select it again." }), { status: 404, headers: { "Content-Type": "application/json" } });
+          }
+          const edit = outcome.documentEdit!;
+          const term = edit.term?.trim();
+          if (edit.mode === "emphasize" && (!term || !profileEvidenceText(activeProfile).includes(term.toLowerCase()))) {
+            return new Response(JSON.stringify({ success: false, error: `The profile does not contain evidence for “${term || "that term"}”. Add verified evidence before emphasizing it.` }), { status: 422, headers: { "Content-Type": "application/json" } });
+          }
+          const fullJd = String(job.full_jd || job.summary || "").trim();
+          if (fullJd.length < 80) {
+            return new Response(JSON.stringify({ success: false, error: "Add the complete job description before editing this application." }), { status: 422, headers: { "Content-Type": "application/json" } });
+          }
+          const company = job.company || "Company";
+          const role = job.title || job.role || "Role";
+          const location = job.location || "";
+          const keySkills = [...(job.key_skills || [])];
+          if (edit.mode === "emphasize" && term) keySkills.unshift(term);
+          const cleanCompany = safeSlug(company).replace(/-/g, "_");
+          const cleanRole = safeSlug(role).replace(/-/g, "_");
+          const candidateSlug = safeSlug(activeProfile.name || "candidate").replace(/-/g, "_");
+          const cvPath = job.cv_file || `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
+          const coverPath = job.cover_file || `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
+          let cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd });
+          let coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd });
+          if (edit.mode === "concise") cvContent = makeResumeConcise(cvContent);
+          if (edit.mode === "remove" && term) {
+            cvContent = removeGroundedTerm(cvContent, term);
+            coverContent = removeGroundedTerm(coverContent, term);
+          }
+          if (edit.kind !== "cover") writeFileSync(join(ROOT_DIR, cvPath), cvContent, "utf-8");
+          if (edit.kind !== "cv") writeFileSync(join(ROOT_DIR, coverPath), coverContent, "utf-8");
+          const analysis = analyzeApplication(activeProfile, { company, role, location, keySkills, fullJd });
+          seen[jobId] = { ...job, cv_file: cvPath, cover_file: coverPath, status: "drafted", analysis, fit_score: analysis.overallScore };
+          saveSeenJobs(seen);
+          profilesManager.updateActiveProfileTracker(jobId, { status: "drafted", cvFile: cvPath, coverFile: coverPath, fitRating: String(analysis.overallScore), notes: `Scenario edit: ${prompt}` });
+          return new Response(JSON.stringify({ success: true, action: "edit_application", explanation: `Updated the open ${edit.kind === "cv" ? "resume" : edit.kind === "cover" ? "cover letter" : "application documents"}.`, cvPath, coverPath, cvContent, coverContent, analysis, fit_score: analysis.overallScore, status: "drafted" }), { headers: { "Content-Type": "application/json" } });
+        }
 
         // Apply profile updates if any (e.g. removing/adding certs, changing location)
         if (Object.keys(outcome.profileUpdates).length > 0) {
@@ -796,7 +938,7 @@ serve({
             action: "scrape_and_tailor",
             job: newJob,
             jobId: newJob.id,
-            explanation: `⚡ Ingested "${newJob.title} at ${newJob.company}" from URL. Tailoring application...`,
+            explanation: `Imported "${newJob.title} at ${newJob.company}" from the URL. Preparing the application.`,
             profileUpdates: outcome.profileUpdates,
             activeProfile: profilesManager.getActiveProfile()
           }), {
@@ -821,7 +963,7 @@ serve({
 
     // API: GET /api/ai/config (Get AI settings and status)
     if (url.pathname === "/api/ai/config" && req.method === "GET") {
-      const config = aiService.getConfig();
+      const config = aiService.getPublicConfig();
       const health = await aiService.checkHealth();
       const models = await aiService.getAvailableModels();
       return new Response(JSON.stringify({ config, health, models }), {
@@ -833,9 +975,9 @@ serve({
     if (url.pathname === "/api/ai/config" && req.method === "POST") {
       try {
         const body = await req.json();
-        const updated = aiService.saveConfig(body);
+        aiService.saveConfig(body);
         const health = await aiService.checkHealth();
-        return new Response(JSON.stringify({ success: true, config: updated, health }), {
+        return new Response(JSON.stringify({ success: true, config: aiService.getPublicConfig(), health }), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err: any) {
@@ -861,16 +1003,76 @@ serve({
       }
     }
 
+    // API: search-source configuration. API keys are write-only and never returned.
+    if (url.pathname === "/api/search/config" && req.method === "GET") {
+      return Response.json({
+        config: searchConfigManager.getPublic(),
+        sponsorRegistry: sponsorRegistry.status(),
+        providers: {
+          linkedin: "Public LinkedIn search",
+          freehire: "Direct company ATS boards",
+          cvLibrary: "CV-Library official API (partner key required)",
+          reed: "Reed API (key required)",
+          googleJobs: "Google Jobs via SerpAPI (third-party key required)",
+          adzuna: "Adzuna official API (free credentials required)",
+          jobicy: "Jobicy public API",
+          arbeitnow: "Arbeitnow public API",
+          remotive: "Remotive public API (24-hour delayed remote jobs)",
+        },
+      });
+    }
+
+    if (url.pathname === "/api/search/config" && req.method === "POST") {
+      try {
+        const body = await req.json() as any;
+        const mode = body.sponsorshipMode;
+        if (mode && !["all", "licensed", "explicit"].includes(mode)) {
+          return Response.json({ success: false, error: "Invalid sponsorship mode" }, { status: 400 });
+        }
+        const allowedSources = searchConfigManager.get().sources;
+        const sources = body.sources && typeof body.sources === "object"
+          ? Object.fromEntries(Object.keys(allowedSources).map(key => [key, Boolean(body.sources[key])]))
+          : undefined;
+        searchConfigManager.save({
+          ...(mode ? { sponsorshipMode: mode } : {}),
+          ...(sources ? { sources: sources as any } : {}),
+          ...(typeof body.cvLibraryApiKey === "string" ? { cvLibraryApiKey: body.cvLibraryApiKey.trim() } : {}),
+          ...(typeof body.reedApiKey === "string" ? { reedApiKey: body.reedApiKey.trim() } : {}),
+          ...(typeof body.serpApiKey === "string" ? { serpApiKey: body.serpApiKey.trim() } : {}),
+          ...(typeof body.adzunaAppId === "string" ? { adzunaAppId: body.adzunaAppId.trim() } : {}),
+          ...(typeof body.adzunaAppKey === "string" ? { adzunaAppKey: body.adzunaAppKey.trim() } : {}),
+        });
+        return Response.json({ success: true, config: searchConfigManager.getPublic(), sponsorRegistry: sponsorRegistry.status() });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 400 });
+      }
+    }
+
+    if (url.pathname === "/api/sponsors/refresh" && req.method === "POST") {
+      const result = await sponsorRegistry.refresh(true);
+      return Response.json({ success: !result.error, ...result }, { status: result.error && !result.count ? 502 : 200 });
+    }
+
     // API: POST /api/scrape (Trigger Automated Live Search)
     if (url.pathname === "/api/scrape" && req.method === "POST") {
       try {
         console.log("Starting automated live search across priority locations...");
+        const scrapeRequest = await req.json().catch(() => ({})) as { query?: string; location?: string; minSalary?: number; sponsorshipMode?: SponsorshipMode };
         const activeProfile = profilesManager.getActiveProfile();
-        const targetRoles = (activeProfile?.targetRoles && activeProfile.targetRoles.length > 0)
+        const config = searchConfigManager.get();
+        const sponsorshipMode = ["all", "licensed", "explicit"].includes(scrapeRequest.sponsorshipMode || "")
+          ? scrapeRequest.sponsorshipMode!
+          : config.sponsorshipMode;
+        const registry = await sponsorRegistry.refresh(false);
+        const targetRoles = scrapeRequest.query
+          ? [scrapeRequest.query]
+          : (activeProfile?.targetRoles && activeProfile.targetRoles.length > 0)
           ? activeProfile.targetRoles.slice(0, 4)
           : [activeProfile?.headline || "Software Engineer"];
 
-        const targetLocations = (activeProfile?.targetLocations && activeProfile.targetLocations.length > 0)
+        const targetLocations = scrapeRequest.location
+          ? [scrapeRequest.location]
+          : (activeProfile?.targetLocations && activeProfile.targetLocations.length > 0)
           ? activeProfile.targetLocations.slice(0, 3)
           : [activeProfile?.location || "United Kingdom"];
 
@@ -888,67 +1090,50 @@ serve({
           liQueries.push({ q: targetRoles[0], l: "Remote, United Kingdom" });
         }
 
-        const liCliPath = join(ROOT_DIR, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
         let addedCount = 0;
         let enrichedCount = 0;
+        let filteredCount = 0;
         const seen = readSeenJobs();
-
-        // Top candidate skills for default tagging if posting has none
         const activeSkills = Object.values(activeProfile?.skills || {})
           .flat()
           .filter(Boolean)
           .slice(0, 6) as string[];
-        const defaultSkills = activeSkills.length ? activeSkills : ["Software Engineering", "Full Stack", "Problem Solving"];
+        const reports: SourceReport[] = [];
+        const countResult = (result: ReturnType<typeof ingestDiscoveredJob>) => {
+          if (result === "added") addedCount++;
+          else if (result === "enriched") enrichedCount++;
+          else if (result === "filtered") filteredCount++;
+        };
 
-        for (const query of liQueries) {
-          const res = spawnSync("bun", ["run", liCliPath, "search", "-q", query.q, "-l", query.l, "--jobage", "7", "--limit", "8"], {
-            cwd: ROOT_DIR,
-            encoding: "utf-8"
-          });
-
-          if (res.status === 0 && res.stdout) {
+        if (config.sources.linkedin) {
+          const liCliPath = join(ROOT_DIR, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
+          let found = 0;
+          let successfulQueries = 0;
+          for (const query of liQueries) {
+            const res = spawnSync("bun", ["run", liCliPath, "search", "-q", query.q, "-l", query.l, "--jobage", "7", "--limit", "8"], { cwd: ROOT_DIR, encoding: "utf-8" });
+            if (res.status !== 0 || !res.stdout) continue;
             try {
               const data = JSON.parse(res.stdout);
-              if (data.results && Array.isArray(data.results)) {
-                for (const r of data.results) {
-                  const jobId = `li_${r.id}`;
-                  const candidate = { id: jobId, title: r.title, company: r.company, url: r.url };
-                  const candKey = getJobDedupKey(candidate);
-                  
-                  const existingKey = Object.keys(seen).find((k: string) => getJobDedupKey(seen[k]) === candKey);
-
-                  if (!existingKey && !seen[jobId]) {
-                    const sponsor = checkSponsor(r.company);
-                    const fullJd = fetchJobDescription({ url: r.url, portal: "linkedin-search" }) || "";
-                    seen[jobId] = {
-                      title: r.title,
-                      company: r.company,
-                      url: r.url,
-                      location: r.location,
-                      posted_date: r.date,
-                      first_seen: new Date().toISOString().split("T")[0],
-                      fit: "high",
-                      fit_score: sponsor.verified ? 94 : 88,
-                      summary: `Live posting from ${r.company} for ${r.title} in ${r.location}.`,
-                      full_jd: fullJd,
-                      key_skills: defaultSkills,
-                      status: "new",
-                      portal: "linkedin-search",
-                      source: "cli"
-                    };
-                    addedCount++;
-                  }
-                }
+              successfulQueries++;
+              for (const item of Array.isArray(data.results) ? data.results : []) {
+                found++;
+                const fullJd = fetchJobDescription({ url: item.url, portal: "linkedin-search" }) || "";
+                countResult(ingestDiscoveredJob(seen, {
+                  id: `li_${item.id}`, title: item.title, company: item.company, url: item.url,
+                  location: item.location || "United Kingdom", postedDate: item.date, description: fullJd,
+                  skills: activeSkills, portal: "linkedin-search", source: "cli",
+                }, activeProfile, sponsorshipMode));
               }
-            } catch (err) {
-              console.error("Error parsing LinkedIn scrape result:", err);
-            }
+            } catch {}
           }
-        }
+          reports.push({ source: "LinkedIn", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : "Search returned no readable response" });
+        } else reports.push({ source: "LinkedIn", status: "skipped", found: 0, reason: "Disabled" });
 
-        // 2. Freehire ATS Aggregator Search (~50 ATS boards: Greenhouse, Lever, Ashby, Workable, Workday)
-        const freehireCliPath = join(ROOT_DIR, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
-        if (existsSync(freehireCliPath)) {
+        if (config.sources.freehire) {
+          const freehireCliPath = join(ROOT_DIR, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
+          let found = 0;
+          let successfulQueries = 0;
+          if (existsSync(freehireCliPath)) {
           const freehireArgsList: Array<string[]> = [];
           for (const role of targetRoles.slice(0, 3)) {
             freehireArgsList.push(["search", "-q", role, "--country", "GB", "--jobage", "7", "--limit", "15"]);
@@ -963,7 +1148,7 @@ serve({
             freehireArgsList.push(["search", "--skill", candidateSkillsFaceted.join(","), "--country", "GB", "--jobage", "7", "--limit", "15"]);
           }
 
-          for (const args of freehireArgsList) {
+            for (const args of freehireArgsList) {
             const res = spawnSync("bun", ["run", freehireCliPath, ...args], {
               cwd: ROOT_DIR,
               encoding: "utf-8"
@@ -972,59 +1157,70 @@ serve({
             if (res.status === 0 && res.stdout) {
               try {
                 const data = JSON.parse(res.stdout);
+                successfulQueries++;
                 const items = data.results || data.jobs || [];
                 if (Array.isArray(items)) {
                   for (const job of items) {
+                    found++;
                     const cleanSlug = (job.slug || job.id || "").replace(/[^a-zA-Z0-9_-]/g, "_");
-                    const jobId = `fh_${cleanSlug}`;
                     const compName = job.company || job.company_name || "Tech Company";
-                    const candidate = { id: jobId, title: job.title, company: compName, url: job.url };
-                    const candKey = getJobDedupKey(candidate);
-
-                    const existingKey = Object.keys(seen).find((k: string) => getJobDedupKey(seen[k]) === candKey);
-
-                    if (!existingKey && !seen[jobId]) {
-                      const sponsor = checkSponsor(compName);
-                      seen[jobId] = {
-                        title: job.title,
-                        company: compName,
-                        url: job.url,
-                        location: job.location || (job.work_mode === "remote" ? "Remote (UK)" : "United Kingdom"),
-                        posted_date: job.date || (job.posted_at ? job.posted_at.split("T")[0] : new Date().toISOString().split("T")[0]),
-                        first_seen: new Date().toISOString().split("T")[0],
-                        fit: "high",
-                        fit_score: sponsor.verified ? 95 : 89,
-                        summary: job.summary || `Live direct ATS posting for ${job.title} at ${compName}.`,
-                        full_jd: job.description || "",
-                        key_skills: (job.skills && job.skills.length > 0) ? job.skills.slice(0, 6) : ["AWS", "Kubernetes", "IaC", "DevOps"],
-                        salary: job.salary_min ? `£${job.salary_min.toLocaleString()} - £${(job.salary_max || job.salary_min * 1.3).toLocaleString()}` : "Competitive Market Rate",
-                        status: "new",
-                        portal: "freehire-ats",
-                        source: "cli"
-                      };
-                      addedCount++;
-                    } else if (existingKey) {
-                      // Deduplication: Already exists on another portal (e.g. LinkedIn cross-posting)
-                      // Enrich existing job with full ATS job description and skills without duplicating
-                      if (job.description && (!seen[existingKey].full_jd || seen[existingKey].full_jd.length < job.description.length)) {
-                        seen[existingKey].full_jd = job.description;
-                        enrichedCount++;
-                      }
-                      if (!seen[existingKey].key_skills || seen[existingKey].key_skills.length < 3) {
-                        seen[existingKey].key_skills = (job.skills && job.skills.length > 0) ? job.skills.slice(0, 6) : seen[existingKey].key_skills;
-                      }
-                    }
+                    countResult(ingestDiscoveredJob(seen, {
+                      id: `fh_${cleanSlug}`, title: job.title, company: compName, url: job.url,
+                      location: job.location || (job.work_mode === "remote" ? "Remote (UK)" : "United Kingdom"),
+                      postedDate: job.date || job.posted_at?.split("T")[0], description: job.description || "",
+                      summary: job.summary || "", skills: job.skills || [],
+                      salary: job.salary_min ? `£${job.salary_min.toLocaleString()} - £${(job.salary_max || job.salary_min).toLocaleString()}` : undefined,
+                      portal: "freehire-ats", source: "cli",
+                    }, activeProfile, sponsorshipMode));
                   }
                 }
               } catch (err) {
                 console.error("Error parsing Freehire result:", err);
               }
             }
+            }
+          }
+          reports.push({ source: "Direct ATS", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : "Search returned no readable response" });
+        } else reports.push({ source: "Direct ATS", status: "skipped", found: 0, reason: "Disabled" });
+
+        const apiLocation = targetLocations.find(location => location.toLowerCase() !== "remote") || "United Kingdom";
+        const apiSources: Array<{ enabled: boolean; name: string; keyReady: boolean; search: (query: string, location: string) => Promise<SourceJob[]> }> = [
+          { enabled: config.sources.cvLibrary, name: "CV-Library", keyReady: Boolean(config.cvLibraryApiKey), search: (q, l) => searchCvLibrary(config, q, l) },
+          { enabled: config.sources.reed, name: "Reed", keyReady: Boolean(config.reedApiKey), search: (q, l) => searchReed(config, q, l) },
+          { enabled: config.sources.googleJobs, name: "Google Jobs", keyReady: Boolean(config.serpApiKey), search: (q, l) => searchGoogleJobs(config, q, l) },
+          { enabled: config.sources.adzuna, name: "Adzuna", keyReady: Boolean(config.adzunaAppId && config.adzunaAppKey), search: (q, l) => searchAdzuna(config, q, l) },
+          { enabled: config.sources.jobicy, name: "Jobicy", keyReady: true, search: (q, l) => searchJobicy(config, q, l) },
+          { enabled: config.sources.arbeitnow, name: "Arbeitnow", keyReady: true, search: (q, l) => searchArbeitnow(config, q, l) },
+          { enabled: config.sources.remotive, name: "Remotive", keyReady: true, search: (q, l) => searchRemotive(config, q, l) },
+        ];
+        for (const provider of apiSources) {
+          if (!provider.enabled) {
+            reports.push({ source: provider.name, status: "skipped", found: 0, reason: "Disabled" });
+            continue;
+          }
+          if (!provider.keyReady) {
+            reports.push({ source: provider.name, status: "skipped", found: 0, reason: "API key not configured" });
+            continue;
+          }
+          try {
+            const jobs = (await Promise.all(targetRoles.slice(0, 2).map(role => provider.search(role, apiLocation)))).flat();
+            for (const job of jobs) countResult(ingestDiscoveredJob(seen, {
+              id: `${job.portal}_${job.externalId}`, title: job.title, company: job.company, url: job.url,
+              location: job.location, postedDate: job.postedDate, description: job.description,
+              salary: job.salary, portal: job.portal, source: "api",
+            }, activeProfile, sponsorshipMode));
+            reports.push({ source: provider.name, status: "ok", found: jobs.length });
+          } catch (error: any) {
+            reports.push({ source: provider.name, status: "failed", found: 0, reason: error.message });
           }
         }
 
         saveSeenJobs(seen);
-        return new Response(JSON.stringify({ success: true, addedCount }), {
+        return new Response(JSON.stringify({
+          success: true, addedCount, enrichedCount, filteredCount, sponsorshipMode,
+          sponsorRegistry: registry, sources: reports,
+          query: scrapeRequest.query || null, location: scrapeRequest.location || null,
+        }), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err: any) {
@@ -1056,9 +1252,8 @@ serve({
             saveSeenJobs(seen);
           }
         }
-        if (fullJd.length < 40) {
-          const defaultFocus = keySkills.length ? keySkills.join(", ") : (activeProfile.targetRoles || []).join(", ") || "core technical requirements";
-          fullJd = `Role: ${role} at ${company} in ${location}. Focus competencies and requirements: ${defaultFocus}. High quality delivery, production reliability, and cross-functional collaboration.`;
+        if (fullJd.length < 80) {
+          return new Response(JSON.stringify({ success: false, error: "Add the complete job description before tailoring. A title and skill list are not enough for a trustworthy ATS analysis." }), { status: 422, headers: { "Content-Type": "application/json" } });
         }
         const analysis = analyzeApplication(activeProfile, { company, role, location, keySkills, fullJd });
         if (!force && (analysis.gates.eligibility.verdict === "FAIL" || analysis.gates.language.verdict === "FAIL")) {
@@ -1095,15 +1290,8 @@ serve({
           coverContent = readFileSync(coverFullPath, "utf-8");
         }
 
-        // Re-score application with tailored content (capturing targeted summary and aligned title)
-        const summaryMatch = cvContent.match(/\\section\{Summary\}[\s\S]*?\\small\{([\s\S]*?)\}/i);
-        const tailoredSummary = summaryMatch ? summaryMatch[1].replace(/\\([&%$#_{}])/g, "$1").trim() : activeProfile.summary;
-        const tailoredProfile = {
-          ...activeProfile,
-          headline: role,
-          summary: tailoredSummary
-        };
-        const tailoredAnalysis = analyzeApplication(tailoredProfile, { company, role, location, keySkills, fullJd });
+        // Rewriting does not create new evidence, so it must not inflate the ATS score.
+        const tailoredAnalysis = analysis;
 
         // Update Tracker with tailored fit rating
         updateTracker(company, role, "drafted", cvPath, coverPath, tailoredAnalysis.overallScore);
@@ -1290,7 +1478,7 @@ serve({
       });
     }
 
-    // API: POST /api/open-file (Open file in macOS Preview or system default viewer)
+    // API: POST /api/open-file (Open file in the system default viewer)
     if (url.pathname === "/api/open-file" && req.method === "POST") {
       try {
         const body = await req.json();
@@ -1300,7 +1488,7 @@ serve({
         }
         const fullPath = resolve(ROOT_DIR, docPath);
         if (existsSync(fullPath)) {
-          spawnSync("open", [fullPath]);
+          openSystemPath(fullPath);
           return new Response(JSON.stringify({ success: true, message: "File opened in system viewer" }), {
             headers: { "Content-Type": "application/json" }
           });
@@ -1311,7 +1499,7 @@ serve({
       }
     }
 
-    // API: POST /api/reveal-file (Reveal file in macOS Finder)
+    // API: POST /api/reveal-file (Reveal file in the system file browser)
     if (url.pathname === "/api/reveal-file" && req.method === "POST") {
       try {
         const body = await req.json();
@@ -1321,8 +1509,8 @@ serve({
         }
         const fullPath = resolve(ROOT_DIR, docPath);
         if (existsSync(fullPath)) {
-          spawnSync("open", ["-R", fullPath]);
-          return new Response(JSON.stringify({ success: true, message: "File revealed in Finder" }), {
+          openSystemPath(fullPath, true);
+          return new Response(JSON.stringify({ success: true, message: "File shown in system file browser" }), {
             headers: { "Content-Type": "application/json" }
           });
         }
@@ -1352,11 +1540,11 @@ serve({
         const targetPath = join(downloadsDir, targetFilename);
         copyFileSync(fullSourcePath, targetPath);
 
-        // Optionally open in Preview or reveal in Finder
+        // Optionally open the file or reveal it in the system file browser.
         if (body.open) {
-          spawnSync("open", [targetPath]);
+          openSystemPath(targetPath);
         } else {
-          spawnSync("open", ["-R", targetPath]);
+          openSystemPath(targetPath, true);
         }
 
         return new Response(JSON.stringify({
@@ -1382,7 +1570,11 @@ serve({
         total_discovered: all.length,
         near_hartlepool: all.filter((j: any) => profilesManager.calculateDistance(j.location || "", activeProfile).miles <= (activeProfile.preferredRadiusMiles || 70) && !profilesManager.calculateDistance(j.location || "", activeProfile).isRemote).length,
         remote_uk: all.filter((j: any) => profilesManager.calculateDistance(j.location || "", activeProfile).isRemote).length,
-        sponsors_verified: all.filter((j: any) => checkSponsor(j.company || "").verified).length,
+        sponsors_verified: all.filter((j: any) => checkSponsor(j.company || "", j.full_jd || j.summary || "").verified).length,
+        sponsorship_explicit: all.filter((j: any) => {
+          const sponsor = checkSponsor(j.company || "", j.full_jd || j.summary || "");
+          return sponsor.verified && sponsor.assessment.vacancyStatus === "offered";
+        }).length,
         drafted: all.filter((j: any) => j.status === "drafted").length,
         applied: Object.values(tracker).filter((t: any) => t.status === "applied").length,
         activeCandidate: activeProfile.name

@@ -7,6 +7,12 @@ APP_NAME="AI Job Search Studio"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 DMG_PATH="$DIST_DIR/AI-Job-Search-Studio.dmg"
 STAGING_DIR="$DIST_DIR/dmg_staging"
+HOST_ARCH="$(uname -m)"
+if [ "$HOST_ARCH" = "x86_64" ]; then
+    SWIFT_TARGET="x86_64-apple-macosx12.0"
+else
+    SWIFT_TARGET="arm64-apple-macosx12.0"
+fi
 
 echo "=========================================================="
 echo "🍏 Building Native macOS Cocoa .app & DMG for AI Job Search"
@@ -60,7 +66,7 @@ echo "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
 # 2. Compile native Swift Cocoa binary with WebKit and real Dock integration
 echo "Compiling native Swift binary..."
-swiftc -O -framework Cocoa -framework WebKit \
+swiftc -target "$SWIFT_TARGET" -O -framework Cocoa -framework WebKit \
     "$REPO_DIR/native_app/main.swift" \
     -o "$APP_BUNDLE/Contents/MacOS/AI Job Search Studio"
 
@@ -111,7 +117,9 @@ if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
 }
 SWIFTEOF
 
-swift "$DIST_DIR/generate_icon.swift"
+swiftc -target "$SWIFT_TARGET" -framework Cocoa "$DIST_DIR/generate_icon.swift" -o "$DIST_DIR/generate_icon"
+(cd "$REPO_DIR" && "$DIST_DIR/generate_icon")
+rm "$DIST_DIR/generate_icon"
 rm "$DIST_DIR/generate_icon.swift"
 
 if [ -f "$DIST_DIR/icon_1024.png" ]; then

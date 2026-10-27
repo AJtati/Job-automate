@@ -42,6 +42,15 @@ describe("resume backbone pipeline", () => {
     expect(JSON.stringify(result.profile)).not.toContain("Cloud Systems Ltd");
   });
 
+  test("groups a conventional unlabelled skills line and reads a contact location", () => {
+    const plain = `Alex Taylor\nSenior Platform Engineer\nalex@example.com | London, United Kingdom\n\nSKILLS\nAWS, Kubernetes, Terraform, Python`;
+    const result = parseResumeDeterministically(plain);
+    expect(result.profile.location).toBe("London, United Kingdom");
+    expect(result.profile.skills?.cloud).toContain("AWS");
+    expect(result.profile.skills?.devops).toEqual(expect.arrayContaining(["Kubernetes", "Terraform"]));
+    expect(result.profile.skills?.languages).toContain("Python");
+  });
+
   test("renders ATS-readable LaTeX from the persistent backbone", () => {
     const parsed = parseResumeDeterministically(latex).profile as CandidateProfile;
     const profile: CandidateProfile = { id:"jordan", name:parsed.name!, headline:parsed.headline!, email:parsed.email!, phone:parsed.phone||"", location:"London", postcode:"", linkedin:"", github:"", visaSponsorshipRequired:false, targetRoles:["Platform Engineer"], targetLocations:["London"], preferredRadiusMiles:30, minSalary:0, skills:parsed.skills!, experience:parsed.experience!, education:parsed.education||[], certifications:[], latexBackbone:createLatexBackbone() };

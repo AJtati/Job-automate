@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <link rel="icon" href="data:,">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI Job Search Studio — Multi-Profile & Scenario AI</title>
@@ -41,8 +42,8 @@
       <div class="titlebar-center">
         <button class="ai-status-pill" id="btnAiSettings" title="Configure AI engine (Ollama / Cloud)">
           <span class="ai-status-dot online" id="aiStatusDot"></span>
-          <span class="ai-status-text" id="aiStatusText">AI: Ollama (qwen2.5-coder)</span>
-          <span class="ai-gear-icon">⚙️</span>
+          <span class="ai-status-text" id="aiStatusText">Built-in · local</span>
+          <span class="ai-gear-icon" aria-hidden="true">…</span>
         </button>
       </div>
 
@@ -55,6 +56,7 @@
           <span id="scrapeSpinner" style="display: none;">⏳</span>
           <span id="scrapeLabel">⚡ Run Daily Scrape</span>
         </button>
+        <button class="btn-secondary" id="btnSearchSettings" title="Choose job sources and sponsorship verification">Sources</button>
         <button class="btn-secondary" id="btnRefresh" title="Refresh job feed">🔄</button>
       </div>
     </header>
@@ -63,23 +65,23 @@
     <div class="scenario-bar">
       <div class="scenario-bar-inner">
         <div class="scenario-icon-tag">
-          <span class="scenario-sparkle">✨</span>
-          <span class="scenario-tag-label">Scenario AI</span>
+          <span class="scenario-mark" aria-hidden="true">AI</span>
+          <span class="scenario-tag-label">Command</span>
         </div>
-        <input type="text" id="scenarioInput" placeholder="Prompt a scenario: 'Moved to Manchester', 'Only roles >£85k', 'I got CKA certified', 'Lead roles only'..." />
+        <input type="text" id="scenarioInput" aria-describedby="scenarioStatus" placeholder="Search roles, update profile facts, or edit the open CV…" />
         <button class="btn-scenario-run" id="btnScenarioRun">
-          <span id="scenarioSpinner" style="display: none;">⏳</span>
-          <span id="scenarioBtnText">Run ↵</span>
+          <span id="scenarioSpinner" class="scenario-progress" style="display: none;" aria-hidden="true"></span>
+          <span id="scenarioBtnText">Run</span>
         </button>
       </div>
       <div class="scenario-chips-row">
-        <span class="chip-label">Quick Scenarios:</span>
-        <button class="scenario-chip" data-prompt="I moved to Manchester, United Kingdom, focus on hybrid roles near Manchester">📍 Manchester Hybrid</button>
-        <button class="scenario-chip" data-prompt="Focus on roles with minimum salary >£85,000">💰 Salary >£85k</button>
-        <button class="scenario-chip" data-prompt="Target Lead / Staff Platform Engineer roles">🎯 Target Lead/Staff</button>
-        <button class="scenario-chip" data-prompt="I earned CKA certification, add Kubernetes CKA to my skills">🎓 Add CKA Cert</button>
-        <button class="scenario-chip" data-prompt="Filter feed to fully remote roles only">🌐 Remote Only</button>
-        <button class="scenario-chip" data-prompt="Reset home base to London, United Kingdom (EC1A)">🔄 Reset to London</button>
+        <span class="chip-label">Examples</span>
+        <button class="scenario-chip" data-prompt="Search for Senior Platform Engineer roles in Manchester">Search Manchester roles</button>
+        <button class="scenario-chip" data-prompt="Focus on roles with minimum salary >£85,000">Salary above £85k</button>
+        <button class="scenario-chip" data-prompt="Search for Lead or Staff Platform Engineer roles">Search Lead / Staff</button>
+        <button class="scenario-chip" data-prompt="I earned CKA certification, add Kubernetes CKA to my skills">Add CKA</button>
+        <button class="scenario-chip" data-prompt="Filter feed to fully remote roles only">Remote only</button>
+        <span class="scenario-status" id="scenarioStatus" role="status">Uses local rules unless a model is connected.</span>
       </div>
     </div>
 
@@ -95,6 +97,7 @@
           <div class="profile-role" id="sidebarProfileRole">Cloud & Platform Engineer</div>
           <div class="profile-location-tag" id="sidebarProfileLocation">📍 London, United Kingdom</div>
           <div class="profile-visa" id="sidebarProfileVisa">🛡️ Skilled Worker Sponsor Required</div>
+          <div class="profile-source" id="sidebarResumeSource">No source résumé stored</div>
           <button class="btn-sidebar-upload" id="btnSidebarUploadResume">📄 Upload / Import Candidate Resume</button>
         </div>
 
@@ -117,7 +120,7 @@
             <span class="nav-badge" id="countNear">0</span>
           </li>
           <li class="nav-item" data-filter="uk_hybrid_sponsored">
-            <span class="nav-item-left">🇬🇧 Nationwide (Sponsored)</span>
+            <span class="nav-item-left">🇬🇧 Nationwide · Licensed</span>
             <span class="nav-badge" id="countUkHybridSponsored">0</span>
           </li>
         </ul>
@@ -133,8 +136,12 @@
             <span class="nav-badge" id="countApplied">0</span>
           </li>
           <li class="nav-item" data-filter="sponsor_verified">
-            <span class="nav-item-left">🛡️ Verified A-Sponsors</span>
+            <span class="nav-item-left">🛡️ Licensed Employers</span>
             <span class="nav-badge" id="countSponsors">0</span>
+          </li>
+          <li class="nav-item" data-filter="sponsorship_explicit">
+            <span class="nav-item-left">✓ Sponsorship Stated</span>
+            <span class="nav-badge" id="countExplicitSponsors">0</span>
           </li>
         </ul>
 
@@ -507,6 +514,55 @@
               <button type="button" class="btn-primary" id="btnSaveAiConfig">💾 Save Configuration</button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Job sources and sponsorship checks -->
+  <div class="modal-backdrop" id="searchConfigModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Search sources</h3>
+        <button class="modal-close-btn" id="btnCloseSearchConfig" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-intro">Choose where searches run. Sources needing a partner key stay disabled until configured.</p>
+        <div class="form-group checkbox-group source-options">
+          <label><input type="checkbox" id="sourceLinkedin" checked disabled><span><b>LinkedIn · Core</b><small>Built-in public job search; always enabled</small></span></label>
+          <label><input type="checkbox" id="sourceFreehire" checked disabled><span><b>Direct company ATS · Core</b><small>Built-in employer-board search; always enabled</small></span></label>
+          <label><input type="checkbox" id="sourceCvLibrary"><span><b>CV-Library</b><small>Official partner API</small></span></label>
+          <label><input type="checkbox" id="sourceReed"><span><b>Reed</b><small>Official API</small></span></label>
+          <label><input type="checkbox" id="sourceGoogleJobs"><span><b>Google Jobs</b><small>Via SerpAPI; this is a third-party service</small></span></label>
+          <label><input type="checkbox" id="sourceAdzuna"><span><b>Adzuna</b><small>Official UK API; free credentials required</small></span></label>
+          <label><input type="checkbox" id="sourceJobicy"><span><b>Jobicy</b><small>Free recent remote-jobs API</small></span></label>
+          <label><input type="checkbox" id="sourceArbeitnow"><span><b>Arbeitnow</b><small>Free European jobs API</small></span></label>
+          <label><input type="checkbox" id="sourceRemotive"><span><b>Remotive</b><small>Free remote-jobs API; listings delayed 24 hours</small></span></label>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-group"><label>CV-Library API key</label><input type="password" id="cvLibraryApiKey" placeholder="Leave blank to keep saved key"></div>
+          <div class="form-group"><label>Reed API key</label><input type="password" id="reedApiKey" placeholder="Leave blank to keep saved key"></div>
+        </div>
+        <div class="form-group"><label>SerpAPI key for Google Jobs</label><input type="password" id="serpApiKey" placeholder="Leave blank to keep saved key"></div>
+        <div class="form-grid-2">
+          <div class="form-group"><label>Adzuna app ID</label><input type="password" id="adzunaAppId" placeholder="Leave blank to keep saved ID"></div>
+          <div class="form-group"><label>Adzuna app key</label><input type="password" id="adzunaAppKey" placeholder="Leave blank to keep saved key"></div>
+        </div>
+        <div class="form-group">
+          <label>Sponsorship results</label>
+          <select id="sponsorshipMode">
+            <option value="all">All jobs</option>
+            <option value="licensed">Employer is on the GOV.UK licensed-sponsor register</option>
+            <option value="explicit">Vacancy explicitly says sponsorship is offered</option>
+          </select>
+        </div>
+        <div class="search-verification-note">
+          <b>Important:</b> a licensed employer does not guarantee that a specific vacancy offers sponsorship. “Explicit” requires both a register match and positive wording in the job description.
+          <div id="sponsorRegistryStatus">Sponsor register not loaded.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" id="btnRefreshSponsors">Refresh GOV.UK register</button>
+          <button type="button" class="btn-primary" id="btnSaveSearchConfig">Save sources</button>
         </div>
       </div>
     </div>

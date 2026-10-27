@@ -118,8 +118,8 @@ const TECH_TERMS: Record<string, string[]> = {
 };
 
 const BEHAVIOR_TERMS: Record<string, string[]> = {
-  Collaboration: ["collaborat", "cross-functional", "stakeholder"],
-  Communication: ["communicat", "present", "client-facing"],
+  Collaboration: ["collaboration", "collaborative", "collaborated", "cross-functional", "stakeholder"],
+  Communication: ["communication", "communicated", "presented", "client-facing"],
   Mentoring: ["mentor", "coach", "supporting colleagues"],
   Leadership: ["technical leadership", "lead a team", "team leadership"],
   Ownership: ["ownership", "autonomy", "self-directed"],
@@ -128,7 +128,7 @@ const BEHAVIOR_TERMS: Record<string, string[]> = {
 const STOP_WORDS = new Set(["and", "the", "for", "with", "from", "into", "your", "you", "our", "this", "that", "role", "engineer", "senior", "lead"]);
 
 function normalize(value: string): string {
-  return ` ${(value || "").toLowerCase().replace(/[^a-z0-9+#./-]+/g, " ").replace(/\s+/g, " ").trim()} `;
+  return ` ${(value || "").toLowerCase().replace(/[^a-z0-9+#-]+/g, " ").replace(/\s+/g, " ").trim()} `;
 }
 
 function unique<T>(items: T[]): T[] {
@@ -157,7 +157,7 @@ function profileEvidence(profile: CandidateProfile): string[] {
 
 function includesAlias(text: string, aliases: string[]): boolean {
   const haystack = normalize(text);
-  return aliases.some(alias => haystack.includes(normalize(alias).trim()));
+  return aliases.some(alias => haystack.includes(normalize(alias)));
 }
 
 function evidenceFor(aliases: string[], evidence: string[]): string[] {
@@ -165,7 +165,7 @@ function evidenceFor(aliases: string[], evidence: string[]): string[] {
 }
 
 function importanceFor(term: string, jd: string): "required" | "preferred" {
-  const line = jd.split(/\r?\n/).find(item => normalize(item).includes(normalize(term).trim())) || "";
+  const line = jd.split(/\r?\n/).find(item => includesAlias(item, [term])) || "";
   return /nice to have|preferred|desirable|bonus|advantage/i.test(line) ? "preferred" : "required";
 }
 
@@ -201,7 +201,7 @@ function gateEligibility(profile: CandidateProfile, jd: string): ApplicationAnal
 }
 
 function gateLanguage(profile: CandidateProfile, jd: string): ApplicationAnalysis["gates"]["language"] {
-  const known = (profile.spokenLanguages || ["English"]).map(normalize);
+  const known = (profile.spokenLanguages || []).map(normalize);
   const match = jd.match(/(?:fluent|native|business(?:-level)?|professional)\s+(?:in\s+)?(english|danish|german|french|spanish|polish|swedish|norwegian|dutch)/i);
   if (!match) return { verdict: "PASS", note: "No explicit role-language condition found." };
   const language = normalize(match[1]);
@@ -318,13 +318,12 @@ export function buildGroundedSummary(profile: CandidateProfile, job: JobInput, a
 
   const location = profile.location ? profile.location.split(",")[0] : "United Kingdom";
   const recent = profile.experience?.[0];
-  const matchedTech = analysis.matchedKeywords.length > 0 
-    ? analysis.matchedKeywords.slice(0, 6).join(", ") 
-    : Object.values(profile.skills || {}).flat().filter(Boolean).slice(0, 5).join(", ") || "core industry technologies";
-  
+  const matchedTech = analysis.matchedKeywords.slice(0, 6);
   const headline = profile.headline || recent?.role || "Software Engineering Professional";
-  const recentCompany = recent ? recent.company : "high-growth enterprise environments";
-  const recentRole = recent ? recent.role : headline;
-
-  return `${headline} based in ${location} with proven hands-on experience in production environments focusing on ${matchedTech}. Currently at ${recentCompany} as ${recentRole}, contributing to scalable systems, high-quality engineering delivery, and team collaboration. Strong background across end-to-end delivery pipelines, best engineering practices, and problem-solving, aligned to the core requirements for the ${job.role} role at ${job.company}.`;
+  const sentences = [`${headline} based in ${location}.`];
+  if (recent?.company && recent?.role) sentences.push(`Most recent recorded role: ${recent.role} at ${recent.company}.`);
+  const sourceBullets = (recent?.bullets || []).filter(Boolean).slice(0, 2);
+  if (sourceBullets.length) sentences.push(`Selected evidence: ${sourceBullets.join(" ")}`);
+  if (matchedTech.length) sentences.push(`Relevant documented skills: ${matchedTech.join(", ")}.`);
+  return sentences.join(" ");
 }

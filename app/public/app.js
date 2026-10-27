@@ -1,12 +1,16 @@
 // AI Job Search Studio — Frontend App Logic
 // Multi-Profile Management, In-App AI Provider, & Scenario Prompting
 
+document.documentElement.dataset.platform = /win/i.test(navigator.platform) ? "windows" : /mac/i.test(navigator.platform) ? "mac" : "other";
+
 let allJobs = [];
 let selectedJob = null;
 let currentFilter = "all";
 let currentTab = "tab-cv";
 let activeTailoredData = null;
 let currentSortMode = "days";
+let scenarioFeedFilters = {};
+let searchConfig = null;
 
 // Multi-Profile State
 let allProfiles = [];
@@ -25,6 +29,7 @@ const btnScrape = document.getElementById("btnScrape");
 const scrapeSpinner = document.getElementById("scrapeSpinner");
 const scrapeLabel = document.getElementById("scrapeLabel");
 const btnRefresh = document.getElementById("btnRefresh");
+const btnSearchSettings = document.getElementById("btnSearchSettings");
 
 // Profile Switcher Elements
 const topProfileName = document.getElementById("topProfileName");
@@ -41,6 +46,7 @@ const sidebarProfileName = document.getElementById("sidebarProfileName");
 const sidebarProfileRole = document.getElementById("sidebarProfileRole");
 const sidebarProfileLocation = document.getElementById("sidebarProfileLocation");
 const sidebarProfileVisa = document.getElementById("sidebarProfileVisa");
+const sidebarResumeSource = document.getElementById("sidebarResumeSource");
 const sidebarEditProfileBtn = document.getElementById("sidebarEditProfileBtn");
 const sidebarStatBase = document.getElementById("sidebarStatBase");
 const sidebarStatRadius = document.getElementById("sidebarStatRadius");
@@ -57,6 +63,7 @@ const scenarioInput = document.getElementById("scenarioInput");
 const btnScenarioRun = document.getElementById("btnScenarioRun");
 const scenarioSpinner = document.getElementById("scenarioSpinner");
 const scenarioBtnText = document.getElementById("scenarioBtnText");
+const scenarioStatus = document.getElementById("scenarioStatus");
 
 // Studio Elements
 const studioJobTitle = document.getElementById("studioJobTitle");
@@ -81,6 +88,7 @@ const countUkHybridSponsored = document.getElementById("countUkHybridSponsored")
 const countDrafted = document.getElementById("countDrafted");
 const countApplied = document.getElementById("countApplied");
 const countSponsors = document.getElementById("countSponsors");
+const countExplicitSponsors = document.getElementById("countExplicitSponsors");
 const sponsorStatRatio = document.getElementById("sponsorStatRatio");
 
 // Modals
@@ -111,10 +119,17 @@ const ollamaSettings = document.getElementById("ollamaSettings");
 const anthropicSettings = document.getElementById("anthropicSettings");
 const openaiSettings = document.getElementById("openaiSettings");
 
+const searchConfigModal = document.getElementById("searchConfigModal");
+const btnCloseSearchConfig = document.getElementById("btnCloseSearchConfig");
+const btnSaveSearchConfig = document.getElementById("btnSaveSearchConfig");
+const btnRefreshSponsors = document.getElementById("btnRefreshSponsors");
+const sponsorRegistryStatus = document.getElementById("sponsorRegistryStatus");
+
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
   await fetchProfiles();
   await fetchAiConfig();
+  await fetchSearchConfig();
   await fetchJobs();
   setupEventListeners();
 });
@@ -150,6 +165,10 @@ function setupEventListeners() {
 
   // Scrape button
   btnScrape.addEventListener("click", triggerScrape);
+  btnSearchSettings?.addEventListener("click", () => searchConfigModal.style.display = "flex");
+  btnCloseSearchConfig?.addEventListener("click", () => searchConfigModal.style.display = "none");
+  btnSaveSearchConfig?.addEventListener("click", saveSearchConfig);
+  btnRefreshSponsors?.addEventListener("click", refreshSponsorRegister);
 
   // Studio tabs
   document.querySelectorAll(".tab-btn").forEach(tab => {
@@ -406,6 +425,13 @@ function updateProfileUI() {
     "🛡️ Skilled Worker Sponsor Required" : "✅ Direct UK Work Authorisation";
   sidebarProfileVisa.style.background = activeProfile.visaSponsorshipRequired ? "var(--apple-purple-bg)" : "var(--apple-green-bg)";
   sidebarProfileVisa.style.color = activeProfile.visaSponsorshipRequired ? "var(--apple-purple)" : "var(--apple-green)";
+  if (sidebarResumeSource) {
+    const source = activeProfile.sourceResume;
+    sidebarResumeSource.textContent = source?.fileName
+      ? `Source stored locally: ${source.fileName}`
+      : "No source résumé stored";
+    sidebarResumeSource.title = source?.importedAt ? `Imported ${new Date(source.importedAt).toLocaleString()}` : "";
+  }
 
   sidebarStatBase.textContent = `${activeProfile.location.split(",")[0]}${activeProfile.postcode ? ` (${activeProfile.postcode})` : ''}`;
   sidebarStatRadius.textContent = `${activeProfile.preferredRadiusMiles || 50} miles`;
@@ -530,22 +556,10 @@ async function handleSaveProfileForm(e) {
     skills: existing?.skills || {
       cloud: rawSkills.slice(0, 4),
       devops: rawSkills.slice(4, 10),
-      languages: ["Python", "TypeScript", "Bash"],
+      languages: [],
       tools: rawSkills.slice(10)
     },
-    experience: existing?.experience || [
-      {
-        company: "Tech Enterprise",
-        role: headline,
-        location: `${location} / Hybrid`,
-        startDate: "2023",
-        endDate: "Present",
-        bullets: [
-          `Engineered and scaled cloud platforms and infrastructure as a ${headline}.`,
-          "Automated release cycles and container deployment workflows."
-        ]
-      }
-    ],
+    experience: existing?.experience || [],
     education: existing?.education || [],
     certifications: existing?.certifications || []
   };
@@ -698,12 +712,13 @@ async function runScenarioPrompt() {
   btnScenarioRun.disabled = true;
   scenarioSpinner.style.display = "inline-block";
   scenarioBtnText.textContent = "AI Processing...";
+  if (scenarioStatus) scenarioStatus.textContent = selectedJob ? `Working on ${selectedJob.title}…` : "Interpreting command…";
 
   try {
     const res = await fetch("/api/ai/scenario", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt, jobId: selectedJob?.id || null, currentTab })
     });
     const data = await res.json();
     if (data.success) {
@@ -713,27 +728,58 @@ async function runScenarioPrompt() {
         await fetchJobs();
         const targetJob = allJobs.find(j => j.id === data.job.id) || data.job;
         selectJob(targetJob);
-        showToast(`✨ ${data.explanation}`);
+        showToast(data.explanation);
         await tailorCurrentJob();
+      } else if (data.action === "search_jobs") {
+        scenarioFeedFilters = data.feedFilters || {};
+        searchInput.value = scenarioFeedFilters.query || "";
+        currentFilter = scenarioFeedFilters.sponsorshipMode === "explicit" ? "sponsorship_explicit"
+          : scenarioFeedFilters.sponsorshipMode === "licensed" ? "sponsor_verified"
+          : scenarioFeedFilters.location?.toLowerCase() === "remote" ? "remote" : "all";
+        scenarioBtnText.textContent = "Searching...";
+        const searchRes = await fetch("/api/scrape", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(scenarioFeedFilters)
+        });
+        const searchData = await searchRes.json();
+        if (!searchRes.ok || !searchData.success) throw new Error(searchData.error || "Live search failed");
+        await fetchJobs();
+        renderJobs();
+        showToast(`${data.explanation} ${searchData.addedCount || 0} new roles added.`);
+        if (scenarioStatus) scenarioStatus.textContent = `Search complete · ${searchData.addedCount || 0} new roles`;
+      } else if (data.action === "edit_application") {
+        selectedJob.status = data.status || "drafted";
+        selectedJob.cv_file = data.cvPath || selectedJob.cv_file;
+        selectedJob.cover_file = data.coverPath || selectedJob.cover_file;
+        selectedJob.analysis = data.analysis || selectedJob.analysis;
+        selectedJob.fit_score = data.fit_score ?? selectedJob.fit_score;
+        activeTailoredData = data;
+        renderJobs();
+        renderStudioTabContent();
+        showToast(data.explanation);
+        if (scenarioStatus) scenarioStatus.textContent = "Open application updated from stored evidence";
       } else {
-        showToast(`✨ ${data.explanation}`);
+        scenarioFeedFilters = data.feedFilters || {};
+        if (scenarioFeedFilters.query) searchInput.value = scenarioFeedFilters.query;
+        showToast(data.explanation);
         await fetchProfiles();
         await fetchJobs();
-        if (selectedJob) {
-          if (currentStudioTab === "cv") renderCVTab();
-          if (currentStudioTab === "cover") renderCoverTab();
-          if (currentStudioTab === "ats") renderATSTab();
-        }
+        if (selectedJob) renderStudioTabContent();
+        if (scenarioStatus) scenarioStatus.textContent = "Command applied";
       }
     } else {
       showToast(data.error || "Failed to run scenario");
+      if (scenarioStatus) scenarioStatus.textContent = data.error || "Command not applied";
     }
   } catch (err) {
-    showToast("Error running scenario");
+    console.error(err);
+    showToast(err.message || "Scenario action failed. Try a more specific request.");
+    if (scenarioStatus) scenarioStatus.textContent = err.message || "Command failed";
   } finally {
     btnScenarioRun.disabled = false;
     scenarioSpinner.style.display = "none";
-    scenarioBtnText.textContent = "Run ↵";
+    scenarioBtnText.textContent = "Run";
   }
 }
 
@@ -758,8 +804,10 @@ async function fetchAiConfig() {
         aiStatusText.textContent = "Claude 3.5";
       } else if (provider === "openai") {
         aiStatusText.textContent = "OpenAI GPT-4o";
+      } else if (provider === "builtin") {
+        aiStatusText.textContent = "Built-in · local";
       } else {
-        aiStatusText.textContent = "Offline Engine";
+        aiStatusText.textContent = "AI provider ready";
       }
     } else {
       aiStatusDot.className = "ai-status-dot offline";
@@ -792,8 +840,10 @@ function openAiModal() {
   openaiSettings.style.display = aiConfig.provider === "openai" ? "block" : "none";
 
   aiOllamaHost.value = aiConfig.ollamaHost || "http://localhost:11434";
-  aiAnthropicKey.value = aiConfig.anthropicApiKey || "";
-  aiOpenAiKey.value = aiConfig.openaiApiKey || "";
+  aiAnthropicKey.value = "";
+  aiOpenAiKey.value = "";
+  aiAnthropicKey.placeholder = aiConfig.hasAnthropicKey ? "Configured · leave blank to keep" : "Anthropic API key";
+  aiOpenAiKey.placeholder = aiConfig.hasOpenAiKey ? "Configured · leave blank to keep" : "OpenAI API key";
 
   const anthropicModelSelect = document.getElementById("aiAnthropicModelSelect");
   if (anthropicModelSelect && aiConfig.anthropicModel) {
@@ -837,11 +887,11 @@ async function saveAiConfig() {
     provider,
     ollamaHost: aiOllamaHost.value.trim(),
     ollamaModel: aiOllamaModelSelect.value,
-    anthropicApiKey: aiAnthropicKey.value.trim(),
     anthropicModel: anthropicModelSelect ? anthropicModelSelect.value : "claude-3-5-sonnet-20241022",
-    openaiApiKey: aiOpenAiKey.value.trim(),
     openaiModel: openAiModelSelect ? openAiModelSelect.value : "gpt-4o"
   };
+  if (aiAnthropicKey.value.trim()) payload.anthropicApiKey = aiAnthropicKey.value.trim();
+  if (aiOpenAiKey.value.trim()) payload.openaiApiKey = aiOpenAiKey.value.trim();
 
   try {
     const res = await fetch("/api/ai/config", {
@@ -974,7 +1024,7 @@ function renderLocationNavFilters() {
 
   itemsHtml += `
     <li class="nav-item ${currentFilter === 'uk_hybrid_sponsored' ? 'active' : ''}" data-filter="uk_hybrid_sponsored">
-      <span class="nav-item-left">🇬🇧 Nationwide (Sponsored)</span>
+      <span class="nav-item-left">🇬🇧 Nationwide · Licensed</span>
       <span class="nav-badge" id="countUkHybridSponsored">0</span>
     </li>
   `;
@@ -1003,6 +1053,7 @@ function updateBadgeCounts() {
   const drafted = allJobs.filter(j => j.status === "drafted").length;
   const applied = allJobs.filter(j => j.status === "applied").length;
   const sponsors = allJobs.filter(j => j.sponsor_verified).length;
+  const explicitSponsors = allJobs.filter(j => j.sponsor_verified && j.sponsorship_status === "offered").length;
 
   const countAllEl = document.getElementById("countAll");
   const countRemoteEl = document.getElementById("countRemote");
@@ -1011,6 +1062,7 @@ function updateBadgeCounts() {
   const countDraftedEl = document.getElementById("countDrafted");
   const countAppliedEl = document.getElementById("countApplied");
   const countSponsorsEl = document.getElementById("countSponsors");
+  const countExplicitSponsorsEl = document.getElementById("countExplicitSponsors");
 
   if (countAllEl) countAllEl.textContent = total;
   if (countRemoteEl) countRemoteEl.textContent = remote;
@@ -1019,6 +1071,7 @@ function updateBadgeCounts() {
   if (countDraftedEl) countDraftedEl.textContent = drafted;
   if (countAppliedEl) countAppliedEl.textContent = applied;
   if (countSponsorsEl) countSponsorsEl.textContent = sponsors;
+  if (countExplicitSponsorsEl) countExplicitSponsorsEl.textContent = explicitSponsors;
 
   // Update dynamic target location counts
   const cityName = (activeProfile?.location || "").split(",")[0].trim().toLowerCase();
@@ -1052,6 +1105,15 @@ function filterJobsList() {
 
     if (!matchSearch) return false;
 
+    if (scenarioFeedFilters.location && scenarioFeedFilters.location.toLowerCase() !== "remote" && !j.location.toLowerCase().includes(scenarioFeedFilters.location.toLowerCase())) return false;
+    if (scenarioFeedFilters.minSalary) {
+      const salaryNumbers = String(j.salary || "").replace(/,/g, "").match(/\d{4,6}/g)?.map(Number) || [];
+      const advertisedMaximum = salaryNumbers.length ? Math.max(...salaryNumbers) : 0;
+      if (!advertisedMaximum || advertisedMaximum < scenarioFeedFilters.minSalary) return false;
+    }
+    if (scenarioFeedFilters.sponsorshipMode === "licensed" && !j.sponsor_verified) return false;
+    if (scenarioFeedFilters.sponsorshipMode === "explicit" && !(j.sponsor_verified && j.sponsorship_status === "offered")) return false;
+
     // Filter match
     if (currentFilter === "remote") return j.is_remote;
     if (currentFilter === "nearby" || currentFilter === "hartlepool_radius") return j.distance_miles <= radius && !j.is_remote;
@@ -1067,6 +1129,7 @@ function filterJobsList() {
     if (currentFilter === "drafted") return j.status === "drafted";
     if (currentFilter === "applied") return j.status === "applied";
     if (currentFilter === "sponsor_verified") return j.sponsor_verified;
+    if (currentFilter === "sponsorship_explicit") return j.sponsor_verified && j.sponsorship_status === "offered";
 
     return true;
   });
@@ -1112,10 +1175,11 @@ function renderJobs() {
     nearby: `Priority 2: Near ${cityName} (~${radius}mi)`,
     hartlepool_radius: `Priority 2: Near ${cityName} (~${radius}mi)`,
     scotland: "Edinburgh & Glasgow",
-    uk_hybrid_sponsored: "🇬🇧 Nationwide (Sponsored Across UK)",
+    uk_hybrid_sponsored: "🇬🇧 Nationwide · Licensed Employers",
     drafted: "Drafted Applications",
     applied: "Applied & Active",
-    sponsor_verified: "Verified A-Sponsors"
+    sponsor_verified: "Licensed Employers",
+    sponsorship_explicit: "Vacancies Stating Sponsorship"
   };
 
   let titleText = filterNames[currentFilter];
@@ -1150,21 +1214,25 @@ function renderJobs() {
     }
 
     const relativeDateBadge = formatRelativeDate(job.posted_date);
-    const portalTag = job.portal === "freehire-ats" ? 
-      '<span class="meta-pill" style="color: #6ee7b7; border-color: rgba(110,231,183,0.3); font-weight: 500;">⚡ Direct ATS</span>' : 
-      '<span class="meta-pill" style="color: #93c5fd; border-color: rgba(147,197,253,0.3); font-weight: 500;">🔗 LinkedIn</span>';
+    const portalNames = {
+      "freehire-ats": "Direct ATS", "linkedin-search": "LinkedIn", "cv-library": "CV-Library",
+      reed: "Reed", "google-jobs": "Google Jobs", adzuna: "Adzuna", jobicy: "Jobicy",
+      arbeitnow: "Arbeitnow", remotive: "Remotive", "external-url": "Imported",
+    };
+    const portalTag = `<span class="meta-pill" style="color: #93c5fd; border-color: rgba(147,197,253,0.3); font-weight: 500;">${escapeHtml(portalNames[job.portal] || job.portal || "Source")}</span>`;
+    const scoreLabel = job.fit_score > 0 ? `${job.fit_score}% match` : "Needs full JD";
 
     card.innerHTML = `
       <div class="job-card-header">
         <div class="job-card-title">${escapeHtml(job.title)}</div>
-        <div class="job-card-fit">${job.fit_score}% match</div>
+        <div class="job-card-fit">${scoreLabel}</div>
       </div>
       <div class="job-card-company">${escapeHtml(job.company)}</div>
       <div class="job-card-meta">
         ${relativeDateBadge}
         ${portalTag}
         <span class="meta-pill">${escapeHtml(job.commute_tag)}</span>
-        ${job.sponsor_verified ? '<span class="meta-pill sponsor">🛡️ A-Sponsor</span>' : ''}
+        ${job.sponsorship_status === "offered" && job.sponsor_verified ? '<span class="meta-pill sponsor">✓ Sponsorship stated</span>' : job.sponsor_verified ? '<span class="meta-pill sponsor">🛡️ Licensed employer</span>' : ''}
         ${statusBadge}
       </div>
     `;
@@ -1207,14 +1275,14 @@ function selectJob(job) {
   const atsBadge = document.getElementById("studioAtsBadge");
   const atsScore = document.getElementById("studioAtsScore");
   if (atsBadge && atsScore) {
-    atsScore.textContent = `${job.fit_score || 95}%`;
+    atsScore.textContent = job.fit_score > 0 ? `${job.fit_score}%` : "Needs JD";
     atsBadge.style.display = "inline-flex";
   }
 
   if (job.url) {
     studioLinkBtn.href = job.url;
     studioLinkBtn.style.display = "inline-flex";
-    studioLinkBtn.textContent = job.portal === "freehire-ats" ? "Open ATS Listing ↗" : "Open on LinkedIn ↗";
+    studioLinkBtn.textContent = "Open original listing ↗";
   } else {
     studioLinkBtn.style.display = "none";
   }
@@ -1222,7 +1290,9 @@ function selectJob(job) {
   // Sponsor Banner
   if (job.sponsor_verified) {
     studioSponsorBanner.style.display = "flex";
-    studioSponsorText.textContent = `UK Home Office Verified Sponsor: ${job.sponsor_label}`;
+    studioSponsorText.textContent = job.sponsorship_status === "offered"
+      ? `Licensed employer · this vacancy states sponsorship is offered`
+      : `Licensed employer · this vacancy does not confirm sponsorship`;
   } else {
     studioSponsorBanner.style.display = "none";
   }
@@ -1293,9 +1363,9 @@ async function renderCVTab() {
         <b>Format:</b> Jake Gutierrez ATS Single-Page (100% Parsable Unicode)
       </div>
       <div style="display: flex; gap: 8px;">
-        <button class="btn-primary" id="btnDownloadCVPdf">📥 Download PDF</button>
-        <button class="btn-secondary" id="btnOpenPreviewCV" title="Open PDF in native macOS Preview">👁️ Preview</button>
-        <button class="btn-secondary" id="btnRevealCV" title="Reveal PDF in macOS Finder">📂 Finder</button>
+        <button class="btn-primary" id="btnDownloadCVPdf">Download PDF</button>
+        <button class="btn-secondary" id="btnOpenPreviewCV" title="Open PDF with the system viewer">Open</button>
+        <button class="btn-secondary" id="btnRevealCV" title="Show PDF in its folder">Show in folder</button>
         <button class="btn-secondary" id="btnToggleCVMode">${currentCVViewMode === "visual" ? "📝 Raw LaTeX" : "📄 Visual View"}</button>
         <button class="btn-secondary" id="btnCopyCV">📋 Copy LaTeX</button>
         <button class="btn-secondary" id="btnOpenOverleaf">Open Overleaf ↗</button>
@@ -1380,20 +1450,20 @@ async function renderCVTab() {
   const summaryToRender = parsed.summary || activeProfile?.summary || "";
 
   // Format skills fallback if not parsed
-  let skillsHtmlToRender = parsed.skillsHtml;
-  if (!skillsHtmlToRender && activeProfile?.skills) {
+  let skillsTextToRender = parsed.skillsHtml;
+  if (!skillsTextToRender && activeProfile?.skills) {
     const s = activeProfile.skills;
     const parts = [];
-    if (s.cloud && s.cloud.length) parts.push(`<b>Cloud Platforms</b>: ${s.cloud.join(", ")}`);
-    if (s.containers && s.containers.length) parts.push(`<b>Containers & GitOps</b>: ${s.containers.join(", ")}`);
-    else if (s.devops && s.devops.length) parts.push(`<b>Containers & GitOps</b>: ${s.devops.join(", ")}`);
-    if (s.iac && s.iac.length) parts.push(`<b>Infrastructure as Code</b>: ${s.iac.join(", ")}`);
-    if (s.cicd && s.cicd.length) parts.push(`<b>CI/CD & Build Tools</b>: ${s.cicd.join(", ")}`);
-    if (s.monitoring && s.monitoring.length) parts.push(`<b>Monitoring & SRE</b>: ${s.monitoring.join(", ")}`);
-    if (s.security && s.security.length) parts.push(`<b>Security</b>: ${s.security.join(", ")}`);
-    if (s.languages && s.languages.length) parts.push(`<b>Languages & Frameworks</b>: ${s.languages.join(", ")}`);
-    if (s.tools && s.tools.length) parts.push(`<b>Tools & Automation</b>: ${s.tools.join(", ")}`);
-    skillsHtmlToRender = parts.join("<br>");
+    if (s.cloud && s.cloud.length) parts.push(`Cloud Platforms: ${s.cloud.join(", ")}`);
+    if (s.containers && s.containers.length) parts.push(`Containers & GitOps: ${s.containers.join(", ")}`);
+    else if (s.devops && s.devops.length) parts.push(`Containers & GitOps: ${s.devops.join(", ")}`);
+    if (s.iac && s.iac.length) parts.push(`Infrastructure as Code: ${s.iac.join(", ")}`);
+    if (s.cicd && s.cicd.length) parts.push(`CI/CD & Build Tools: ${s.cicd.join(", ")}`);
+    if (s.monitoring && s.monitoring.length) parts.push(`Monitoring & SRE: ${s.monitoring.join(", ")}`);
+    if (s.security && s.security.length) parts.push(`Security: ${s.security.join(", ")}`);
+    if (s.languages && s.languages.length) parts.push(`Languages & Frameworks: ${s.languages.join(", ")}`);
+    if (s.tools && s.tools.length) parts.push(`Tools & Automation: ${s.tools.join(", ")}`);
+    skillsTextToRender = parts.join("\n");
   }
 
   document.getElementById("cvContainer").innerHTML = `
@@ -1428,16 +1498,16 @@ async function renderCVTab() {
               <span>${escapeHtml(exp.location)}</span>
             </div>
             <ul class="doc-bullet-list">
-              ${exp.items.map(bullet => `<li>${bullet}</li>`).join("")}
+              ${exp.items.map(bullet => `<li>${escapeHtml(bullet)}</li>`).join("")}
             </ul>
           </div>
         `).join("")}
       </div>` : ''}
 
-      ${skillsHtmlToRender ? `
+      ${skillsTextToRender ? `
       <div class="doc-section">
         <div class="doc-section-title">Technical Skills</div>
-        <div style="font-size: 12px; color: #1f2937; line-height: 1.6;">${skillsHtmlToRender}</div>
+        <div style="font-size: 12px; color: #1f2937; line-height: 1.6; white-space: pre-line;">${escapeHtml(skillsTextToRender)}</div>
       </div>` : ''}
 
       ${projectsToRender.length > 0 ? `
@@ -1450,7 +1520,7 @@ async function renderCVTab() {
               <span style="font-size: 11px; color: #6b7280;">${escapeHtml(proj.category || "")}</span>
             </div>
             <ul class="doc-bullet-list">
-              ${proj.items.map(bullet => `<li>${bullet}</li>`).join("")}
+              ${proj.items.map(bullet => `<li>${escapeHtml(bullet)}</li>`).join("")}
             </ul>
           </div>
         `).join("")}
@@ -1474,6 +1544,23 @@ async function renderCVTab() {
   `;
 }
 
+function extractCoverParagraphs(texCode) {
+  const body = (texCode.match(/Dear\s+(?:Hiring Manager|Hiring Team)[\s\S]*?(?=\\end\{document\})/i) || [""])[0];
+  if (!body) return [];
+  return body
+    .replace(/%.*$/gm, "")
+    .replace(/\\par\b/g, "\n\n")
+    .replace(/\\\\/g, "\n")
+    .replace(/\\(?:textbf|textit|emph|Large|large|small)\s*\{([^{}]*)\}/g, "$1")
+    .replace(/\\href\{[^}]*\}\{([^}]*)\}/g, "$1")
+    .replace(/\\([&%$#_{}])/g, "$1")
+    .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?/g, "")
+    .replace(/[{}]/g, "")
+    .split(/\n\s*\n/)
+    .map(paragraph => paragraph.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
 async function renderCoverTab() {
   const coverPath = selectedJob.cover_file || "";
 
@@ -1483,9 +1570,9 @@ async function renderCoverTab() {
         <b>Format:</b> Executive Formal Letterhead (Targeted to ${escapeHtml(selectedJob.company)})
       </div>
       <div style="display: flex; gap: 8px;">
-        <button class="btn-primary" id="btnDownloadCoverPdf">📥 Download PDF</button>
-        <button class="btn-secondary" id="btnOpenPreviewCover" title="Open PDF in native macOS Preview">👁️ Preview</button>
-        <button class="btn-secondary" id="btnRevealCover" title="Reveal PDF in macOS Finder">📂 Finder</button>
+        <button class="btn-primary" id="btnDownloadCoverPdf">Download PDF</button>
+        <button class="btn-secondary" id="btnOpenPreviewCover" title="Open PDF with the system viewer">Open</button>
+        <button class="btn-secondary" id="btnRevealCover" title="Show PDF in its folder">Show in folder</button>
         <button class="btn-secondary" id="btnToggleCoverMode">${currentCoverViewMode === "visual" ? "📝 Raw LaTeX" : "📄 Visual View"}</button>
         <button class="btn-secondary" id="btnCopyCover">📋 Copy LaTeX</button>
       </div>
@@ -1543,6 +1630,7 @@ async function renderCoverTab() {
   // Visual View
   const todayStr = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   const cleanRole = cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
+  const coverParagraphs = extractCoverParagraphs(texCode);
 
   document.getElementById("coverContainer").innerHTML = `
     <div class="doc-preview-container" style="padding: 45px 55px; line-height: 1.7; font-size: 13.5px; color: #1f2937;">
@@ -1566,29 +1654,9 @@ async function renderCoverTab() {
         Application for ${escapeHtml(cleanRole)}
       </div>
 
-      <p style="margin-bottom: 14px;">Dear Hiring Team at ${escapeHtml(selectedJob.company)},</p>
-
-      <p style="margin-bottom: 14px;">
-        I am writing to express my strong interest in the <b>${escapeHtml(cleanRole)}</b> role. With deep hands-on expertise in automated cloud infrastructure, container orchestration, and resilient CI/CD pipelines, I focus on delivering rock-solid platforms that empower engineering squads to release with speed and confidence.
-      </p>
-
-      <p style="margin-bottom: 14px;">
-        In my career, I have designed and maintained high-throughput production cloud platforms, executing multi-version cluster upgrades with zero downtime and authoring infrastructure-as-code automation with strict least-privilege security controls.
-      </p>
-
-      <p style="margin-bottom: 14px;">
-        The technical roadmap at ${escapeHtml(selectedJob.company)} aligns directly with my engineering mindset. I bring pragmatic architecture experience coupled with relentless focus on developer velocity and system reliability.
-      </p>
-
-      <p style="margin-bottom: 24px;">
-        Thank you for your time and consideration. I welcome the opportunity to discuss how my background can support your team.
-      </p>
-
-      <div>
-        Sincerely,<br><br>
-        <b>${escapeHtml(activeProfile?.name || "Candidate")}</b><br>
-        <span style="font-size: 12px; color: #6b7280;">${escapeHtml(activeProfile?.headline || "")}</span>
-      </div>
+      ${coverParagraphs.length
+        ? coverParagraphs.map((paragraph, index) => `<p style="margin-bottom:${index === coverParagraphs.length - 1 ? "24px" : "14px"};">${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`).join("")
+        : `<p style="margin-bottom:24px;">The generated cover letter could not be previewed. Switch to Raw LaTeX to review the source.</p>`}
     </div>
   `;
 }
@@ -1596,23 +1664,23 @@ async function renderCoverTab() {
 function renderDetailsTab() {
   const jdText = selectedJob.full_jd || selectedJob.summary || "Full Job Description not available.";
   const analysis = selectedJob.analysis || {};
-  const fitScore = analysis.overallScore || selectedJob.fit_score || 95;
-  const verdict = analysis.verdict || (fitScore >= 95 ? "Exceptional Fit" : fitScore >= 85 ? "Strong Fit" : "Good Fit");
+  const fitScore = Number(analysis.overallScore ?? selectedJob.fit_score ?? 0);
+  const verdict = analysis.verdict || "Not scored";
 
-  const techScore = analysis.dimensions?.technical?.score ?? fitScore;
-  const techNote = analysis.dimensions?.technical?.note || "Core cloud and platform engineering skills align with role requirements.";
-  const expScore = analysis.dimensions?.experience?.score ?? (fitScore >= 90 ? 92 : 85);
-  const expNote = analysis.dimensions?.experience?.note || "Production experience directly supports the role seniority.";
-  const behScore = analysis.dimensions?.behavioral?.score ?? 88;
-  const behNote = analysis.dimensions?.behavioral?.note || "Demonstrated collaboration, ownership, and technical leadership.";
+  const techScore = Number(analysis.dimensions?.technical?.score ?? 0);
+  const techNote = analysis.dimensions?.technical?.note || "Not scored. Add the complete job description.";
+  const expScore = Number(analysis.dimensions?.experience?.score ?? 0);
+  const expNote = analysis.dimensions?.experience?.note || "Not scored. Add the complete job description.";
+  const behScore = Number(analysis.dimensions?.behavioral?.score ?? 0);
+  const behNote = analysis.dimensions?.behavioral?.note || "No behavioral evidence has been scored.";
 
-  const locVerdict = analysis.gates?.location?.verdict || "PASS";
+  const locVerdict = analysis.gates?.location?.verdict || "UNVERIFIED";
   const eligVerdict = analysis.gates?.eligibility?.verdict || (selectedJob.sponsor_verified ? "PASS" : "UNVERIFIED");
 
   // Matched vs Gap skills
   const matchedSkills = analysis.matchedKeywords?.length 
     ? analysis.matchedKeywords 
-    : (selectedJob.key_skills || []);
+    : [];
   const gapSkills = analysis.gapKeywords?.length 
     ? analysis.gapKeywords 
     : [];
@@ -1684,11 +1752,11 @@ function renderDetailsTab() {
           <!-- 5. Visa Sponsorship Gate -->
           <div class="ats-dim-card">
             <div class="ats-dim-header">🛡️ Visa Gate</div>
-            <div class="ats-dim-score" style="color: ${selectedJob.sponsor_verified ? '#34d399' : '#38bdf8'};">
-              ${selectedJob.sponsor_verified ? "SPONSORED" : "VERIFY"}
+            <div class="ats-dim-score" style="color: ${selectedJob.sponsorship_status === 'offered' && selectedJob.sponsor_verified ? '#34d399' : '#38bdf8'};">
+              ${selectedJob.sponsorship_status === 'offered' && selectedJob.sponsor_verified ? "OFFERED" : selectedJob.sponsor_verified ? "LICENSED" : "VERIFY"}
             </div>
-            <div class="ats-dim-bar"><div class="ats-dim-fill" style="width: 100%; background: ${selectedJob.sponsor_verified ? '#34d399' : '#38bdf8'};"></div></div>
-            <div class="ats-dim-note">${selectedJob.sponsor_verified ? "Verified UK A-Rated Sponsor" : "Register check recommended"}</div>
+            <div class="ats-dim-bar"><div class="ats-dim-fill" style="width: 100%; background: ${selectedJob.sponsorship_status === 'offered' && selectedJob.sponsor_verified ? '#34d399' : '#38bdf8'};"></div></div>
+            <div class="ats-dim-note">${selectedJob.sponsorship_status === 'offered' && selectedJob.sponsor_verified ? "Vacancy wording and register match" : selectedJob.sponsor_verified ? "Employer licensed; vacancy not confirmed" : "Register check recommended"}</div>
           </div>
         </div>
 
@@ -1697,7 +1765,7 @@ function renderDetailsTab() {
           <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px; color: #cbd5e1;">Matched Core Competencies (${matchedSkills.length}):</div>
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
             ${matchedSkills.map(s => `<span style="padding: 3px 9px; background: rgba(48, 209, 88, 0.18); border: 1px solid rgba(48, 209, 88, 0.35); color: #34d399; border-radius: 4px; font-size: 11.5px; font-weight: 600;">✓ ${escapeHtml(s)}</span>`).join("")}
-            ${matchedSkills.length === 0 ? '<span style="font-size: 12px; color: #94a3b8;">Common cloud & devops skills apply.</span>' : ''}
+            ${matchedSkills.length === 0 ? '<span style="font-size: 12px; color: #94a3b8;">No verified matches yet. Add the complete job description.</span>' : ''}
           </div>
 
           ${gapSkills.length > 0 ? `
@@ -1713,14 +1781,14 @@ function renderDetailsTab() {
         <span style="font-size: 24px;">🛡️</span>
         <div style="flex: 1;">
           <div class="sponsor-detail-title">
-            ${selectedJob.sponsor_verified ? "UK Home Office Verified Licensed Sponsor" : "UK Right to Work & Visa Assessment"}
+            ${selectedJob.sponsor_verified ? "GOV.UK Licensed Employer" : "UK Right to Work & Visa Assessment"}
           </div>
           <div class="sponsor-detail-text">
             <b>Employer:</b> ${escapeHtml(selectedJob.company)} &nbsp;·&nbsp; 
             <b>License Type:</b> ${escapeHtml(selectedJob.sponsor_label)} &nbsp;·&nbsp;
-            <b>Status:</b> ${selectedJob.sponsor_verified ? "✅ Home Office A-Rating (Eligible for Skilled Worker CoS)" : "🔍 Verify on Home Office Sponsor Register"}<br>
-            <b>Candidate Work Status:</b> ${activeProfile?.visaSponsorshipRequired ? "Candidate holds legal UK work authorization; Skilled Worker sponsorship transfer required." : "Candidate possesses unrestricted UK work rights."}<br>
-            <b>Application Advice:</b> ${selectedJob.sponsor_verified ? "Answer 'Yes' to requiring sponsorship. This employer has an active Home Office CoS allocation for Skilled Workers." : "Check job posting details regarding visa sponsorship eligibility before submission."}
+            <b>Status:</b> ${selectedJob.sponsorship_status === "offered" && selectedJob.sponsor_verified ? "Employer is licensed and the vacancy explicitly states sponsorship is offered" : selectedJob.sponsor_verified ? "Employer appears on the register; this vacancy does not confirm sponsorship" : "Employer was not matched to the cached register"}<br>
+            <b>Candidate Work Status:</b> ${activeProfile?.visaSponsorshipRequired ? "Candidate profile records a Skilled Worker sponsorship requirement." : "Candidate profile records no sponsorship requirement."}<br>
+            <b>Application Advice:</b> ${selectedJob.sponsorship_status === "offered" && selectedJob.sponsor_verified ? "Confirm eligibility, occupation code, salary threshold and sponsorship terms with the employer." : selectedJob.sponsor_verified ? "Ask the recruiter whether this specific role can issue a Certificate of Sponsorship." : "Check the vacancy and current GOV.UK sponsor register before submission."}
           </div>
         </div>
       </div>
@@ -1866,8 +1934,10 @@ function renderDetailsTab() {
 
 function renderAnswersTab() {
   const visaText = activeProfile?.visaSponsorshipRequired ?
-    `Yes, I currently hold legal work authorization in the UK and will require Skilled Worker visa sponsorship to transfer to ${selectedJob.company}.` :
+    `Yes. My candidate profile records that I require Skilled Worker sponsorship. I would confirm the exact arrangement with ${selectedJob.company}.` :
     "No, I have unrestricted right to work in the UK and do not require sponsorship.";
+  const unverifiedAnswer = "Not recorded in the candidate profile. Confirm this before submitting.";
+  const locationAnswer = `The role is listed in ${selectedJob.location || "an unspecified location"}. Confirm the required schedule and commute before submitting.`;
 
   studioContent.innerHTML = `
     <div style="max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px;">
@@ -1882,14 +1952,14 @@ function renderAnswersTab() {
       <div style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
         <h4 style="font-size: 14px; color: var(--apple-blue); margin-bottom: 6px;">What is your notice period?</h4>
         <div style="font-size: 12px; color: var(--text-secondary); background: rgba(0,0,0,0.25); padding: 8px; border-radius: 6px;">
-          "1 month notice period (can be negotiated if required)."
+          "${unverifiedAnswer}"
         </div>
       </div>
 
       <div style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
         <h4 style="font-size: 14px; color: var(--apple-blue); margin-bottom: 6px;">Are you willing to work in a hybrid schedule in ${selectedJob.location}?</h4>
         <div style="font-size: 12px; color: var(--text-secondary); background: rgba(0,0,0,0.25); padding: 8px; border-radius: 6px;">
-          "Yes, I am based in ${escapeHtml(activeProfile?.location || 'UK')} and fully comfortable with hybrid working in ${escapeHtml(selectedJob.location)}."
+          "${escapeHtml(locationAnswer)}"
         </div>
       </div>
     </div>
@@ -1973,7 +2043,7 @@ async function downloadPDF(type) {
 
     const result = await compileRes.json();
     if (result.success && result.repoPath) {
-      // 1. Copy PDF directly to user's ~/Downloads directory and reveal in Finder
+      // 1. Copy PDF directly to the user's Downloads directory.
       try {
         const saveRes = await fetch("/api/save-to-downloads", {
           method: "POST",
@@ -1982,23 +2052,23 @@ async function downloadPDF(type) {
         });
         const saveData = await saveRes.json();
         if (saveData.success) {
-          showToast(`✅ PDF saved to Downloads: ${result.filename}`);
+          showToast(`PDF saved to Downloads: ${result.filename}`);
         }
       } catch (saveErr) {
         console.warn("Could not copy to ~/Downloads:", saveErr);
       }
 
-      // 2. Open PDF in macOS Preview directly (never navigates WKWebView!)
+      // 2. Open PDF in the system viewer without navigating the app webview.
       fetch("/api/open-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: result.repoPath })
       }).catch(() => {});
 
-      showToast(`✨ Native ATS PDF compiled & opened in Preview: ${result.filename}`);
+      showToast(`ATS PDF compiled and opened: ${result.filename}`);
     } else {
       console.error("Compilation error:", result);
-      showToast(`⚠️ PDF compilation failed: ${result.error || "Check LaTeX syntax"}`);
+      showToast(`PDF compilation failed: ${result.error || "Check LaTeX syntax"}`);
       // Fallback: save .tex source directly
       try {
         await fetch("/api/save-to-downloads", {
@@ -2036,7 +2106,7 @@ async function openInPreview(type) {
     });
     const data = await res.json();
     if (data.success) {
-      showToast("✅ Opened in macOS Preview");
+      showToast("Opened with the system PDF viewer");
     } else {
       // PDF hasn't been compiled yet: compile it now and open!
       await downloadPDF(type);
@@ -2067,17 +2137,17 @@ async function revealInFinder(type) {
     });
     const data = await res.json();
     if (data.success) {
-      showToast("📂 Revealed in macOS Finder");
+      showToast("Shown in the system file browser");
     } else {
       await fetch("/api/reveal-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: docPath })
       });
-      showToast("📂 Revealed in macOS Finder");
+      showToast("Shown in the system file browser");
     }
   } catch {
-    showToast("Could not reveal file in Finder");
+    showToast("Could not show the file in its folder");
   }
 }
 
@@ -2127,16 +2197,94 @@ function copyOutreachMessage() {
   showToast("Outreach message copied!");
 }
 
-async function triggerScrape() {
+function renderSponsorRegistryStatus(status = {}) {
+  if (!sponsorRegistryStatus) return;
+  const fetched = status.fetchedAt ? new Date(status.fetchedAt).toLocaleString() : "not downloaded yet";
+  sponsorRegistryStatus.textContent = `${Number(status.count || 0).toLocaleString()} register rows · updated ${fetched}`;
+}
+
+async function fetchSearchConfig() {
+  try {
+    const res = await fetch("/api/search/config");
+    const data = await res.json();
+    searchConfig = data.config;
+    const sources = searchConfig.sources || {};
+    document.getElementById("sourceLinkedin").checked = Boolean(sources.linkedin);
+    document.getElementById("sourceFreehire").checked = Boolean(sources.freehire);
+    document.getElementById("sourceCvLibrary").checked = Boolean(sources.cvLibrary);
+    document.getElementById("sourceReed").checked = Boolean(sources.reed);
+    document.getElementById("sourceGoogleJobs").checked = Boolean(sources.googleJobs);
+    document.getElementById("sourceAdzuna").checked = Boolean(sources.adzuna);
+    document.getElementById("sourceJobicy").checked = Boolean(sources.jobicy);
+    document.getElementById("sourceArbeitnow").checked = Boolean(sources.arbeitnow);
+    document.getElementById("sourceRemotive").checked = Boolean(sources.remotive);
+    document.getElementById("sponsorshipMode").value = searchConfig.sponsorshipMode || "all";
+    renderSponsorRegistryStatus(data.sponsorRegistry);
+  } catch {
+    searchConfig = { sponsorshipMode: "all", sources: { linkedin: true, freehire: true, jobicy: true, arbeitnow: false, remotive: true } };
+  }
+}
+
+async function saveSearchConfig() {
+  const payload = {
+    sources: {
+      linkedin: true,
+      freehire: true,
+      cvLibrary: document.getElementById("sourceCvLibrary").checked,
+      reed: document.getElementById("sourceReed").checked,
+      googleJobs: document.getElementById("sourceGoogleJobs").checked,
+      adzuna: document.getElementById("sourceAdzuna").checked,
+      jobicy: document.getElementById("sourceJobicy").checked,
+      arbeitnow: document.getElementById("sourceArbeitnow").checked,
+      remotive: document.getElementById("sourceRemotive").checked,
+    },
+    sponsorshipMode: document.getElementById("sponsorshipMode").value,
+    cvLibraryApiKey: document.getElementById("cvLibraryApiKey").value,
+    reedApiKey: document.getElementById("reedApiKey").value,
+    serpApiKey: document.getElementById("serpApiKey").value,
+    adzunaAppId: document.getElementById("adzunaAppId").value,
+    adzunaAppKey: document.getElementById("adzunaAppKey").value,
+  };
+  const res = await fetch("/api/search/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const data = await res.json();
+  if (!data.success) return showToast(data.error || "Could not save search settings");
+  searchConfig = data.config;
+  ["cvLibraryApiKey", "reedApiKey", "serpApiKey", "adzunaAppId", "adzunaAppKey"].forEach(id => document.getElementById(id).value = "");
+  searchConfigModal.style.display = "none";
+  showToast("Search sources saved");
+}
+
+async function refreshSponsorRegister() {
+  btnRefreshSponsors.disabled = true;
+  try {
+    const res = await fetch("/api/sponsors/refresh", { method: "POST" });
+    const data = await res.json();
+    renderSponsorRegistryStatus(data);
+    showToast(data.success ? `Verified ${Number(data.count || 0).toLocaleString()} sponsor rows` : (data.error || "Register refresh failed"));
+    if (data.success) await fetchJobs();
+  } finally {
+    btnRefreshSponsors.disabled = false;
+  }
+}
+
+async function triggerScrape(request = {}) {
   scrapeSpinner.style.display = "inline-block";
   scrapeLabel.textContent = "Searching Live...";
   btnScrape.disabled = true;
 
   try {
-    const res = await fetch("/api/scrape", { method: "POST" });
+    const res = await fetch("/api/scrape", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...request, sponsorshipMode: request.sponsorshipMode || searchConfig?.sponsorshipMode || "all" }),
+    });
     const data = await res.json();
     if (data.success) {
-      showToast(`Scrape completed! ${data.addedCount} new roles found.`);
+      const ok = (data.sources || []).filter(source => source.status === "ok").map(source => source.source).join(", ");
+      const failed = (data.sources || []).filter(source => source.status === "failed").length;
+      showToast(`${data.addedCount} added · ${data.filteredCount || 0} sponsorship-filtered${ok ? ` · ${ok}` : ""}${failed ? ` · ${failed} source failed` : ""}`);
+      if (data.sponsorshipMode === "licensed") currentFilter = "sponsor_verified";
+      if (data.sponsorshipMode === "explicit") currentFilter = "sponsorship_explicit";
       await fetchJobs();
     } else {
       showToast("Scrape completed.");
@@ -2154,7 +2302,12 @@ function showToast(message) {
   const container = document.getElementById("toastContainer");
   const toast = document.createElement("div");
   toast.className = "toast";
-  toast.innerHTML = `<span>✨</span><span>${message}</span>`;
+  const status = document.createElement("span");
+  status.className = "toast-status";
+  status.setAttribute("aria-hidden", "true");
+  const copy = document.createElement("span");
+  copy.textContent = String(message || "Done");
+  toast.append(status, copy);
   container.appendChild(toast);
 
   setTimeout(() => {
@@ -2219,7 +2372,7 @@ function parseLatexCV(latex) {
         const items = bulletMatches.map(b => {
           return b.replace(/\\resumeItem\{/, "").replace(/\}$/, "")
                   .replace(/\\&/g, "&").replace(/\\%/g, "%").replace(/\\#/g, "#").replace(/\\_/g, "_")
-                  .replace(/\\textbf\{([^}]*)\}/g, "<b>$1</b>")
+                  .replace(/\\textbf\{([^}]*)\}/g, "$1")
                   .trim();
         });
         if (company) result.experience.push({ company, location, title, dates, items });
@@ -2248,7 +2401,7 @@ function parseLatexCV(latex) {
         const items = bulletMatches.map(b => {
           return b.replace(/\\resumeItem\{/, "").replace(/\}$/, "")
                   .replace(/\\&/g, "&").replace(/\\%/g, "%").replace(/\\#/g, "#").replace(/\\_/g, "_")
-                  .replace(/\\textbf\{([^}]*)\}/g, "<b>$1</b>")
+                  .replace(/\\textbf\{([^}]*)\}/g, "$1")
                   .trim();
         });
         if (name) result.projects.push({ name, tools, category, items });
@@ -2259,8 +2412,8 @@ function parseLatexCV(latex) {
     const skillsMatch = latex.match(/\\section\{Technical Skills\}[\s\S]*?\\begin\{itemize\}[\s\S]*?\\small\{\\item\{([\s\S]*?)\}\}\s*\\end\{itemize\}/i);
     if (skillsMatch) {
       result.skillsHtml = skillsMatch[1]
-        .replace(/\\textbf\{([^}]*)\}/g, "<b>$1</b>")
-        .replace(/\\\\/g, "<br>")
+        .replace(/\\textbf\{([^}]*)\}/g, "$1")
+        .replace(/\\\\/g, "\n")
         .replace(/\\&/g, "&")
         .replace(/\\_/g, "_")
         .trim();

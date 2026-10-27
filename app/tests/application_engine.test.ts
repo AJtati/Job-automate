@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { analyzeApplication } from "../application_engine";
+import { analyzeApplication, buildGroundedSummary } from "../application_engine";
 import type { CandidateProfile } from "../profiles_manager";
 
 const profile: CandidateProfile = {
@@ -33,5 +33,13 @@ describe("application evidence scoring", () => {
     expect(local.overallScore).toBe(distant.overallScore);
     expect(local.gates.location.verdict).toBe("PASS");
     expect(distant.gates.location.verdict).toBe("FLAG");
+  });
+
+  test("does not match short aliases inside unrelated words or add generic summary claims", () => {
+    const job = { company: "Orbit", role: "Platform Engineer", location: "London", fullJd: "Maintain reliable AWS infrastructure with Terraform." };
+    const analysis = analyzeApplication(profile, job);
+    expect(analysis.matchedKeywords).not.toContain("Machine Learning");
+    const summary = buildGroundedSummary(profile, job, analysis);
+    expect(summary).not.toMatch(/proven|scalable systems|best engineering practices/i);
   });
 });

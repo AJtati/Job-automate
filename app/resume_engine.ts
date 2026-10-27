@@ -141,7 +141,7 @@ function skills(profile: CandidateProfile, analysis: ApplicationAnalysis): strin
 
   const rawCategories: Array<[string, string[]]> = [
     ["Cloud Platforms", s.cloud || []],
-    ["Containers \\& GitOps", s.containers || s.devops || []],
+    ["Containers \\& GitOps", s.containers?.length ? s.containers : s.devops || []],
     ["Infrastructure as Code", s.iac || []],
     ["CI/CD \\& Build Tools", s.cicd || []],
     ["Monitoring \\& SRE", s.monitoring || s.observability || []],
