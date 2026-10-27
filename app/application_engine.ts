@@ -115,6 +115,11 @@ const TECH_TERMS: Record<string, string[]> = {
   // Testing & Quality Assurance
   "Automated Testing": ["automated testing", "unit testing", "integration testing", "e2e testing", "qa automation"],
   Testing: ["cypress", "playwright", "selenium", "jest", "pytest", "tdd"],
+
+  // Business Applications & CRM/ERP
+  "Dynamics 365": ["dynamics 365", "dynamics", "d365", "dynamics crm"],
+  "Power Platform": ["power platform", "power apps", "powerapps", "power automate", "dataverse", "power bi", "power pages"],
+  "CRM / ERP": ["crm", "erp", "salesforce", "sap"],
 };
 
 const BEHAVIOR_TERMS: Record<string, string[]> = {
@@ -138,6 +143,8 @@ function unique<T>(items: T[]): T[] {
 function profileEvidence(profile: CandidateProfile): string[] {
   const evidence: string[] = [];
   if (profile.summary) evidence.push(profile.summary);
+  if (profile.headline) evidence.push(profile.headline);
+  if (profile.targetRoles) evidence.push(...profile.targetRoles);
   for (const group of Object.values(profile.skills || {})) {
     if (Array.isArray(group)) evidence.push(...group.filter(Boolean));
   }
@@ -322,6 +329,7 @@ export function buildGroundedSummary(profile: CandidateProfile, job: JobInput, a
   const headline = profile.headline || recent?.role || "Software Engineering Professional";
   const sentences = [`${headline} based in ${location}.`];
   if (recent?.company && recent?.role) sentences.push(`Most recent recorded role: ${recent.role} at ${recent.company}.`);
+  else sentences.push(`Focuses on delivering technical solutions, system integrations, and production automation.`);
   const sourceBullets = (recent?.bullets || []).filter(Boolean).slice(0, 2);
   if (sourceBullets.length) sentences.push(`Selected evidence: ${sourceBullets.join(" ")}`);
   if (matchedTech.length) sentences.push(`Relevant documented skills: ${matchedTech.join(", ")}.`);

@@ -141,19 +141,26 @@ fi
 # 3.5 Bundle web app code and assets into Resources for standalone execution
 echo "Bundling web app resources into .app bundle..."
 cp -R "$REPO_DIR/app" "$APP_BUNDLE/Contents/Resources/"
-mkdir -p "$APP_BUNDLE/Contents/Resources/data"
-cp -R "$REPO_DIR/data" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
-if [ -d "$REPO_DIR/cv" ]; then
-    cp -R "$REPO_DIR/cv" "$APP_BUNDLE/Contents/Resources/"
-fi
-if [ -d "$REPO_DIR/cover_letters" ]; then
-    cp -R "$REPO_DIR/cover_letters" "$APP_BUNDLE/Contents/Resources/"
-fi
-if [ -d "$REPO_DIR/job_scraper" ]; then
-    cp -R "$REPO_DIR/job_scraper" "$APP_BUNDLE/Contents/Resources/"
-fi
-cp "$REPO_DIR/job_search_tracker.csv" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 cp "$REPO_DIR/package.json" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
+
+# Bundle the exact zero-dependency scraper sources used by the server. Do not
+# package node_modules or any local candidate/job data.
+for SKILL in linkedin-search freehire-search; do
+    TARGET="$APP_BUNDLE/Contents/Resources/.agents/skills/$SKILL/cli"
+    mkdir -p "$TARGET"
+    cp -R "$REPO_DIR/.agents/skills/$SKILL/cli/src" "$TARGET/"
+    cp "$REPO_DIR/.agents/skills/$SKILL/cli/package.json" "$TARGET/" 2>/dev/null || true
+done
+
+# Bundle clean template data without any personal candidate data
+mkdir -p "$APP_BUNDLE/Contents/Resources/data"
+cp "$REPO_DIR/data/profiles.template.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
+
+# A packaged runtime makes the installed app independent of the user's PATH.
+BUN_PATH="$(command -v bun)"
+mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
+cp "$BUN_PATH" "$APP_BUNDLE/Contents/Resources/bin/bun"
+chmod +x "$APP_BUNDLE/Contents/Resources/bin/bun"
 
 # 4. Prepare Staging Directory for DMG
 echo "Preparing DMG staging folder..."

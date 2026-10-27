@@ -10,6 +10,7 @@
     "test:app": "bun test ./app/tests/*.test.ts",
     "check:app": "bun build app/public/app.js --outfile=/tmp/ai-job-search-ui.js && bun build --target=bun app/server.ts --outfile=/tmp/ai-job-search-server.js",
     "build:dmg": "bash tools/build_dmg.sh",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build_windows.ps1",
     "scrape": "bun run .agents/skills/linkedin-search/cli/src/cli.ts search -q 'Senior Platform Engineer' -l 'Remote'"
   },
   "keywords": [

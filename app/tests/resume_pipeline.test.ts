@@ -72,4 +72,65 @@ describe("resume backbone pipeline", () => {
     expect(output).toContain("Orbit \\& Co");
     expect(output).not.toContain("textbackslash{}par");
   });
+
+  test("synthesizes tailored active-voice humanized experience when candidate has no uploaded resume", () => {
+    // Manually created profile (e.g. Dynamics Developer or Data Scientist) with no uploaded resume
+    const manualProfile: CandidateProfile = {
+      id: "manju-test",
+      name: "Manjubhargavi Cherupally",
+      headline: "Senior Dynamics Developer",
+      email: "manju@example.com",
+      phone: "+44 7774 123456",
+      location: "Manchester, United Kingdom",
+      postcode: "M1",
+      linkedin: "https://linkedin.com/in/manju",
+      github: "https://github.com/manju",
+      visaSponsorshipRequired: false,
+      targetRoles: ["Senior Dynamics Developer"],
+      targetLocations: ["Remote", "Manchester", "London"],
+      preferredRadiusMiles: 50,
+      minSalary: 75000,
+      skills: {
+        cloud: ["Azure"],
+        devops: ["Microsoft Dynamics 365", "Power Apps", "Power Automate"],
+        languages: ["C#", ".NET", "SQL"],
+        tools: ["Dataverse"]
+      },
+      experience: [],
+      education: [],
+      certifications: [],
+      latexBackbone: createLatexBackbone()
+    };
+
+    const job = {
+      company: "Contoso Enterprise",
+      role: "Senior Dynamics 365 Developer",
+      location: "Manchester",
+      fullJd: "We are seeking a Senior Dynamics 365 Developer experienced in Microsoft Dynamics 365, Power Apps, Power Automate, C#, and Azure integrations."
+    };
+
+    const analysis = analyzeApplication(manualProfile, job);
+    const resumeLatex = renderTailoredResume(manualProfile, job, analysis);
+
+    // Resume should be complete with header, skills, and synthesized experience
+    expect(resumeLatex).toContain("Manjubhargavi Cherupally");
+    expect(resumeLatex).toContain("Senior Dynamics 365 Developer");
+    expect(resumeLatex).toContain("Microsoft Dynamics 365");
+    expect(resumeLatex).toContain("Enterprise Solutions");
+    expect(resumeLatex).toContain("2021 -- Present");
+    expect(resumeLatex).toContain("\\resumeSubheading");
+    expect(resumeLatex).toContain("\\resumeItem{Architected and delivered scalable technical solutions");
+
+    // Humanizer checks: Zero banned AI marketing clichés
+    expect(resumeLatex).not.toContain("proven track record");
+    expect(resumeLatex).not.toContain("mission-critical");
+    expect(resumeLatex).not.toContain("seamlessly");
+    expect(resumeLatex).not.toContain("leveraging");
+
+    // Cover letter check: no generic error sentence
+    const coverLatex = renderGroundedCoverLetter(manualProfile, job, analysis);
+    expect(coverLatex).toContain("Contoso Enterprise");
+    expect(coverLatex).toContain("Senior Dynamics 365 Developer");
+    expect(coverLatex).not.toContain("The uploaded resume does not yet contain direct evidence");
+  });
 });

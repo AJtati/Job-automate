@@ -1,5 +1,5 @@
 import { serve } from "bun";
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, copyFileSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, copyFileSync, accessSync, constants } from "fs";
 import { join, resolve, relative, basename, dirname, isAbsolute } from "path";
 import { tmpdir, homedir } from "os";
 import { spawnSync } from "child_process";
@@ -17,12 +17,16 @@ import {
 } from "./job_sources";
 
 const PORT = Number(process.env.PORT || process.env.AI_JOB_SEARCH_PORT || 3333);
-const ROOT_DIR = process.env.AI_JOB_SEARCH_ROOT || process.cwd();
+const APP_ROOT = process.env.AI_JOB_SEARCH_APP_ROOT || process.cwd();
+const ROOT_DIR = process.env.AI_JOB_SEARCH_ROOT || process.env.AI_JOB_SEARCH_DATA_ROOT || process.cwd();
+const APP_PROTOCOL_VERSION = "2026-10-27.2";
+const INSTANCE_TOKEN = process.env.AI_JOB_SEARCH_INSTANCE_TOKEN || "development";
+const BUN_EXECUTABLE = process.execPath;
 const SEEN_JOBS_FILE = join(ROOT_DIR, "job_scraper", "seen_jobs.json");
 const TRACKER_FILE = join(ROOT_DIR, "job_search_tracker.csv");
-const CANDIDATE_PROFILE_FILE = join(ROOT_DIR, ".claude", "skills", "job-application-assistant", "01-candidate-profile.md");
+const LAST_SEARCH_STATUS_FILE = join(ROOT_DIR, "data", "last_search_status.json");
 
-const profilesManager = new ProfilesManager();
+const profilesManager = new ProfilesManager(ROOT_DIR);
 const aiService = new AIService();
 const sponsorRegistry = new SponsorRegistry(ROOT_DIR);
 const searchConfigManager = new SearchConfigManager(ROOT_DIR);
@@ -30,6 +34,35 @@ const searchConfigManager = new SearchConfigManager(ROOT_DIR);
 mkdirSync(join(ROOT_DIR, "job_scraper"), { recursive: true });
 mkdirSync(join(ROOT_DIR, "cv"), { recursive: true });
 mkdirSync(join(ROOT_DIR, "cover_letters"), { recursive: true });
+mkdirSync(join(ROOT_DIR, "data"), { recursive: true });
+
+function getRuntimeDiagnostics() {
+  const linkedinPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
+  const freehirePath = join(APP_ROOT, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
+  let dataWritable = true;
+  try { accessSync(ROOT_DIR, constants.W_OK); } catch { dataWritable = false; }
+  const issues: Array<{ code: string; message: string; guidance: string }> = [];
+  if (!existsSync(linkedinPath)) issues.push({ code: "LINKEDIN_FILES_MISSING", message: "The built-in LinkedIn scraper files are missing.", guidance: "Reinstall the latest app package. Your candidate data is stored separately and will be preserved." });
+  if (!existsSync(freehirePath)) issues.push({ code: "ATS_FILES_MISSING", message: "The built-in Direct ATS scraper files are missing.", guidance: "Reinstall the latest app package. Your candidate data is stored separately and will be preserved." });
+  if (!dataWritable) issues.push({ code: "DATA_NOT_WRITABLE", message: "The app cannot write to its data folder.", guidance: `Grant write permission to ${ROOT_DIR} or choose a writable AI_JOB_SEARCH_ROOT.` });
+  const profileWarning = profilesManager.getLoadWarning();
+  if (profileWarning) issues.push({ code: "PROFILE_DATA_RECOVERED", message: profileWarning, guidance: "Open the recovery copy to repair or re-import the profile. The app has created a new empty profile so it can still start." });
+  return {
+    healthy: issues.length === 0,
+    protocolVersion: APP_PROTOCOL_VERSION,
+    instanceToken: INSTANCE_TOKEN,
+    platform: process.platform,
+    runtime: `Bun ${Bun.version}`,
+    appRoot: APP_ROOT,
+    dataRoot: ROOT_DIR,
+    sources: { linkedin: existsSync(linkedinPath), directAts: existsSync(freehirePath) },
+    issues,
+  };
+}
+
+function readLastSearchStatus(): any | null {
+  try { return existsSync(LAST_SEARCH_STATUS_FILE) ? JSON.parse(readFileSync(LAST_SEARCH_STATUS_FILE, "utf-8")) : null; } catch { return null; }
+}
 
 function isAllowedWorkspacePath(path: string): boolean {
   const candidate = resolve(ROOT_DIR, path);
@@ -85,8 +118,20 @@ function extractPdfText(bytes: Uint8Array, fileName: string): string {
   const input = join(workDir, basename(fileName || "resume.pdf"));
   writeFileSync(input, bytes);
   try {
+    // 1. Native macOS PDFKit (works natively on 100% of Macs with zero third-party dependencies)
+    if (process.platform === "darwin") {
+      const swiftCode = `import Foundation; import PDFKit; if CommandLine.arguments.count > 1, let doc = PDFDocument(url: URL(fileURLWithPath: CommandLine.arguments[1])) { for i in 0..<doc.pageCount { if let p = doc.page(at: i), let s = p.string { print(s) } } }`;
+      const swiftRes = spawnSync("swift", ["-e", swiftCode, input], { encoding: "utf-8", timeout: 15000 });
+      if (swiftRes.status === 0 && swiftRes.stdout.trim().length > 30) {
+        return swiftRes.stdout;
+      }
+    }
+
+    // 2. pdftotext (Poppler CLI)
     const pdftotext = spawnSync("pdftotext", ["-layout", "-enc", "UTF-8", input, "-"], { encoding: "utf-8" });
     if (pdftotext.status === 0 && pdftotext.stdout.trim()) return pdftotext.stdout;
+
+    // 3. python / python3 with pypdf or pdfminer
     for (const python of process.platform === "win32" ? ["python", "py"] : ["python3", "python"]) {
       const script = "import sys; from pypdf import PdfReader; print('\\n'.join((p.extract_text() or '') for p in PdfReader(sys.argv[1]).pages))";
       const result = spawnSync(python, ["-c", script, input], { encoding: "utf-8" });
@@ -98,13 +143,14 @@ function extractPdfText(bytes: Uint8Array, fileName: string): string {
   }
 }
 
-async function readResumeRequest(req: Request): Promise<{ text: string; fileName: string; mediaType: string; previewOnly: boolean }> {
+async function readResumeRequest(req: Request): Promise<{ text: string; fileName: string; mediaType: string; previewOnly: boolean; targetProfileId?: string }> {
   const contentType = req.headers.get("content-type") || "";
   if (contentType.includes("multipart/form-data")) {
     const form = await req.formData();
     const file = form.get("file");
     const pastedText = String(form.get("resumeText") || "").trim();
     const previewOnly = String(form.get("previewOnly") || "false") === "true";
+    const targetProfileId = String(form.get("targetProfileId") || "").trim() || undefined;
     if (file instanceof File && file.size > 0) {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
@@ -113,9 +159,10 @@ async function readResumeRequest(req: Request): Promise<{ text: string; fileName
         fileName: file.name,
         mediaType: file.type || "text/plain",
         previewOnly,
+        targetProfileId,
       };
     }
-    return { text: pastedText, fileName: "pasted-resume.txt", mediaType: "text/plain", previewOnly };
+    return { text: pastedText, fileName: "pasted-resume.txt", mediaType: "text/plain", previewOnly, targetProfileId };
   }
   const body = await req.json() as any;
   return {
@@ -123,6 +170,7 @@ async function readResumeRequest(req: Request): Promise<{ text: string; fileName
     fileName: String(body.fileName || "pasted-resume.txt"),
     mediaType: String(body.mediaType || "text/plain"),
     previewOnly: Boolean(body.previewOnly),
+    targetProfileId: body.targetProfileId ? String(body.targetProfileId).trim() : undefined,
   };
 }
 
@@ -149,7 +197,7 @@ function getDistanceFromHartlepool(locationStr: string): { miles: number; tag: s
 }
 
 function checkSponsor(company: string, description = "") {
-  const assessment = assessSponsorship(sponsorRegistry.records(), company, description);
+  const assessment = assessSponsorship(sponsorRegistry, company, description);
   return {
     verified: assessment.employer.verified,
     label: assessment.employer.verified
@@ -175,6 +223,52 @@ interface DiscoveredJob {
   source: string;
 }
 
+function isJobRelevantToProfile(item: any, profile: CandidateProfile): boolean {
+  if (item.profileId) {
+    return item.profileId === profile.id;
+  }
+
+  const title = (item.title || "").toLowerCase();
+  const summary = (item.summary || "").toLowerCase();
+  const fullJd = (item.full_jd || "").toLowerCase();
+  const text = `${title} ${summary} ${fullJd} ${(item.key_skills || []).join(" ")}`.toLowerCase();
+
+  // Profile-specific indicators
+  const profileText = `${profile.headline || ""} ${(profile.targetRoles || []).join(" ")}`.toLowerCase();
+
+  const isDynamicsCandidate = /dynamics|power\s*platform|dataverse|power\s*apps|power\s*automate|d365|\bcrm\b/.test(profileText);
+  const isDevopsCandidate = /devops|platform\s*engineer|sre|site\s*reliability|infrastructure|kubernetes|terraform|cloud\s*engineer/.test(profileText);
+
+  if (isDynamicsCandidate && !isDevopsCandidate) {
+    const hasDynamicsDomain = /dynamics\s*365|dynamics\s*crm|d365|power\s*platform|power\s*apps|powerapps|power\s*automate|dataverse|\bcrm\b/.test(title) ||
+                              (/dynamics\s*365|d365|power\s*platform|dataverse/.test(text));
+    if (!hasDynamicsDomain) return false;
+    // Exclude pure DevOps platform/infrastructure roles that don't have Dynamics or CRM
+    if (/platform\s*engineer|sre|kubernetes|terraform|devops|infrastructure|cloud\s*engineer/.test(title) && !/dynamics|power\s*platform|power\s*apps|crm/i.test(title)) {
+      return false;
+    }
+    return true;
+  }
+
+  if (isDevopsCandidate && !isDynamicsCandidate) {
+    // Exclude Dynamics/CRM specific roles
+    if (/dynamics\s*365|dynamics\s*crm|power\s*platform|power\s*apps|power\s*automate|d365/.test(title)) {
+      return false;
+    }
+    const hasDevopsDomain = /devops|platform|cloud|infrastructure|sre|reliability|kubernetes|terraform|aws|azure|systems\s*engineer/.test(title) ||
+                            (item.key_skills || []).some((k: string) => /kubernetes|terraform|aws|docker|ci\/cd|devops/i.test(k));
+    return hasDevopsDomain;
+  }
+
+  // Universal target role matching for other disciplines
+  const targetRoles = (profile.targetRoles || []).map(r => r.toLowerCase().trim()).filter(Boolean);
+  if (profile.headline) targetRoles.push(profile.headline.toLowerCase().trim());
+  return targetRoles.some(role => {
+    const cleanRole = role.replace(/[^a-z0-9]/g, " ").trim();
+    return cleanRole.length > 3 && title.includes(cleanRole);
+  });
+}
+
 function ingestDiscoveredJob(
   seen: Record<string, any>,
   job: DiscoveredJob,
@@ -182,12 +276,15 @@ function ingestDiscoveredJob(
   sponsorshipMode: SponsorshipMode,
 ): "added" | "enriched" | "filtered" | "unchanged" {
   const description = String(job.description || "").trim();
-  const sponsorship = assessSponsorship(sponsorRegistry.records(), job.company, description);
+  const sponsorship = assessSponsorship(sponsorRegistry, job.company, description);
   if (!matchesSponsorshipMode(sponsorship, sponsorshipMode)) return "filtered";
 
   const dedupKey = getJobDedupKey(job);
   const existingKey = Object.keys(seen).find(key => getJobDedupKey(seen[key]) === dedupKey);
   if (existingKey) {
+    if (!seen[existingKey].profileId) {
+      seen[existingKey].profileId = profile.id;
+    }
     if (description && (!seen[existingKey].full_jd || seen[existingKey].full_jd.length < description.length)) {
       seen[existingKey].full_jd = description;
       if (job.skills?.length) seen[existingKey].key_skills = job.skills.slice(0, 8);
@@ -200,6 +297,7 @@ function ingestDiscoveredJob(
     ? analyzeApplication(profile, { company: job.company, role: job.title, location: job.location, fullJd: description, keySkills: job.skills || [] })
     : null;
   seen[job.id] = {
+    profileId: profile.id,
     title: job.title,
     company: job.company,
     url: job.url,
@@ -219,13 +317,25 @@ function ingestDiscoveredJob(
   return "added";
 }
 
-function readTracker(): Record<string, any> {
-  if (!existsSync(TRACKER_FILE)) return {};
+function readTracker(activeProfile?: CandidateProfile): Record<string, any> {
+  const map: Record<string, any> = {};
+
+  // 1. Seed from activeProfile.tracker if available
+  if (activeProfile?.tracker) {
+    for (const [key, record] of Object.entries(activeProfile.tracker)) {
+      map[key] = record;
+    }
+  }
+
+  // 2. Read TRACKER_FILE (job_search_tracker.csv)
+  if (!existsSync(TRACKER_FILE)) return map;
   const content = readFileSync(TRACKER_FILE, "utf-8");
   const lines = content.split("\n").filter(l => l.trim().length > 0);
-  if (lines.length <= 1) return {};
+  if (lines.length <= 1) return map;
   
-  const map: Record<string, any> = {};
+  const candidateId = activeProfile?.id || "";
+  const candidateNameNorm = (activeProfile?.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
   for (let i = 1; i < lines.length; i++) {
     const cols = parseCsvLine(lines[i]);
     if (cols.length >= 4) {
@@ -236,7 +346,30 @@ function readTracker(): Record<string, any> {
       const coverFile = cols[11]?.trim() || "";
       const fitRating = cols[8]?.trim() || "92";
       const sourceUrl = cols[12]?.trim() || "";
-      
+
+      // Scope check: do not assign rows containing another candidate's name or CV file
+      if (activeProfile) {
+        const cvNorm = cvFile.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const coverNorm = coverFile.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const candidateSlugNorm = candidateId.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+        const isSelf = (candidateSlugNorm && (cvNorm.includes(candidateSlugNorm) || coverNorm.includes(candidateSlugNorm))) ||
+                       (candidateNameNorm && (cvNorm.includes(candidateNameNorm) || coverNorm.includes(candidateNameNorm)));
+
+        const isAjith = cvNorm.includes("ajith") || coverNorm.includes("ajith");
+        const isManju = cvNorm.includes("manju") || coverNorm.includes("manju");
+
+        if (candidateId === "manjubhargavi-cherupally" && isAjith && !isManju) {
+          continue;
+        }
+        if (candidateId === "ajith-surya-thati" && isManju && !isAjith) {
+          continue;
+        }
+        if (cvFile && !isSelf && (isAjith || isManju)) {
+          continue;
+        }
+      }
+
       const record = { company, role, status, cvFile, coverFile, fitRating, sourceUrl };
       
       // Index by dedupKey (canonical URL / job ID / normalized company+role)
@@ -295,11 +428,11 @@ function fetchJobDescription(job: { id?: string; url?: string; portal?: string; 
 
   // 1. LinkedIn detail
   if (portal === "linkedin-search" || url.includes("linkedin.com")) {
-    const liCliPath = join(ROOT_DIR, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
+    const liCliPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
     if (existsSync(liCliPath) && url) {
       try {
-        const res = spawnSync("bun", ["run", liCliPath, "detail", url, "--format", "json"], {
-          cwd: ROOT_DIR,
+        const res = spawnSync(BUN_EXECUTABLE, ["run", liCliPath, "detail", url, "--format", "json"], {
+          cwd: APP_ROOT,
           encoding: "utf-8",
           timeout: 10000
         });
@@ -317,13 +450,13 @@ function fetchJobDescription(job: { id?: string; url?: string; portal?: string; 
 
   // 2. Freehire detail
   if (portal === "freehire-ats" || url.includes("freehire.me")) {
-    const freehireCliPath = join(ROOT_DIR, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
+    const freehireCliPath = join(APP_ROOT, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
     if (existsSync(freehireCliPath)) {
       const slugOrUrl = url || job.id?.replace(/^fh_/, "") || "";
       if (slugOrUrl) {
         try {
-          const res = spawnSync("bun", ["run", freehireCliPath, "detail", slugOrUrl, "--format", "json"], {
-            cwd: ROOT_DIR,
+          const res = spawnSync(BUN_EXECUTABLE, ["run", freehireCliPath, "detail", slugOrUrl, "--format", "json"], {
+            cwd: APP_ROOT,
             encoding: "utf-8",
             timeout: 10000
           });
@@ -347,7 +480,7 @@ function fetchJobDescription(job: { id?: string; url?: string; portal?: string; 
 async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
   const seen = readSeenJobs();
   const jobId = `ext_${Date.now()}`;
-  let title = "Platform / DevOps Engineer";
+  let title = "Job Vacancy";
   let company = "Hiring Company";
   let location = "Remote / United Kingdom";
   let fullJd = "";
@@ -355,11 +488,11 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
 
   // 1. If it's a LinkedIn URL, invoke LinkedIn CLI detail fetcher
   if (targetUrl.includes("linkedin.com")) {
-    const liCliPath = join(ROOT_DIR, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
+    const liCliPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
     if (existsSync(liCliPath)) {
       try {
-        const res = spawnSync("bun", ["run", liCliPath, "detail", targetUrl, "--format", "json"], {
-          cwd: ROOT_DIR,
+        const res = spawnSync(BUN_EXECUTABLE, ["run", liCliPath, "detail", targetUrl, "--format", "json"], {
+          cwd: APP_ROOT,
           encoding: "utf-8",
           timeout: 12000
         });
@@ -458,9 +591,9 @@ const INITIAL_SEED_JOBS = [
     fit_score: 95,
     summary: "Build and scale high-impact platform systems with AWS EKS, Terraform, CI/CD, and GitOps for UK government & healthcare clients. B-Corp certified.",
     key_skills: ["AWS", "Kubernetes", "EKS", "Terraform", "CI/CD", "Consulting", "GitOps", "Python"],
-    cv_file: "cv/main_opencast_devops_senior_consultant.tex",
-    cover_file: "cover_letters/cover_opencast_devops_senior_consultant.tex",
-    status: "drafted",
+    cv_file: "",
+    cover_file: "",
+    status: "new",
     full_jd: `Devops - Senior Consultant\nOpencast | B Corp™ · Newcastle Upon Tyne, England, United Kingdom\nSalary: £61,000 - £85,000\n\nReady to automate, innovate and make a real impact? We’re a growing tech consultancy that creates user-centred solutions with purpose for our clients in government, healthcare and purpose-driven businesses.\n\nKey Responsibilities:\n- Outage response, triaging issues, balancing stakeholder concerns.\n- Designing, developing, and implementing continuous deployment solutions.\n- Collaborating with clients to understand ways of working; learning new tools.\n- Mentoring other developers.\n- Contributing within Opencast communities.\n- Adhering to information security and quality policies.`
   },
   {
@@ -474,9 +607,9 @@ const INITIAL_SEED_JOBS = [
     fit_score: 96,
     summary: "Lead client-facing cloud platforms and DevOps practices. Modern IaC (Terraform, CloudFormation), AWS cloud engineering, Kubernetes, and Python automation. Newcastle Helix HQ.",
     key_skills: ["Terraform", "AWS", "CI/CD", "Python", "Kubernetes", "CloudFormation", "Architecture", "Mentorship"],
-    cv_file: "cv/main_scott_logic_platform_engineer__senior_lead_.tex",
-    cover_file: "cover_letters/cover_scott_logic_platform_engineer__senior_lead_.tex",
-    status: "drafted",
+    cv_file: "",
+    cover_file: "",
+    status: "new",
     full_jd: `Platform Engineer (Senior/Lead)\nScott Logic · Newcastle Upon Tyne, England, United Kingdom (The Lumen, Newcastle Helix)\n\nAt Scott Logic, we have a reputation for world-class software delivery. We are trusted by some of the world’s leading organisations to build reliable, high-performance, business-critical solutions – and expert advice.\n\nOur Platform Engineers design, build and manage cloud infrastructure and delivery platforms to support modern DevOps practices: CI/CD processes, deployment pipelines, building robust platform infrastructure, and migrating complex systems from on-premises to cloud providers.\n\nWhat are we looking for?\n- Modern Infrastructure as Code tools: Terraform, CloudFormation, Bicep.\n- Familiarity with major cloud platforms, particularly AWS or Azure.\n- Good CI/CD and deployment automation experience.\n- Python or other scripting languages for DevOps tasks.\n- Problem-solving, communication skills, and collaborative approach.\n- Good practices around security, reliability, observability, cost efficiency, performance, and governance.\n- For lead roles: good technical leadership experience, understanding what makes a team successful, and supporting colleagues.\n- Experience with containerisation, Kubernetes, or data platforms (nice-to-have).`
   },
   {
@@ -596,45 +729,60 @@ serve({
   async fetch(req) {
     const url = new URL(req.url);
 
+    if (url.pathname === "/api/health" && req.method === "GET") {
+      const diagnostics = getRuntimeDiagnostics();
+      return Response.json({ status: diagnostics.healthy ? "ok" : "degraded", ...diagnostics });
+    }
+
+    if (url.pathname === "/api/diagnostics" && req.method === "GET") {
+      return Response.json({ runtime: getRuntimeDiagnostics(), lastSearch: readLastSearchStatus(), sponsorRegistry: sponsorRegistry.status() });
+    }
+
+    if (url.pathname === "/api/search/status" && req.method === "GET") {
+      return Response.json({ lastSearch: readLastSearchStatus() });
+    }
+
     // API: GET /api/jobs
     if (url.pathname === "/api/jobs" && req.method === "GET") {
       const seen = readSeenJobs();
-      const tracker = readTracker();
       const activeProfile = profilesManager.getActiveProfile();
+      const tracker = readTracker(activeProfile);
 
-      const jobsList = Object.entries(seen).map(([id, item]: [string, any]) => {
-        const dist = profilesManager.calculateDistance(item.location || "", activeProfile);
-        const fullJd = item.full_jd || item.summary || "";
-        const sponsor = checkSponsor(item.company || "", fullJd);
-        
-        // Check if tracker has an entry via dedupKey, simpleKey, or normKey
-        const itemDedupKey = getJobDedupKey(item);
-        const simpleKey = `${item.company}_${item.title}`.toLowerCase();
-        const normComp = (item.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-        const normRole = (item.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
-        const normKey = `norm_${normComp}_${normRole}`;
-        const tracked = tracker[itemDedupKey] || tracker[simpleKey] || tracker[normKey];
+      const jobsList = Object.entries(seen)
+        .filter(([id, item]: [string, any]) => isJobRelevantToProfile(item, activeProfile))
+        .map(([id, item]: [string, any]) => {
+          const dist = profilesManager.calculateDistance(item.location || "", activeProfile);
+          const fullJd = item.full_jd || item.summary || "";
+          const sponsor = checkSponsor(item.company || "", fullJd);
+          
+          // Check if tracker has an entry via dedupKey, simpleKey, or normKey
+          const itemDedupKey = getJobDedupKey(item);
+          const simpleKey = `${item.company}_${item.title}`.toLowerCase();
+          const normComp = (item.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const normRole = (item.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+          const normKey = `norm_${normComp}_${normRole}`;
+          const tracked = tracker[itemDedupKey] || tracker[simpleKey] || tracker[normKey];
 
-        // Status hierarchy: applied > drafted > new
-        let status = "new";
-        if ((tracked && tracked.status === "applied") || item.status === "applied") {
-          status = "applied";
-        } else if ((tracked && tracked.status === "drafted") || item.status === "drafted") {
-          status = "drafted";
-        } else {
-          status = (tracked && tracked.status) || item.status || "new";
-        }
+          // Status hierarchy scoped to the active candidate
+          let status = "new";
+          if (tracked && tracked.status) {
+            status = tracked.status;
+          } else if (item.profileId && item.profileId === activeProfile.id && item.status) {
+            status = item.status;
+          } else {
+            status = "new";
+          }
 
-        const cvFile = (tracked && tracked.cvFile) ? tracked.cvFile : (item.cv_file || "");
-        const coverFile = (tracked && tracked.coverFile) ? tracked.coverFile : (item.cover_file || "");
+          const cvFile = (tracked && tracked.cvFile) ? tracked.cvFile : (item.profileId === activeProfile.id ? (item.cv_file || "") : "");
+          const coverFile = (tracked && tracked.coverFile) ? tracked.coverFile : (item.profileId === activeProfile.id ? (item.cover_file || "") : "");
 
-        const analysis = analyzeApplication(activeProfile, {
-          company: item.company || "",
-          role: item.title || "",
-          location: item.location || "",
-          fullJd,
-          keySkills: item.key_skills || [],
-        });
+          const analysis = analyzeApplication(activeProfile, {
+            company: item.company || "",
+            role: item.title || "",
+            location: item.location || "",
+            fullJd,
+            keySkills: item.key_skills || [],
+          });
 
         return {
           id,
@@ -787,31 +935,61 @@ serve({
 
         const deterministic = parseResumeDeterministically(resumeText);
         const parsed = await aiService.parseResumeText(resumeText);
+        const allProfilesList = profilesManager.getAll().profiles;
+
+        // Check if an existing profile should be updated:
+        // 1. Explicit targetProfileId from caller
+        // 2. Candidate name matches an existing profile (case-insensitive)
+        // 3. Email matches an existing profile
+        let resolvedProfileId = incoming.targetProfileId;
+        if (!resolvedProfileId && parsed.name) {
+          const norm = parsed.name.trim().toLowerCase();
+          const matchByName = allProfilesList.find(p => p.name.trim().toLowerCase() === norm);
+          if (matchByName) resolvedProfileId = matchByName.id;
+        }
+        if (!resolvedProfileId && parsed.email) {
+          const matchByEmail = allProfilesList.find(p => p.email && p.email.trim().toLowerCase() === parsed.email.trim().toLowerCase());
+          if (matchByEmail) resolvedProfileId = matchByEmail.id;
+        }
+
+        const cleanSlug = (parsed.name || "candidate").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        const finalId = resolvedProfileId || cleanSlug;
+        const existingRecord = allProfilesList.find(p => p.id === finalId);
+
         const newProfile: CandidateProfile = {
-          id: (parsed.name || "candidate").toLowerCase().replace(/[^a-z0-9]/g, "-") + "-" + Date.now().toString().slice(-4),
-          name: parsed.name || "",
-          headline: parsed.headline || "",
-          summary: parsed.summary || "",
-          email: parsed.email || "",
-          phone: parsed.phone || "",
-          location: parsed.location || "",
-          postcode: parsed.postcode || "",
-          linkedin: parsed.linkedin || "",
-          github: parsed.github || "",
-          portfolio: parsed.portfolio || "",
-          visaSponsorshipRequired: parsed.visaSponsorshipRequired ?? false,
-          targetRoles: parsed.targetRoles?.filter(Boolean) || (parsed.headline ? [parsed.headline] : []),
-          targetLocations: parsed.targetLocations?.filter(Boolean) || [],
-          preferredRadiusMiles: parsed.preferredRadiusMiles || 50,
-          minSalary: parsed.minSalary || 0,
-          skills: parsed.skills || { cloud: [], devops: [], languages: [], tools: [] },
-          experience: (parsed.experience as any) || [],
-          projects: (parsed.projects as any) || [],
-          education: (parsed.education as any) || [],
-          certifications: (parsed.certifications as any) || [],
-          spokenLanguages: parsed.spokenLanguages || [],
-          latexBackbone: createLatexBackbone(),
-          profileVersion: 1,
+          id: finalId,
+          name: parsed.name || existingRecord?.name || "",
+          headline: parsed.headline || existingRecord?.headline || "",
+          summary: parsed.summary || existingRecord?.summary || "",
+          email: parsed.email || existingRecord?.email || "",
+          phone: parsed.phone || existingRecord?.phone || "",
+          location: parsed.location || existingRecord?.location || "",
+          postcode: parsed.postcode || deterministic.profile.postcode || existingRecord?.postcode || "",
+          linkedin: parsed.linkedin || existingRecord?.linkedin || "",
+          github: parsed.github || existingRecord?.github || "",
+          portfolio: parsed.portfolio || existingRecord?.portfolio || "",
+          visaSponsorshipRequired: (typeof parsed.visaSponsorshipRequired === "boolean")
+            ? parsed.visaSponsorshipRequired
+            : ((typeof deterministic.profile.visaSponsorshipRequired === "boolean")
+              ? deterministic.profile.visaSponsorshipRequired
+              : (existingRecord?.visaSponsorshipRequired ?? false)),
+          targetRoles: (parsed.targetRoles?.filter(Boolean)?.length)
+            ? parsed.targetRoles.filter(Boolean)
+            : (deterministic.profile.targetRoles?.length ? deterministic.profile.targetRoles : (existingRecord?.targetRoles?.length ? existingRecord.targetRoles : [parsed.headline].filter(Boolean))),
+          targetLocations: (parsed.targetLocations?.filter(Boolean)?.length)
+            ? parsed.targetLocations.filter(Boolean)
+            : (deterministic.profile.targetLocations?.length ? deterministic.profile.targetLocations : (existingRecord?.targetLocations?.length ? existingRecord.targetLocations : [])),
+          preferredRadiusMiles: parsed.preferredRadiusMiles || deterministic.profile.preferredRadiusMiles || existingRecord?.preferredRadiusMiles || 50,
+          minSalary: parsed.minSalary || deterministic.profile.minSalary || existingRecord?.minSalary || 0,
+          skills: parsed.skills || deterministic.profile.skills || existingRecord?.skills || { cloud: [], devops: [], languages: [], tools: [] },
+          keywords: (parsed as any).keywords || deterministic.profile.keywords || [],
+          experience: (parsed.experience as any) || existingRecord?.experience || [],
+          projects: (parsed.projects as any) || existingRecord?.projects || [],
+          education: (parsed.education as any) || existingRecord?.education || [],
+          certifications: (parsed.certifications as any) || existingRecord?.certifications || [],
+          spokenLanguages: parsed.spokenLanguages || existingRecord?.spokenLanguages || [],
+          latexBackbone: existingRecord?.latexBackbone || createLatexBackbone(),
+          profileVersion: (existingRecord?.profileVersion || 0) + 1,
           sourceResume: {
             fileName: incoming.fileName,
             mediaType: incoming.mediaType,
@@ -820,8 +998,11 @@ serve({
             text: resumeText,
             ...(incoming.fileName.toLowerCase().endsWith(".tex") ? { originalLatex: resumeText } : {}),
           },
-          tracker: {},
-          scenarioHistory: [`Imported from ${incoming.fileName}`]
+          tracker: existingRecord?.tracker || {},
+          scenarioHistory: [
+            ...(existingRecord?.scenarioHistory || []),
+            `Imported from ${incoming.fileName}`
+          ]
         };
 
         const warnings = [...deterministic.warnings];
@@ -1104,35 +1285,53 @@ serve({
           else if (result === "enriched") enrichedCount++;
           else if (result === "filtered") filteredCount++;
         };
+        const counters = () => ({ addedCount, enrichedCount, filteredCount });
+        const withCounts = (report: SourceReport, before: ReturnType<typeof counters>): SourceReport => ({
+          ...report,
+          added: addedCount - before.addedCount,
+          enriched: enrichedCount - before.enrichedCount,
+          filtered: filteredCount - before.filteredCount,
+        });
 
         if (config.sources.linkedin) {
-          const liCliPath = join(ROOT_DIR, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
+          const before = counters();
+          const liCliPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
           let found = 0;
           let successfulQueries = 0;
-          for (const query of liQueries) {
-            const res = spawnSync("bun", ["run", liCliPath, "search", "-q", query.q, "-l", query.l, "--jobage", "7", "--limit", "8"], { cwd: ROOT_DIR, encoding: "utf-8" });
-            if (res.status !== 0 || !res.stdout) continue;
-            try {
-              const data = JSON.parse(res.stdout);
-              successfulQueries++;
-              for (const item of Array.isArray(data.results) ? data.results : []) {
-                found++;
-                const fullJd = fetchJobDescription({ url: item.url, portal: "linkedin-search" }) || "";
-                countResult(ingestDiscoveredJob(seen, {
-                  id: `li_${item.id}`, title: item.title, company: item.company, url: item.url,
-                  location: item.location || "United Kingdom", postedDate: item.date, description: fullJd,
-                  skills: activeSkills, portal: "linkedin-search", source: "cli",
-                }, activeProfile, sponsorshipMode));
+          let lastError = "";
+          if (existsSync(liCliPath)) {
+            for (const query of liQueries) {
+              const res = spawnSync(BUN_EXECUTABLE, ["run", liCliPath, "search", "-q", query.q, "-l", query.l, "--jobage", "7", "--limit", "8"], { cwd: APP_ROOT, encoding: "utf-8" });
+              if (res.status !== 0 || !res.stdout) {
+                lastError = res.error?.message || String(res.stderr || "Search process failed").trim().slice(0, 240);
+                continue;
               }
-            } catch {}
+              try {
+                const data = JSON.parse(res.stdout);
+                successfulQueries++;
+                for (const item of Array.isArray(data.results) ? data.results : []) {
+                  found++;
+                  const fullJd = fetchJobDescription({ url: item.url, portal: "linkedin-search" }) || "";
+                  countResult(ingestDiscoveredJob(seen, {
+                    id: `li_${item.id}`, title: item.title, company: item.company, url: item.url,
+                    location: item.location || "United Kingdom", postedDate: item.date, description: fullJd,
+                    skills: activeSkills, portal: "linkedin-search", source: "cli",
+                  }, activeProfile, sponsorshipMode));
+                }
+              } catch (error: any) { lastError = `Unreadable scraper response: ${error.message}`; }
+            }
+          } else {
+            lastError = "Built-in LinkedIn scraper files are missing from this installation.";
           }
-          reports.push({ source: "LinkedIn", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : "Search returned no readable response" });
+          reports.push(withCounts({ source: "LinkedIn", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : (lastError || "Search returned no readable response"), guidance: successfulQueries ? undefined : "Reinstall the latest app package, then retry. If the files are present, check the internet connection and wait before retrying to avoid rate limits." }, before));
         } else reports.push({ source: "LinkedIn", status: "skipped", found: 0, reason: "Disabled" });
 
         if (config.sources.freehire) {
-          const freehireCliPath = join(ROOT_DIR, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
+          const before = counters();
+          const freehireCliPath = join(APP_ROOT, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
           let found = 0;
           let successfulQueries = 0;
+          let lastError = "";
           if (existsSync(freehireCliPath)) {
           const freehireArgsList: Array<string[]> = [];
           for (const role of targetRoles.slice(0, 3)) {
@@ -1149,8 +1348,8 @@ serve({
           }
 
             for (const args of freehireArgsList) {
-            const res = spawnSync("bun", ["run", freehireCliPath, ...args], {
-              cwd: ROOT_DIR,
+            const res = spawnSync(BUN_EXECUTABLE, ["run", freehireCliPath, ...args], {
+              cwd: APP_ROOT,
               encoding: "utf-8"
             });
 
@@ -1176,11 +1375,12 @@ serve({
                 }
               } catch (err) {
                 console.error("Error parsing Freehire result:", err);
+                lastError = `Unreadable scraper response: ${String(err)}`;
               }
+            } else lastError = res.error?.message || String(res.stderr || "Search process failed").trim().slice(0, 240);
             }
-            }
-          }
-          reports.push({ source: "Direct ATS", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : "Search returned no readable response" });
+          } else lastError = "Built-in Direct ATS scraper files are missing from this installation.";
+          reports.push(withCounts({ source: "Direct ATS", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : (lastError || "Search returned no readable response"), guidance: successfulQueries ? undefined : "Reinstall the latest app package, then retry. If the files are present, check the internet connection." }, before));
         } else reports.push({ source: "Direct ATS", status: "skipped", found: 0, reason: "Disabled" });
 
         const apiLocation = targetLocations.find(location => location.toLowerCase() !== "remote") || "United Kingdom";
@@ -1194,12 +1394,13 @@ serve({
           { enabled: config.sources.remotive, name: "Remotive", keyReady: true, search: (q, l) => searchRemotive(config, q, l) },
         ];
         for (const provider of apiSources) {
+          const before = counters();
           if (!provider.enabled) {
             reports.push({ source: provider.name, status: "skipped", found: 0, reason: "Disabled" });
             continue;
           }
           if (!provider.keyReady) {
-            reports.push({ source: provider.name, status: "skipped", found: 0, reason: "API key not configured" });
+            reports.push({ source: provider.name, status: "skipped", found: 0, reason: "API key not configured", guidance: `Open Sources, enter the ${provider.name} credentials, save, and retry.` });
             continue;
           }
           try {
@@ -1209,18 +1410,21 @@ serve({
               location: job.location, postedDate: job.postedDate, description: job.description,
               salary: job.salary, portal: job.portal, source: "api",
             }, activeProfile, sponsorshipMode));
-            reports.push({ source: provider.name, status: "ok", found: jobs.length });
+            reports.push(withCounts({ source: provider.name, status: "ok", found: jobs.length }, before));
           } catch (error: any) {
-            reports.push({ source: provider.name, status: "failed", found: 0, reason: error.message });
+            reports.push(withCounts({ source: provider.name, status: "failed", found: 0, reason: error.message, guidance: "Check the internet connection and provider availability, or disable this supplemental source temporarily." }, before));
           }
         }
 
         saveSeenJobs(seen);
-        return new Response(JSON.stringify({
+        const searchStatus = {
           success: true, addedCount, enrichedCount, filteredCount, sponsorshipMode,
           sponsorRegistry: registry, sources: reports,
           query: scrapeRequest.query || null, location: scrapeRequest.location || null,
-        }), {
+          completedAt: new Date().toISOString(),
+        };
+        writeFileSync(LAST_SEARCH_STATUS_FILE, JSON.stringify(searchStatus, null, 2), "utf-8");
+        return new Response(JSON.stringify(searchStatus), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err: any) {
@@ -1563,9 +1767,9 @@ serve({
     // API: GET /api/stats
     if (url.pathname === "/api/stats" && req.method === "GET") {
       const seen = readSeenJobs();
-      const tracker = readTracker();
       const activeProfile = profilesManager.getActiveProfile();
-      const all = Object.values(seen);
+      const tracker = readTracker(activeProfile);
+      const all = Object.values(seen).filter((j: any) => isJobRelevantToProfile(j, activeProfile));
       const stats = {
         total_discovered: all.length,
         near_hartlepool: all.filter((j: any) => profilesManager.calculateDistance(j.location || "", activeProfile).miles <= (activeProfile.preferredRadiusMiles || 70) && !profilesManager.calculateDistance(j.location || "", activeProfile).isRemote).length,
@@ -1575,7 +1779,11 @@ serve({
           const sponsor = checkSponsor(j.company || "", j.full_jd || j.summary || "");
           return sponsor.verified && sponsor.assessment.vacancyStatus === "offered";
         }).length,
-        drafted: all.filter((j: any) => j.status === "drafted").length,
+        drafted: all.filter((j: any) => {
+          const key = getJobDedupKey(j);
+          const t = tracker[key] || tracker[`${j.company}_${j.title}`.toLowerCase()];
+          return (t && t.status === "drafted") || (j.profileId === activeProfile.id && j.status === "drafted");
+        }).length,
         applied: Object.values(tracker).filter((t: any) => t.status === "applied").length,
         activeCandidate: activeProfile.name
       };
@@ -1675,7 +1883,7 @@ serve({
     }
 
     // Serve Static UI Assets from app/public
-    const publicDir = resolve(ROOT_DIR, "app", "public");
+    const publicDir = resolve(APP_ROOT, "app", "public");
     const requestedAsset = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/+/, "");
     const filePath = resolve(publicDir, requestedAsset);
     const assetRelative = relative(publicDir, filePath);
@@ -1693,7 +1901,32 @@ serve({
 
 console.log(`AI Job Search Studio is running at http://127.0.0.1:${PORT}`);
 
-function updateTracker(company: string, role: string, status: string, cvFile = "", coverFile = "", fit = 0, sourceUrl = "") {
+function updateTracker(
+  company: string,
+  role: string,
+  status: string,
+  cvFile = "",
+  coverFile = "",
+  fit = 0,
+  sourceUrl = "",
+  profile?: CandidateProfile
+) {
+  const activeProfile = profile || profilesManager.getActiveProfile();
+  const dedupKey = getJobDedupKey({ company, title: role, url: sourceUrl });
+  const simpleKey = `${company}_${role}`.toLowerCase();
+
+  // Save on candidate profile tracker
+  if (!activeProfile.tracker) activeProfile.tracker = {};
+  activeProfile.tracker[dedupKey] = {
+    status,
+    cvFile,
+    coverFile,
+    fitRating: fit ? fit.toString() : "90",
+    updatedAt: new Date().toISOString()
+  };
+  activeProfile.tracker[simpleKey] = activeProfile.tracker[dedupKey];
+  profilesManager.saveProfile(activeProfile);
+
   const today = new Date().toISOString().split("T")[0];
   if (!existsSync(TRACKER_FILE)) {
     writeFileSync(TRACKER_FILE, "date,company,sector,role,role_type,channel,status,contact_person,fit_rating,notes,cv_file,cover_letter_file,source,deadline\n");
@@ -1701,6 +1934,11 @@ function updateTracker(company: string, role: string, status: string, cvFile = "
   const content = readFileSync(TRACKER_FILE, "utf-8");
   const lines = content.split("\n");
   let found = false;
+
+  const candidateSlug = activeProfile.id.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+  const isAjithProfile = activeProfile.id === "ajith-surya-thati";
+  const isManjuProfile = activeProfile.id === "manjubhargavi-cherupally";
+
   const newLines = lines.map(line => {
     if (!line.trim()) return line;
     const cols = parseCsvLine(line);
@@ -1708,8 +1946,15 @@ function updateTracker(company: string, role: string, status: string, cvFile = "
     const targetComp = (company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
     const normTrackRole = (cols[3] || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
     const targetRole = (role || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+    const lineCv = (cols[10] || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-    if (cols.length >= 4 && normTrackComp === targetComp && normTrackRole === targetRole) {
+    const isAjithRow = lineCv.includes("ajith");
+    const isManjuRow = lineCv.includes("manju");
+    const matchesCandidate = (isManjuProfile && !isAjithRow) ||
+                             (isAjithProfile && !isManjuRow) ||
+                             lineCv.includes(candidateSlug);
+
+    if (cols.length >= 4 && normTrackComp === targetComp && normTrackRole === targetRole && matchesCandidate) {
       found = true;
       cols[6] = status;
       if (fit) cols[8] = fit.toString();
@@ -1734,7 +1979,7 @@ function updateTracker(company: string, role: string, status: string, cvFile = "
       status || "drafted",
       "",
       (fit || 0).toString(),
-      `Created by AI Job Search Studio. Review sponsorship and document evidence before submission.`,
+      `Candidate: ${activeProfile.name}. Created by AI Job Search Studio. Review sponsorship and document evidence before submission.`,
       cvFile || "",
       coverFile || "",
       sourceUrl ? (sourceUrl.includes(",") ? `"${sourceUrl}"` : sourceUrl) : "",

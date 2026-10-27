@@ -243,6 +243,22 @@
         <button class="modal-close-btn" id="btnCloseProfileModal">✕</button>
       </div>
       <div class="modal-body">
+        <!-- In-Modal Resume Upload & AI Auto-Fill Dropzone Card -->
+        <div class="profile-direct-dropzone-card" id="profileModalDropzone">
+          <input type="file" id="profileModalFileInput" class="resume-file-input-overlay" accept=".pdf,.tex,.txt,.md" />
+          <div class="dropzone-inner-content">
+            <div class="dropzone-icon-box" id="profileDropzoneIcon">📁</div>
+            <div class="dropzone-text-box">
+              <div class="dropzone-primary-text" id="profileDropzonePrimaryText">Upload Resume to Auto-Fill All Fields with AI</div>
+              <div class="dropzone-sub-text" id="profileDropzoneSubText">Click or drop resume (.pdf, .tex, .txt, .md). AI parses your name, contact, skills, and roles automatically into the form below.</div>
+            </div>
+            <button type="button" class="btn-primary" id="btnProfileModalAutoFill" style="white-space: nowrap; font-size: 12px; padding: 8px 16px; flex-shrink: 0; z-index: 6; position: relative;">
+              <span id="profileAutoFillBtnSpinner" class="spinner" style="display: none; width: 12px; height: 12px; margin-right: 6px;"></span>
+              <span id="profileAutoFillBtnText">✨ Auto-Fill with AI</span>
+            </button>
+          </div>
+          <div id="profileModalAutofillStatus" class="dropzone-status-bar" style="display: none;"></div>
+        </div>
         <form id="profileForm">
           <input type="hidden" id="formProfileId" />
           <div class="form-grid-2">
@@ -252,7 +268,7 @@
             </div>
             <div class="form-group">
               <label>Professional Headline</label>
-              <input type="text" id="formHeadline" required placeholder="e.g. Senior Platform & DevOps Engineer" />
+              <input type="text" id="formHeadline" required placeholder="e.g. Senior Software Engineer / Financial Analyst / Project Lead" />
             </div>
             <div class="form-group">
               <label>Email Address</label>
@@ -275,8 +291,8 @@
               <input type="url" id="formLinkedin" placeholder="https://linkedin.com/in/..." />
             </div>
             <div class="form-group">
-              <label>GitHub URL</label>
-              <input type="url" id="formGithub" placeholder="https://github.com/..." />
+              <label>GitHub or Portfolio URL</label>
+              <input type="url" id="formGithub" placeholder="https://github.com/... or portfolio link" />
             </div>
             <div class="form-group">
               <label>Preferred Max Radius (Miles)</label>
@@ -297,7 +313,7 @@
 
           <div class="form-group">
             <label>Target Roles (Comma-separated)</label>
-            <input type="text" id="formTargetRoles" placeholder="Senior Platform Engineer, DevOps Engineer, Cloud Architect, SRE" />
+            <input type="text" id="formTargetRoles" placeholder="e.g. Software Engineer, Data Scientist, Product Manager, Analyst" />
           </div>
 
           <div class="form-group">
@@ -306,8 +322,8 @@
           </div>
 
           <div class="form-group">
-            <label>Key Technical Skills (Comma-separated)</label>
-            <textarea id="formSkills" rows="3" placeholder="AWS, Kubernetes, Terraform, Docker, ArgoCD, Python, TypeScript, CI/CD, Prometheus"></textarea>
+            <label>Key Competencies & Skills (Comma-separated)</label>
+            <textarea id="formSkills" rows="3" placeholder="e.g. Python, SQL, Financial Modeling, Project Management, React, AWS, Data Analysis"></textarea>
           </div>
 
           <div class="modal-footer">
@@ -333,13 +349,13 @@
 
         <!-- Drag & Drop Zone -->
         <div class="resume-dropzone" id="resumeDropzone">
-          <input type="file" id="resumeFileInput" accept=".tex,.txt,.md,.pdf" style="display: none;" />
+          <input type="file" id="resumeFileInput" class="resume-file-input-overlay" accept=".tex,.txt,.md,.pdf" />
           <div id="dropzoneDefaultState">
             <div class="dropzone-icon">📁</div>
             <div class="dropzone-text"><b>Click to select</b> or <b>drag & drop</b> resume file</div>
             <div class="dropzone-hint">Supports PDF (.pdf), LaTeX (.tex), Markdown (.md), or Plain Text (.txt)</div>
           </div>
-          <div id="dropzoneSelectedState" style="display: none; align-items: center; justify-content: center; gap: 12px; padding: 6px;">
+          <div id="dropzoneSelectedState" style="display: none; align-items: center; justify-content: center; gap: 12px; padding: 6px; position: relative; z-index: 10;">
             <span style="font-size: 26px;" id="selectedFileIcon">📄</span>
             <div style="text-align: left;">
               <div id="selectedFileName" style="font-size: 13px; font-weight: 600; color: #fff;">resume.pdf</div>
@@ -474,7 +490,10 @@
           <div class="provider-settings" id="anthropicSettings" style="display: none;">
             <div class="form-group">
               <label>Anthropic API Key</label>
-              <input type="password" id="aiAnthropicKey" placeholder="sk-ant-api..." />
+              <div style="display: flex; gap: 8px;">
+                <input type="password" id="aiAnthropicKey" placeholder="sk-ant-api..." style="flex: 1;" />
+                <button type="button" class="btn-secondary" id="btnToggleAnthropicKey" style="padding: 6px 12px; font-size: 13px;" title="Show / Hide Key">👁️</button>
+              </div>
             </div>
             <div class="form-group">
               <label>Select Claude Model</label>
@@ -490,7 +509,10 @@
           <div class="provider-settings" id="openaiSettings" style="display: none;">
             <div class="form-group">
               <label>OpenAI API Key</label>
-              <input type="password" id="aiOpenAiKey" placeholder="sk-proj-..." />
+              <div style="display: flex; gap: 8px;">
+                <input type="password" id="aiOpenAiKey" placeholder="sk-proj-..." style="flex: 1;" />
+                <button type="button" class="btn-secondary" id="btnToggleOpenAiKey" style="padding: 6px 12px; font-size: 13px;" title="Show / Hide Key">👁️</button>
+              </div>
             </div>
             <div class="form-group">
               <label>Select OpenAI / Compatible Model</label>
@@ -540,13 +562,13 @@
           <label><input type="checkbox" id="sourceRemotive"><span><b>Remotive</b><small>Free remote-jobs API; listings delayed 24 hours</small></span></label>
         </div>
         <div class="form-grid-2">
-          <div class="form-group"><label>CV-Library API key</label><input type="password" id="cvLibraryApiKey" placeholder="Leave blank to keep saved key"></div>
-          <div class="form-group"><label>Reed API key</label><input type="password" id="reedApiKey" placeholder="Leave blank to keep saved key"></div>
+          <div class="form-group"><label>CV-Library API key <span id="cvLibraryKeyStatus" class="source-key-status"></span></label><input type="password" id="cvLibraryApiKey" placeholder="Leave blank to keep saved key"></div>
+          <div class="form-group"><label>Reed API key <span id="reedKeyStatus" class="source-key-status"></span></label><input type="password" id="reedApiKey" placeholder="Leave blank to keep saved key"></div>
         </div>
-        <div class="form-group"><label>SerpAPI key for Google Jobs</label><input type="password" id="serpApiKey" placeholder="Leave blank to keep saved key"></div>
+        <div class="form-group"><label>SerpAPI key for Google Jobs <span id="serpKeyStatus" class="source-key-status"></span></label><input type="password" id="serpApiKey" placeholder="Leave blank to keep saved key"></div>
         <div class="form-grid-2">
-          <div class="form-group"><label>Adzuna app ID</label><input type="password" id="adzunaAppId" placeholder="Leave blank to keep saved ID"></div>
-          <div class="form-group"><label>Adzuna app key</label><input type="password" id="adzunaAppKey" placeholder="Leave blank to keep saved key"></div>
+          <div class="form-group"><label>Adzuna app ID <span id="adzunaIdStatus" class="source-key-status"></span></label><input type="password" id="adzunaAppId" placeholder="Leave blank to keep saved ID"></div>
+          <div class="form-group"><label>Adzuna app key <span id="adzunaKeyStatus" class="source-key-status"></span></label><input type="password" id="adzunaAppKey" placeholder="Leave blank to keep saved key"></div>
         </div>
         <div class="form-group">
           <label>Sponsorship results</label>
@@ -559,6 +581,11 @@
         <div class="search-verification-note">
           <b>Important:</b> a licensed employer does not guarantee that a specific vacancy offers sponsorship. “Explicit” requires both a register match and positive wording in the job description.
           <div id="sponsorRegistryStatus">Sponsor register not loaded.</div>
+        </div>
+        <div id="runtimeIssues" class="source-run-status issue" style="display: none;"></div>
+        <div id="sourceRunStatus" class="source-run-status">
+          <b>Last search</b>
+          <div>No search has run in this installation yet.</div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn-secondary" id="btnRefreshSponsors">Refresh GOV.UK register</button>

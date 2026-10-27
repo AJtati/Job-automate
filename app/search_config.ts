@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import type { SponsorshipMode } from "./sponsorship";
 
 export interface SearchConfig {
@@ -51,13 +51,51 @@ export class SearchConfigManager {
   }
 
   private load(): SearchConfig {
+    let cfg: SearchConfig = structuredClone(DEFAULT_CONFIG);
     try {
       if (existsSync(this.configFile)) {
         const saved = JSON.parse(readFileSync(this.configFile, "utf-8"));
-        return { ...DEFAULT_CONFIG, ...saved, sources: withCoreSources({ ...DEFAULT_CONFIG.sources, ...(saved.sources || {}) }) };
+        cfg = { ...DEFAULT_CONFIG, ...saved, sources: withCoreSources({ ...DEFAULT_CONFIG.sources, ...(saved.sources || {}) }) };
       }
     } catch {}
-    return structuredClone(DEFAULT_CONFIG);
+
+    // Check if APP_ROOT has saved keys to seed if current config is missing them
+    const appRoot = process.env.AI_JOB_SEARCH_APP_ROOT;
+    if (appRoot) {
+      const seedFile = join(appRoot, "data", "search_config.json");
+      if (resolve(seedFile) !== resolve(this.configFile) && existsSync(seedFile)) {
+        try {
+          const seed = JSON.parse(readFileSync(seedFile, "utf-8"));
+          let updated = false;
+          if (!cfg.cvLibraryApiKey && seed.cvLibraryApiKey) {
+            cfg.cvLibraryApiKey = seed.cvLibraryApiKey;
+            updated = true;
+          }
+          if (!cfg.reedApiKey && seed.reedApiKey) {
+            cfg.reedApiKey = seed.reedApiKey;
+            updated = true;
+          }
+          if (!cfg.serpApiKey && seed.serpApiKey) {
+            cfg.serpApiKey = seed.serpApiKey;
+            updated = true;
+          }
+          if (!cfg.adzunaAppId && seed.adzunaAppId) {
+            cfg.adzunaAppId = seed.adzunaAppId;
+            updated = true;
+          }
+          if (!cfg.adzunaAppKey && seed.adzunaAppKey) {
+            cfg.adzunaAppKey = seed.adzunaAppKey;
+            updated = true;
+          }
+          if (updated) {
+            mkdirSync(dirname(this.configFile), { recursive: true });
+            writeFileSync(this.configFile, JSON.stringify(cfg, null, 2), "utf-8");
+          }
+        } catch {}
+      }
+    }
+
+    return cfg;
   }
 
   public get(): SearchConfig {
@@ -89,6 +127,19 @@ export class SearchConfigManager {
     };
     mkdirSync(dirname(this.configFile), { recursive: true });
     writeFileSync(this.configFile, JSON.stringify(this.config, null, 2), "utf-8");
+
+    // Also sync to APP_ROOT/data/search_config.json if running with separate data directory
+    const appRoot = process.env.AI_JOB_SEARCH_APP_ROOT;
+    if (appRoot) {
+      const appConfigFile = join(appRoot, "data", "search_config.json");
+      if (resolve(appConfigFile) !== resolve(this.configFile)) {
+        try {
+          mkdirSync(dirname(appConfigFile), { recursive: true });
+          writeFileSync(appConfigFile, JSON.stringify(this.config, null, 2), "utf-8");
+        } catch {}
+      }
+    }
+
     return this.config;
   }
 }
