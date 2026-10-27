@@ -31,11 +31,18 @@ function plainLines(rawText: string): string[] {
 }
 
 function findContact(rawText: string) {
+  const labelledLocation = rawText.match(/^(?:location|based in|address)\s*:\s*(.+)$/im)?.[1]?.trim();
+  const contactLocation = rawText
+    .split(/\r?\n/)
+    .flatMap(line => line.split(/\s*[|·]\s*/))
+    .map(value => value.trim())
+    .find(value => /\b(?:united kingdom|great britain|england|scotland|wales|northern ireland|ireland|remote)\b/i.test(value));
   return {
     email: rawText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)?.[0] || "",
     phone: rawText.match(/(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{2,5}\)?[ .-]?)?\d{3,4}[ .-]?\d{3,4}/)?.[0]?.trim() || "",
     linkedin: rawText.match(/https?:\/\/(?:www\.)?linkedin\.com\/in\/[a-zA-Z0-9_%.-]+/i)?.[0] || "",
     github: rawText.match(/https?:\/\/(?:www\.)?github\.com\/[a-zA-Z0-9_.-]+/i)?.[0] || "",
+    location: labelledLocation || contactLocation || "",
   };
 }
 
@@ -130,11 +137,24 @@ function skillGroups(rawText: string) {
     }
   }
 
+  const unlabelled = section
+    .filter(line => !line.includes(":"))
+    .flatMap(line => line.split(/[,|•]/))
+    .map(item => item.trim())
+    .filter(Boolean);
+  const grouped = {
+    cloud: unlabelled.filter(item => /^(?:aws|amazon web services|azure|microsoft azure|gcp|google cloud|cloudflare)$/i.test(item)),
+    devops: unlabelled.filter(item => /^(?:kubernetes|docker|terraform|terragrunt|ansible|helm|argocd|argo cd|gitops|openshift|pulumi)$/i.test(item)),
+    languages: unlabelled.filter(item => /^(?:python|java|javascript|typescript|go|golang|rust|c\+\+|c#|ruby|php|kotlin|swift|scala|bash|powershell|sql)$/i.test(item)),
+  };
+  const categorised = new Set([...grouped.cloud, ...grouped.devops, ...grouped.languages].map(item => item.toLowerCase()));
+  const otherTools = unlabelled.filter(item => !categorised.has(item.toLowerCase()));
+
   return {
-    cloud: values(/cloud|platform/i),
-    devops: values(/devops|container|infrastructure|delivery|gitops/i),
-    languages: values(/language|framework/i),
-    tools: values(/tool|monitor|observ|ci\/cd/i),
+    cloud: [...new Set([...values(/cloud|platform/i), ...grouped.cloud])],
+    devops: [...new Set([...values(/devops|container|infrastructure|delivery|gitops/i), ...grouped.devops])],
+    languages: [...new Set([...values(/language|framework/i), ...grouped.languages])],
+    tools: [...new Set([...values(/tool|monitor|observ|ci\/cd/i), ...otherTools])],
     custom: customGroups,
     raw: text,
   };

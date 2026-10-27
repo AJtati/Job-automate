@@ -29,6 +29,8 @@ Users work from a local repository containing profile data, job-search state, La
 - Evaluate jobs with the canonical eligibility, language, technical, experience, behavioral, location, and career-alignment rules.
 - Show an evidence-based ATS analysis with matched requirements, supported gaps, gates, and score provenance.
 - Tailor CV and cover-letter content to the complete job description without fabricating claims.
+- Keep the built-in LinkedIn and direct-employer ATS searches active, with optional supplemental feeds from Reed, CV-Library, Adzuna, Jobicy, Arbeitnow, Remotive, and Google Jobs through a configured provider.
+- Distinguish an employer found on the GOV.UK sponsor register from a vacancy that explicitly states sponsorship is available.
 - Compile locally when a supported LaTeX engine is installed; never upload personal documents to a third-party compiler without explicit consent.
 - Verify page count, layout, and extractable PDF text before marking documents ready.
 - Work on macOS and Windows. Native packaging may differ, but profile, search, analysis, generation, and export behavior must remain the same.

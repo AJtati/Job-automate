@@ -7,7 +7,7 @@
     "start": "bun run app/server.ts",
     "app": "bash bin/launch-app.sh",
     "app:windows": "powershell -ExecutionPolicy Bypass -File bin/launch-app.ps1",
-    "test:app": "bun test app/tests",
+    "test:app": "bun test ./app/tests/*.test.ts",
     "check:app": "bun build app/public/app.js --outfile=/tmp/ai-job-search-ui.js && bun build --target=bun app/server.ts --outfile=/tmp/ai-job-search-server.js",
     "build:dmg": "bash tools/build_dmg.sh",
     "scrape": "bun run .agents/skills/linkedin-search/cli/src/cli.ts search -q 'Senior Platform Engineer' -l 'Remote'"
