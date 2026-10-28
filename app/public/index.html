@@ -347,6 +347,20 @@
           Upload any candidate resume file (.tex, .pdf, .txt, .md) or paste resume text below. The in-app AI engine automatically parses contact details, work history, technical skills, and projects into a complete candidate profile.
         </p>
 
+        <div style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;">
+          <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 8px; letter-spacing: 0.5px;">Candidate Profile Destination</div>
+          <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 500;">
+              <input type="radio" name="importProfileMode" value="new" checked />
+              <span>➕ Create New Candidate Profile</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 500;">
+              <input type="radio" name="importProfileMode" value="update" />
+              <span id="importUpdateProfileLabel">✏️ Update Active Profile</span>
+            </label>
+          </div>
+        </div>
+
         <!-- Drag & Drop Zone -->
         <div class="resume-dropzone" id="resumeDropzone">
           <input type="file" id="resumeFileInput" class="resume-file-input-overlay" accept=".tex,.txt,.md,.pdf" />

@@ -130,7 +130,51 @@ const BEHAVIOR_TERMS: Record<string, string[]> = {
   Ownership: ["ownership", "autonomy", "self-directed"],
 };
 
-const STOP_WORDS = new Set(["and", "the", "for", "with", "from", "into", "your", "you", "our", "this", "that", "role", "engineer", "senior", "lead"]);
+const STOP_WORDS = new Set(["and", "the", "for", "with", "from", "into", "your", "you", "our", "this", "that", "role", "engineer", "senior", "lead", "platform"]);
+
+export function checkDomainCompatibility(profile: CandidateProfile, job: JobInput): { compatible: boolean; reason?: string } {
+  const profileRolesText = `${profile.headline || ""} ${(profile.targetRoles || []).join(" ")}`.toLowerCase();
+  const jobTitle = (job.role || "").toLowerCase();
+
+  const isCandidateDynamics = /dynamics|power\s*platform|dataverse|power\s*apps|power\s*automate|d365|\bcrm\b/.test(profileRolesText);
+  const isCandidateDevops = /devops|platform\s*engineer|sre|site\s*reliability|infrastructure|kubernetes|terraform|cloud\s*engineer/.test(profileRolesText);
+  const isCandidateQA = /\bqa\b|quality\s*assurance|tester|test\s*engineer|automation\s*engineer|sdet/.test(profileRolesText);
+
+  // 1. Dynamics candidate vs DevOps / Cloud Infrastructure / QA
+  if (isCandidateDynamics && !isCandidateDevops) {
+    const isDevopsJob = /platform\s*engineer|sre\b|site\s*reliability|kubernetes|terraform|devops|cloud\s*engineer|infrastructure\s*engineer/.test(jobTitle);
+    const hasDynamicsInTitle = /dynamics|d365|power\s*platform|power\s*apps|powerapps|power\s*automate|dataverse|\bcrm\b/.test(jobTitle);
+    if (isDevopsJob && !hasDynamicsInTitle) {
+      return { compatible: false, reason: "Incompatible domain: DevOps / Cloud Infrastructure role does not match candidate's Dynamics 365 & Power Platform background." };
+    }
+    if (/\bqa\b|tester\b|test\s*automation|sdet\b/.test(jobTitle) && !hasDynamicsInTitle) {
+      return { compatible: false, reason: "Incompatible domain: QA / Test role does not match candidate's Dynamics 365 development background." };
+    }
+  }
+
+  // 2. DevOps candidate vs Dynamics / CRM / QA
+  if (isCandidateDevops && !isCandidateDynamics) {
+    const isDynamicsJob = /dynamics\s*365|dynamics\s*crm|power\s*platform|power\s*apps|power\s*automate|d365|\bcrm\b|\bsalesforce\b/.test(jobTitle);
+    const hasDevopsInTitle = /devops|platform\s*engineer|sre\b|site\s*reliability|cloud\s*engineer|infrastructure|kubernetes/.test(jobTitle);
+    if (isDynamicsJob && !hasDevopsInTitle) {
+      return { compatible: false, reason: "Incompatible domain: Dynamics 365 / CRM role does not match candidate's DevOps & Cloud Infrastructure background." };
+    }
+    if (/\bqa\b|tester\b|test\s*automation|sdet\b/.test(jobTitle) && !hasDevopsInTitle) {
+      return { compatible: false, reason: "Incompatible domain: QA / Test role does not match candidate's DevOps background." };
+    }
+  }
+
+  // 3. QA candidate vs DevOps or Dynamics
+  if (isCandidateQA && !isCandidateDevops && !isCandidateDynamics) {
+    const isOtherJob = /devops|platform\s*engineer|sre\b|dynamics\s*365|dynamics\s*crm|power\s*platform/.test(jobTitle);
+    const isQaJob = /\bqa\b|quality\s*assurance|tester\b|test\s*engineer|automation\s*engineer|sdet\b|software\s*testing/.test(jobTitle);
+    if (isOtherJob && !isQaJob) {
+      return { compatible: false, reason: "Incompatible domain: Role is outside candidate's QA & Test Automation background." };
+    }
+  }
+
+  return { compatible: true };
+}
 
 function normalize(value: string): string {
   return ` ${(value || "").toLowerCase().replace(/[^a-z0-9+#-]+/g, " ").replace(/\s+/g, " ").trim()} `;
@@ -276,9 +320,14 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
   const behaviorMatches = requestedBehavioral.filter(term => evidenceFor(BEHAVIOR_TERMS[term], evidence).length).length;
   const behavioralScore = requestedBehavioral.length ? Math.round((behaviorMatches / requestedBehavioral.length) * 100) : 65;
   const targetTokens = (profile.targetRoles || []).flatMap(titleTokens);
-  const careerScore = Math.max(overlapScore(jobTitle, targetTokens), overlapScore(jobTitle, titleTokens(profile.headline || "")));
+  const rawCareerScore = Math.max(overlapScore(jobTitle, targetTokens), overlapScore(jobTitle, titleTokens(profile.headline || "")));
+  const domainCheck = checkDomainCompatibility(profile, job);
+  const careerScore = domainCheck.compatible ? rawCareerScore : 0;
 
-  const overallScore = Math.round(technicalScore * 0.30 + experienceScore * 0.25 + behavioralScore * 0.15 + careerScore * 0.30);
+  let overallScore = Math.round(technicalScore * 0.30 + experienceScore * 0.25 + behavioralScore * 0.15 + careerScore * 0.30);
+  if (!domainCheck.compatible) {
+    overallScore = Math.min(22, Math.round(overallScore * 0.25));
+  }
   const matchedKeywords = requirements.filter(item => item.status === "matched").map(item => item.requirement);
   const gapKeywords = requirements.filter(item => item.status !== "matched").map(item => item.requirement);
 
@@ -289,7 +338,7 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
       technical: { score: technicalScore, note: `${matchedKeywords.length} of ${requestedTechnical.length} identified technical requirements have profile evidence.` },
       experience: { score: experienceScore, note: `${relevantBullets} experience or project lines support the role's technical requirements.` },
       behavioral: { score: behavioralScore, note: requestedBehavioral.length ? `${behaviorMatches} of ${requestedBehavioral.length} behavioral requirements have evidence.` : "The posting contains no specific behavioral evidence to score." },
-      career: { score: careerScore, note: careerScore ? "The role overlaps with the profile headline or target roles." : "The role has little title overlap with the stated targets." },
+      career: { score: careerScore, note: domainCheck.compatible ? (careerScore ? "The role overlaps with the profile headline or target roles." : "The role has little title overlap with the stated targets.") : (domainCheck.reason || "Incompatible domain.") },
     },
     gates: {
       eligibility: gateEligibility(profile, jd),

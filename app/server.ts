@@ -224,49 +224,96 @@ interface DiscoveredJob {
 }
 
 function isJobRelevantToProfile(item: any, profile: CandidateProfile): boolean {
-  if (item.profileId) {
-    return item.profileId === profile.id;
+  if (!item || !profile) return false;
+
+  // If a job was explicitly tagged with a different candidate's profileId, isolate it
+  if (item.profileId && item.profileId !== profile.id) {
+    return false;
   }
 
   const title = (item.title || "").toLowerCase();
   const summary = (item.summary || "").toLowerCase();
   const fullJd = (item.full_jd || "").toLowerCase();
-  const text = `${title} ${summary} ${fullJd} ${(item.key_skills || []).join(" ")}`.toLowerCase();
+  const skillsText = (item.key_skills || []).join(" ").toLowerCase();
+  const text = `${title} ${summary} ${fullJd} ${skillsText}`;
 
-  // Profile-specific indicators
-  const profileText = `${profile.headline || ""} ${(profile.targetRoles || []).join(" ")}`.toLowerCase();
-
-  const isDynamicsCandidate = /dynamics|power\s*platform|dataverse|power\s*apps|power\s*automate|d365|\bcrm\b/.test(profileText);
-  const isDevopsCandidate = /devops|platform\s*engineer|sre|site\s*reliability|infrastructure|kubernetes|terraform|cloud\s*engineer/.test(profileText);
-
-  if (isDynamicsCandidate && !isDevopsCandidate) {
-    const hasDynamicsDomain = /dynamics\s*365|dynamics\s*crm|d365|power\s*platform|power\s*apps|powerapps|power\s*automate|dataverse|\bcrm\b/.test(title) ||
-                              (/dynamics\s*365|d365|power\s*platform|dataverse/.test(text));
-    if (!hasDynamicsDomain) return false;
-    // Exclude pure DevOps platform/infrastructure roles that don't have Dynamics or CRM
-    if (/platform\s*engineer|sre|kubernetes|terraform|devops|infrastructure|cloud\s*engineer/.test(title) && !/dynamics|power\s*platform|power\s*apps|crm/i.test(title)) {
-      return false;
-    }
-    return true;
-  }
-
-  if (isDevopsCandidate && !isDynamicsCandidate) {
-    // Exclude Dynamics/CRM specific roles
-    if (/dynamics\s*365|dynamics\s*crm|power\s*platform|power\s*apps|power\s*automate|d365/.test(title)) {
-      return false;
-    }
-    const hasDevopsDomain = /devops|platform|cloud|infrastructure|sre|reliability|kubernetes|terraform|aws|azure|systems\s*engineer/.test(title) ||
-                            (item.key_skills || []).some((k: string) => /kubernetes|terraform|aws|docker|ci\/cd|devops/i.test(k));
-    return hasDevopsDomain;
-  }
-
-  // Universal target role matching for other disciplines
+  // Analyze candidate's target domain from headline, target roles, and profile skills
+  const profileHeadline = (profile.headline || "").toLowerCase();
   const targetRoles = (profile.targetRoles || []).map(r => r.toLowerCase().trim()).filter(Boolean);
-  if (profile.headline) targetRoles.push(profile.headline.toLowerCase().trim());
-  return targetRoles.some(role => {
-    const cleanRole = role.replace(/[^a-z0-9]/g, " ").trim();
-    return cleanRole.length > 3 && title.includes(cleanRole);
-  });
+  const profileRolesText = `${profileHeadline} ${targetRoles.join(" ")}`;
+
+  // Domain flags for candidate
+  const isCandidateDynamics = /dynamics|power\s*platform|dataverse|power\s*apps|power\s*automate|d365|\bcrm\b/.test(profileRolesText);
+  const isCandidateDevops = /devops|platform\s*engineer|sre|site\s*reliability|infrastructure|kubernetes|terraform|cloud\s*engineer/.test(profileRolesText);
+  const isCandidateQA = /\bqa\b|quality\s*assurance|tester|test\s*engineer|automation\s*engineer|sdet/.test(profileRolesText);
+
+  // 1. Strict Domain Segregation: DYNAMICS / POWER PLATFORM / CRM
+  if (isCandidateDynamics && !isCandidateDevops && !isCandidateQA) {
+    // Negative filter: Disallow pure DevOps, SRE, Platform, QA, Infrastructure, or generic Hardware roles
+    const isDevopsOrInfra = /platform\s*engineer|sre\b|site\s*reliability|kubernetes|terraform|devops|cloud\s*engineer|infrastructure\s*engineer/.test(title);
+    const hasDynamicsInTitle = /dynamics|d365|power\s*platform|power\s*apps|powerapps|power\s*automate|dataverse|\bcrm\b/i.test(title);
+    if (isDevopsOrInfra && !hasDynamicsInTitle) {
+      return false;
+    }
+    if (/\bqa\b|tester\b|test\s*automation|sdet\b/.test(title) && !hasDynamicsInTitle) {
+      return false;
+    }
+
+    // Positive filter: Must have Dynamics / Power Platform / Dataverse / CRM in title, or strong match in JD with relevant title
+    if (hasDynamicsInTitle) return true;
+
+    // If title has developer / consultant / analyst, check if JD is heavily Dynamics 365 or Power Platform
+    const isDevTitle = /developer|consultant|specialist|architect|engineer|analyst/.test(title);
+    const hasStrongDynamicsJd = /dynamics\s*365|dynamics\s*crm|power\s*platform|dataverse/.test(text);
+    return isDevTitle && hasStrongDynamicsJd;
+  }
+
+  // 2. Strict Domain Segregation: DEVOPS / PLATFORM / SRE / CLOUD INFRASTRUCTURE
+  if (isCandidateDevops && !isCandidateDynamics && !isCandidateQA) {
+    // Negative filter: Disallow Dynamics, CRM, Power Apps, QA, Salesforce
+    if (/dynamics\s*365|dynamics\s*crm|power\s*platform|power\s*apps|power\s*automate|d365|\bsalesforce\b/.test(title)) {
+      return false;
+    }
+    if (/\bqa\b|tester\b|test\s*automation|sdet\b/.test(title)) {
+      return false;
+    }
+
+    // Positive filter: Must match DevOps, Platform, Cloud, Infrastructure, SRE
+    const hasDevopsInTitle = /devops|platform\s*engineer|sre\b|site\s*reliability|cloud\s*engineer|infrastructure|kubernetes|systems\s*engineer|reliability\s*engineer/.test(title);
+    if (hasDevopsInTitle) return true;
+
+    // Or title has engineer/developer and key skills are kubernetes/terraform/aws/docker/devops
+    const isTechRole = /engineer|architect|lead|specialist/.test(title);
+    const hasDevopsSkills = (item.key_skills || []).some((k: string) => /kubernetes|terraform|aws|docker|ci\/cd|devops/i.test(k));
+    return isTechRole && hasDevopsSkills;
+  }
+
+  // 3. Strict Domain Segregation: QA / TEST AUTOMATION
+  if (isCandidateQA && !isCandidateDevops && !isCandidateDynamics) {
+    if (/devops|platform\s*engineer|sre\b|dynamics\s*365|dynamics\s*crm|power\s*platform/.test(title)) {
+      return false;
+    }
+    return /\bqa\b|quality\s*assurance|tester\b|test\s*engineer|automation\s*engineer|sdet\b|software\s*testing/i.test(title);
+  }
+
+  // 4. Universal target roles matching for other disciplines
+  if (targetRoles.length > 0 || profileHeadline) {
+    const rolesToMatch = [...targetRoles];
+    if (profileHeadline) rolesToMatch.push(profileHeadline);
+
+    return rolesToMatch.some(role => {
+      const words = role.replace(/[^a-z0-9]/g, " ").trim().split(/\s+/).filter(w => w.length > 3);
+      if (words.length === 0) return false;
+      if (title.includes(role)) return true;
+      if (words.length >= 2) {
+        const matchCount = words.filter(w => title.includes(w)).length;
+        if (matchCount >= 2) return true;
+      }
+      return false;
+    });
+  }
+
+  return false;
 }
 
 function ingestDiscoveredJob(
@@ -282,7 +329,7 @@ function ingestDiscoveredJob(
   const dedupKey = getJobDedupKey(job);
   const existingKey = Object.keys(seen).find(key => getJobDedupKey(seen[key]) === dedupKey);
   if (existingKey) {
-    if (!seen[existingKey].profileId) {
+    if (job.source === "manual" && !seen[existingKey].profileId) {
       seen[existingKey].profileId = profile.id;
     }
     if (description && (!seen[existingKey].full_jd || seen[existingKey].full_jd.length < description.length)) {
@@ -297,7 +344,7 @@ function ingestDiscoveredJob(
     ? analyzeApplication(profile, { company: job.company, role: job.title, location: job.location, fullJd: description, keySkills: job.skills || [] })
     : null;
   seen[job.id] = {
-    profileId: profile.id,
+    ...(job.source === "manual" ? { profileId: profile.id } : {}),
     title: job.title,
     company: job.company,
     url: job.url,
@@ -938,36 +985,52 @@ serve({
         const allProfilesList = profilesManager.getAll().profiles;
 
         // Check if an existing profile should be updated:
-        // 1. Explicit targetProfileId from caller
-        // 2. Candidate name matches an existing profile (case-insensitive)
-        // 3. Email matches an existing profile
-        let resolvedProfileId = incoming.targetProfileId;
-        if (!resolvedProfileId && parsed.name) {
+        // 1. Explicit targetProfileId from caller (Update Mode)
+        // 2. Candidate name matches an existing profile exactly (case-insensitive)
+        let resolvedProfileId: string | undefined = undefined;
+        let existingRecord: CandidateProfile | undefined = undefined;
+
+        if (incoming.targetProfileId) {
+          const matchTarget = allProfilesList.find(p => p.id === incoming.targetProfileId);
+          if (matchTarget) {
+            resolvedProfileId = matchTarget.id;
+            existingRecord = matchTarget;
+          }
+        } else if (parsed.name) {
           const norm = parsed.name.trim().toLowerCase();
           const matchByName = allProfilesList.find(p => p.name.trim().toLowerCase() === norm);
-          if (matchByName) resolvedProfileId = matchByName.id;
-        }
-        if (!resolvedProfileId && parsed.email) {
-          const matchByEmail = allProfilesList.find(p => p.email && p.email.trim().toLowerCase() === parsed.email.trim().toLowerCase());
-          if (matchByEmail) resolvedProfileId = matchByEmail.id;
+          if (matchByName) {
+            resolvedProfileId = matchByName.id;
+            existingRecord = matchByName;
+          }
         }
 
-        const cleanSlug = (parsed.name || "candidate").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-        const finalId = resolvedProfileId || cleanSlug;
-        const existingRecord = allProfilesList.find(p => p.id === finalId);
+        // Generate unique clean slug if creating a new profile
+        let finalId: string;
+        if (resolvedProfileId) {
+          finalId = resolvedProfileId;
+        } else {
+          const candidateName = parsed.name || deterministic.profile.name || "candidate";
+          let baseSlug = candidateName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "candidate";
+          finalId = baseSlug;
+          let counter = 2;
+          while (allProfilesList.some(p => p.id === finalId)) {
+            finalId = `${baseSlug}-${counter++}`;
+          }
+        }
 
         const newProfile: CandidateProfile = {
           id: finalId,
-          name: parsed.name || existingRecord?.name || "",
-          headline: parsed.headline || existingRecord?.headline || "",
-          summary: parsed.summary || existingRecord?.summary || "",
-          email: parsed.email || existingRecord?.email || "",
-          phone: parsed.phone || existingRecord?.phone || "",
-          location: parsed.location || existingRecord?.location || "",
+          name: parsed.name || deterministic.profile.name || existingRecord?.name || "Candidate",
+          headline: parsed.headline || deterministic.profile.headline || existingRecord?.headline || "Software Professional",
+          summary: parsed.summary || deterministic.profile.summary || existingRecord?.summary || "",
+          email: parsed.email || deterministic.profile.email || existingRecord?.email || "",
+          phone: parsed.phone || deterministic.profile.phone || existingRecord?.phone || "",
+          location: parsed.location || deterministic.profile.location || existingRecord?.location || "",
           postcode: parsed.postcode || deterministic.profile.postcode || existingRecord?.postcode || "",
-          linkedin: parsed.linkedin || existingRecord?.linkedin || "",
-          github: parsed.github || existingRecord?.github || "",
-          portfolio: parsed.portfolio || existingRecord?.portfolio || "",
+          linkedin: parsed.linkedin || deterministic.profile.linkedin || existingRecord?.linkedin || "",
+          github: parsed.github || deterministic.profile.github || existingRecord?.github || "",
+          portfolio: parsed.portfolio || deterministic.profile.portfolio || existingRecord?.portfolio || "",
           visaSponsorshipRequired: (typeof parsed.visaSponsorshipRequired === "boolean")
             ? parsed.visaSponsorshipRequired
             : ((typeof deterministic.profile.visaSponsorshipRequired === "boolean")
@@ -975,19 +1038,29 @@ serve({
               : (existingRecord?.visaSponsorshipRequired ?? false)),
           targetRoles: (parsed.targetRoles?.filter(Boolean)?.length)
             ? parsed.targetRoles.filter(Boolean)
-            : (deterministic.profile.targetRoles?.length ? deterministic.profile.targetRoles : (existingRecord?.targetRoles?.length ? existingRecord.targetRoles : [parsed.headline].filter(Boolean))),
+            : (deterministic.profile.targetRoles?.length ? deterministic.profile.targetRoles : (existingRecord?.targetRoles?.length ? existingRecord.targetRoles : [parsed.headline || deterministic.profile.headline || "Professional"].filter(Boolean))),
           targetLocations: (parsed.targetLocations?.filter(Boolean)?.length)
             ? parsed.targetLocations.filter(Boolean)
-            : (deterministic.profile.targetLocations?.length ? deterministic.profile.targetLocations : (existingRecord?.targetLocations?.length ? existingRecord.targetLocations : [])),
+            : (deterministic.profile.targetLocations?.length ? deterministic.profile.targetLocations : (existingRecord?.targetLocations?.length ? existingRecord.targetLocations : ["Remote", parsed.location || deterministic.profile.location].filter(Boolean))),
           preferredRadiusMiles: parsed.preferredRadiusMiles || deterministic.profile.preferredRadiusMiles || existingRecord?.preferredRadiusMiles || 50,
           minSalary: parsed.minSalary || deterministic.profile.minSalary || existingRecord?.minSalary || 0,
-          skills: parsed.skills || deterministic.profile.skills || existingRecord?.skills || { cloud: [], devops: [], languages: [], tools: [] },
+          skills: (parsed.skills && Object.keys(parsed.skills).length > 0)
+            ? parsed.skills
+            : (deterministic.profile.skills || existingRecord?.skills || { cloud: [], devops: [], languages: [], tools: [] }),
           keywords: (parsed as any).keywords || deterministic.profile.keywords || [],
-          experience: (parsed.experience as any) || existingRecord?.experience || [],
-          projects: (parsed.projects as any) || existingRecord?.projects || [],
-          education: (parsed.education as any) || existingRecord?.education || [],
-          certifications: (parsed.certifications as any) || existingRecord?.certifications || [],
-          spokenLanguages: parsed.spokenLanguages || existingRecord?.spokenLanguages || [],
+          experience: (parsed.experience && parsed.experience.length > 0)
+            ? (parsed.experience as any)
+            : (deterministic.profile.experience?.length ? (deterministic.profile.experience as any) : (existingRecord?.experience || [])),
+          projects: (parsed.projects && parsed.projects.length > 0)
+            ? (parsed.projects as any)
+            : (deterministic.profile.projects?.length ? (deterministic.profile.projects as any) : (existingRecord?.projects || [])),
+          education: (parsed.education && parsed.education.length > 0)
+            ? (parsed.education as any)
+            : (deterministic.profile.education?.length ? (deterministic.profile.education as any) : (existingRecord?.education || [])),
+          certifications: (parsed.certifications && parsed.certifications.length > 0)
+            ? (parsed.certifications as any)
+            : (deterministic.profile.certifications?.length ? (deterministic.profile.certifications as any) : (existingRecord?.certifications || [])),
+          spokenLanguages: parsed.spokenLanguages || deterministic.profile.spokenLanguages || existingRecord?.spokenLanguages || ["English"],
           latexBackbone: existingRecord?.latexBackbone || createLatexBackbone(),
           profileVersion: (existingRecord?.profileVersion || 0) + 1,
           sourceResume: {

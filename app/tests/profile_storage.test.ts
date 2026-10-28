@@ -48,4 +48,39 @@ describe("uploaded resume persistence", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("supports multiple distinct profiles without cross-profile contamination", () => {
+    const root = mkdtempSync(join(tmpdir(), "multi-profile-test-"));
+    roots.push(root);
+    const manager = new ProfilesManager(root);
+
+    const devopsProfile: CandidateProfile = {
+      id: "alex", name: "Alex Taylor", headline: "DevOps Engineer", email: "alex.taylor@example.com", phone: "", location: "Hartlepool", postcode: "TS25", linkedin: "", github: "", visaSponsorshipRequired: true,
+      targetRoles: ["Lead DevOps Engineer", "Platform Engineer"], targetLocations: ["Remote", "Hartlepool"], preferredRadiusMiles: 50, minSalary: 60000,
+      skills: { cloud: ["AWS"], devops: ["Kubernetes", "Terraform"], languages: ["Python"], tools: [] }, experience: [], education: [], certifications: [], profileVersion: 1
+    };
+
+    const dynamicsProfile: CandidateProfile = {
+      id: "jordan", name: "Jordan Patel", headline: "Senior Dynamics Developer", email: "jordan.patel@example.com", phone: "", location: "Middlesbrough", postcode: "TS1", linkedin: "", github: "", visaSponsorshipRequired: false,
+      targetRoles: ["Senior Dynamics Developer", "Power Platform Developer"], targetLocations: ["Remote", "Middlesbrough"], preferredRadiusMiles: 50, minSalary: 65000,
+      skills: { cloud: ["Azure"], devops: [], languages: ["C#", ".NET"], tools: ["Dynamics 365", "Power Apps"] }, experience: [], education: [], certifications: [], profileVersion: 1
+    };
+
+    manager.saveProfile(devopsProfile);
+    manager.saveProfile(dynamicsProfile);
+
+    const stored = manager.getAll().profiles;
+    expect(stored.length).toBeGreaterThanOrEqual(2);
+
+    const p1 = stored.find(p => p.id === "alex");
+    const p2 = stored.find(p => p.id === "jordan");
+
+    expect(p1?.name).toBe("Alex Taylor");
+    expect(p1?.location).toBe("Hartlepool");
+    expect(p1?.headline).toBe("DevOps Engineer");
+
+    expect(p2?.name).toBe("Jordan Patel");
+    expect(p2?.location).toBe("Middlesbrough");
+    expect(p2?.headline).toBe("Senior Dynamics Developer");
+  });
 });
