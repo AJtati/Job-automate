@@ -128,6 +128,31 @@ const sponsorRegistryStatus = document.getElementById("sponsorRegistryStatus");
 const runtimeIssues = document.getElementById("runtimeIssues");
 const sourceRunStatus = document.getElementById("sourceRunStatus");
 
+// Scheduler Modal Elements
+const btnSchedule = document.getElementById("btnSchedule");
+const btnDropdownOpenScheduleModal = document.getElementById("btnDropdownOpenScheduleModal");
+const scheduleModal = document.getElementById("scheduleModal");
+const btnCloseScheduleModal = document.getElementById("btnCloseScheduleModal");
+const btnCancelSchedule = document.getElementById("btnCancelSchedule");
+const btnSaveSchedule = document.getElementById("btnSaveSchedule");
+const btnTestRunSchedule = document.getElementById("btnTestRunSchedule");
+const testRunSpinner = document.getElementById("testRunSpinner");
+const testRunLabel = document.getElementById("testRunLabel");
+const schedEnabledToggle = document.getElementById("schedEnabledToggle");
+const schedToggleDesc = document.getElementById("schedToggleDesc");
+const schedIntervalSelect = document.getElementById("schedIntervalSelect");
+const schedDailyTimeInput = document.getElementById("schedDailyTimeInput");
+const schedApplyToAll = document.getElementById("schedApplyToAll");
+const scheduleCandidateSubtitle = document.getElementById("scheduleCandidateSubtitle");
+const schedStatusBadge = document.getElementById("schedStatusBadge");
+const schedCountdownText = document.getElementById("schedCountdownText");
+const schedLastRunText = document.getElementById("schedLastRunText");
+const schedResultRow = document.getElementById("schedResultRow");
+const schedLastResultText = document.getElementById("schedLastResultText");
+const schedIntervalSection = document.getElementById("schedIntervalSection");
+const schedDailySection = document.getElementById("schedDailySection");
+const scheduleOptionsContainer = document.getElementById("scheduleOptionsContainer");
+
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
   await fetchProfiles();
@@ -176,6 +201,52 @@ function setupEventListeners() {
   btnCloseSearchConfig?.addEventListener("click", () => searchConfigModal.style.display = "none");
   btnSaveSearchConfig?.addEventListener("click", saveSearchConfig);
   btnRefreshSponsors?.addEventListener("click", refreshSponsorRegister);
+
+  // Schedule button and modal triggers
+  btnSchedule?.addEventListener("click", () => openScheduleModal());
+  btnDropdownOpenScheduleModal?.addEventListener("click", () => {
+    profileDropdownMenu.style.display = "none";
+    openScheduleModal();
+  });
+  btnCloseScheduleModal?.addEventListener("click", closeScheduleModal);
+  btnCancelSchedule?.addEventListener("click", closeScheduleModal);
+  scheduleModal?.addEventListener("click", (e) => {
+    if (e.target === scheduleModal) closeScheduleModal();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && scheduleModal?.style.display === "flex") {
+      closeScheduleModal();
+    }
+  });
+  btnSaveSchedule?.addEventListener("click", saveSchedule);
+  btnTestRunSchedule?.addEventListener("click", runScheduleTestNow);
+
+  // Frequency Mode radio switching
+  document.querySelectorAll('input[name="schedMode"]').forEach(radio => {
+    radio.addEventListener("change", (e) => {
+      const mode = e.target.value;
+      if (mode === "daily") {
+        schedIntervalSection.style.display = "none";
+        schedDailySection.style.display = "block";
+      } else {
+        schedIntervalSection.style.display = "block";
+        schedDailySection.style.display = "none";
+      }
+    });
+  });
+
+  // Enable/disable toggle visual state
+  schedEnabledToggle?.addEventListener("change", () => {
+    const isEnabled = schedEnabledToggle.checked;
+    scheduleOptionsContainer.style.opacity = isEnabled ? "1" : "0.5";
+    scheduleOptionsContainer.style.pointerEvents = isEnabled ? "auto" : "none";
+    schedStatusBadge.textContent = isEnabled ? "Active" : "Paused";
+    schedStatusBadge.className = isEnabled ? "schedule-status-pill" : "schedule-status-pill paused";
+    schedCountdownText.textContent = isEnabled ? "Next run: calculating on save..." : "Schedule paused";
+    schedToggleDesc.textContent = isEnabled
+      ? "Timer active — searches automatically according to selected frequency."
+      : "Timer paused — no background searches will run until enabled.";
+  });
 
   // Studio tabs
   document.querySelectorAll(".tab-btn").forEach(tab => {
@@ -2848,6 +2919,220 @@ async function refreshSponsorRegister() {
     if (data.success) await fetchJobs();
   } finally {
     btnRefreshSponsors.disabled = false;
+  }
+}
+
+async function openScheduleModal() {
+  if (activeProfile) {
+    scheduleCandidateSubtitle.textContent = `${activeProfile.name || "Candidate"} · ${activeProfile.headline || "Profile Track"}`;
+  } else {
+    scheduleCandidateSubtitle.textContent = "Candidate Profile";
+  }
+
+  // Reset unchecked apply to all
+  schedApplyToAll.checked = false;
+
+  try {
+    const profileId = activeProfile ? activeProfile.id : "";
+    const res = await fetch(`/api/schedule?profileId=${encodeURIComponent(profileId)}`);
+    const data = await res.json();
+    const sched = data.activeProfileSchedule || activeProfile?.schedule;
+
+    const isEnabled = Boolean(sched?.enabled);
+    schedEnabledToggle.checked = isEnabled;
+    scheduleOptionsContainer.style.opacity = isEnabled ? "1" : "0.5";
+    scheduleOptionsContainer.style.pointerEvents = isEnabled ? "auto" : "none";
+
+    const mode = sched?.mode || "interval";
+    const radio = document.querySelector(`input[name="schedMode"][value="${mode}"]`);
+    if (radio) radio.checked = true;
+
+    if (mode === "daily") {
+      schedIntervalSection.style.display = "none";
+      schedDailySection.style.display = "block";
+    } else {
+      schedIntervalSection.style.display = "block";
+      schedDailySection.style.display = "none";
+    }
+
+    schedIntervalSelect.value = String(sched?.intervalHours || 4);
+    schedDailyTimeInput.value = sched?.dailyTime || "08:00";
+
+    // Status card
+    if (sched?.isRunningNow) {
+      schedStatusBadge.textContent = "Searching Now...";
+      schedStatusBadge.className = "schedule-status-pill running";
+    } else if (isEnabled) {
+      schedStatusBadge.textContent = "Active";
+      schedStatusBadge.className = "schedule-status-pill";
+    } else {
+      schedStatusBadge.textContent = "Paused";
+      schedStatusBadge.className = "schedule-status-pill paused";
+    }
+
+    schedCountdownText.textContent = isEnabled
+      ? (sched?.countdown ? `Next run: ${sched.countdown}` : "Next run: calculating...")
+      : "Schedule paused";
+
+    if (sched?.lastRunAt) {
+      const dt = new Date(sched.lastRunAt);
+      schedLastRunText.textContent = dt.toLocaleString(undefined, {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+      });
+    } else {
+      schedLastRunText.textContent = "Never run yet";
+    }
+
+    if (sched?.lastRunResult) {
+      schedResultRow.style.display = "flex";
+      const resMsg = sched.lastRunResult.status === "error"
+        ? `Error: ${sched.lastRunResult.message || "Scrape failed"}`
+        : `${sched.lastRunResult.foundCount} jobs found (${sched.lastRunResult.addedCount} newly added)`;
+      schedLastResultText.textContent = resMsg;
+      schedLastResultText.style.color = sched.lastRunResult.status === "error" ? "var(--apple-red)" : "var(--apple-green)";
+    } else {
+      schedResultRow.style.display = "none";
+    }
+  } catch (err) {
+    console.error("Failed to load schedule status:", err);
+  }
+
+  scheduleModal.style.display = "flex";
+}
+
+let activeSaveScheduleAbortController = null;
+let activeTestRunScheduleAbortController = null;
+
+function closeScheduleModal() {
+  if (activeSaveScheduleAbortController) {
+    try { activeSaveScheduleAbortController.abort(); } catch {}
+    activeSaveScheduleAbortController = null;
+  }
+  if (activeTestRunScheduleAbortController) {
+    try { activeTestRunScheduleAbortController.abort(); } catch {}
+    activeTestRunScheduleAbortController = null;
+  }
+  btnSaveSchedule.disabled = false;
+  btnSaveSchedule.textContent = "💾 Save Schedule";
+  testRunSpinner.style.display = "none";
+  testRunLabel.textContent = "⚡ Run Scraper Now (Test)";
+  btnTestRunSchedule.disabled = false;
+  scheduleModal.style.display = "none";
+}
+
+async function saveSchedule() {
+  const enabled = schedEnabledToggle.checked;
+  const modeRadio = document.querySelector('input[name="schedMode"]:checked');
+  const mode = modeRadio ? modeRadio.value : "interval";
+  const intervalHours = Number(schedIntervalSelect.value) || 4;
+  const dailyTime = schedDailyTimeInput.value || "08:00";
+  const applyToAll = schedApplyToAll.checked;
+
+  btnSaveSchedule.disabled = true;
+  btnSaveSchedule.textContent = "Saving...";
+
+  if (activeSaveScheduleAbortController) {
+    try { activeSaveScheduleAbortController.abort(); } catch {}
+  }
+  activeSaveScheduleAbortController = new AbortController();
+  const timeoutId = setTimeout(() => {
+    if (activeSaveScheduleAbortController) activeSaveScheduleAbortController.abort();
+  }, 10000);
+
+  try {
+    const res = await fetch("/api/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        profileId: activeProfile ? activeProfile.id : undefined,
+        enabled,
+        mode,
+        intervalHours,
+        dailyTime,
+        applyToAll
+      }),
+      signal: activeSaveScheduleAbortController.signal
+    });
+    clearTimeout(timeoutId);
+    activeSaveScheduleAbortController = null;
+    const data = await res.json();
+    if (!data.success) {
+      showToast(data.error || "Failed to save schedule");
+      return;
+    }
+
+    if (activeProfile) {
+      activeProfile.schedule = data.schedule;
+    }
+
+    scheduleModal.style.display = "none";
+    showToast(applyToAll
+      ? "⏰ Automated schedule saved and synchronized across ALL profiles!"
+      : "⏰ Automated schedule saved for current candidate profile!"
+    );
+  } catch (err) {
+    clearTimeout(timeoutId);
+    activeSaveScheduleAbortController = null;
+    if (err && err.name === "AbortError") {
+      showToast("Schedule save timed out or was cancelled");
+    } else {
+      showToast("Failed to communicate with scheduler service");
+    }
+  } finally {
+    btnSaveSchedule.disabled = false;
+    btnSaveSchedule.textContent = "💾 Save Schedule";
+  }
+}
+
+async function runScheduleTestNow() {
+  testRunSpinner.style.display = "inline-block";
+  testRunLabel.textContent = "Searching Live...";
+  btnTestRunSchedule.disabled = true;
+
+  if (activeTestRunScheduleAbortController) {
+    try { activeTestRunScheduleAbortController.abort(); } catch {}
+  }
+  activeTestRunScheduleAbortController = new AbortController();
+  const timeoutId = setTimeout(() => {
+    if (activeTestRunScheduleAbortController) activeTestRunScheduleAbortController.abort();
+  }, 35000);
+
+  try {
+    const res = await fetch("/api/schedule/run-now", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        profileId: activeProfile ? activeProfile.id : undefined
+      }),
+      signal: activeTestRunScheduleAbortController.signal
+    });
+    clearTimeout(timeoutId);
+    activeTestRunScheduleAbortController = null;
+    const data = await res.json();
+    if (data.success) {
+      showToast(`⚡ Search complete: ${data.foundCount} roles found (${data.addedCount} newly added)`);
+      await fetchJobs();
+      // Re-populate modal status
+      schedLastRunText.textContent = "Just now";
+      schedResultRow.style.display = "flex";
+      schedLastResultText.textContent = `${data.foundCount} jobs found (${data.addedCount} newly added)`;
+      schedLastResultText.style.color = "var(--apple-green)";
+      schedCountdownText.textContent = "Next run updated";
+    } else {
+      showToast(`Search test failed: ${data.error || "Unknown error"}`);
+    }
+  } catch (err) {
+    clearTimeout(timeoutId);
+    activeTestRunScheduleAbortController = null;
+    if (err && err.name === "AbortError") {
+      showToast("Live search test timed out or was cancelled");
+    } else {
+      showToast("Test search network request failed");
+    }
+  } finally {
+    testRunSpinner.style.display = "none";
+    testRunLabel.textContent = "⚡ Run Scraper Now (Test)";
+    btnTestRunSchedule.disabled = false;
   }
 }
 
