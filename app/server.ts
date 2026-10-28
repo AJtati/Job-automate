@@ -2299,6 +2299,7 @@ serve({
           { name: "tectonic", paths: ["/opt/homebrew/bin/tectonic", "/usr/local/bin/tectonic", "tectonic"], isTectonic: true },
           { name: kind === "cover" ? "xelatex" : "lualatex", paths: [`/Library/TeX/texbin/${kind === "cover" ? "xelatex" : "lualatex"}`], isTectonic: false },
           { name: "xelatex", paths: ["/Library/TeX/texbin/xelatex", "/usr/local/bin/xelatex", "xelatex"], isTectonic: false },
+          { name: "lualatex", paths: ["/Library/TeX/texbin/lualatex", "/usr/local/bin/lualatex", "lualatex"], isTectonic: false },
           { name: "pdflatex", paths: ["/Library/TeX/texbin/pdflatex", "/usr/local/bin/pdflatex", "pdflatex"], isTectonic: false },
         ];
 
