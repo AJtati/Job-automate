@@ -36,6 +36,24 @@ export interface ScenarioOutcome {
   documentEdit?: DocumentEditRequest;
 }
 
+export interface ModelOption {
+  id: string;
+  name: string;
+  recommended: boolean;
+  tier: "cheap_and_best" | "flagship" | "standard";
+  badge?: string;
+  reason?: string;
+}
+
+export interface ProviderModelsResult {
+  success: boolean;
+  provider: string;
+  models: ModelOption[];
+  recommendedModel: string;
+  reason: string;
+  error?: string;
+}
+
 const ROOT_DIR = process.env.AI_JOB_SEARCH_ROOT || process.cwd();
 const CONFIG_FILE = join(ROOT_DIR, "data", "ai_config.json");
 
@@ -273,6 +291,287 @@ export class AIService {
       recommendedModel: "builtin",
       tier: "cheap_and_best",
       reason: "Built-in offline deterministic engine (100% free, 0 external calls)."
+    };
+  }
+
+  // Live query for verified available models on the provider account
+  public async getAvailableModelsForProvider(
+    provider: "ollama" | "anthropic" | "openai" | "builtin",
+    apiKey?: string,
+    host?: string
+  ): Promise<ProviderModelsResult> {
+    if (provider === "builtin") {
+      return {
+        success: true,
+        provider: "builtin",
+        models: [{
+          id: "builtin",
+          name: "Built-in Deterministic & LaTeX Engine (Offline)",
+          recommended: true,
+          tier: "cheap_and_best",
+          badge: "100% Free & Local",
+          reason: "Zero external calls, instant local execution."
+        }],
+        recommendedModel: "builtin",
+        reason: "Built-in offline engine is completely free and private."
+      };
+    }
+
+    if (provider === "ollama") {
+      const ollamaHost = host || this.config.ollamaHost || "http://localhost:11434";
+      try {
+        const res = await fetch(`${ollamaHost}/api/tags`, { signal: AbortSignal.timeout(4000) });
+        if (res.ok) {
+          const data: any = await res.json();
+          const rawModels: string[] = (data.models || []).map((m: any) => m.name || m.model).filter(Boolean);
+          if (rawModels.length === 0) {
+            return {
+              success: false,
+              provider: "ollama",
+              models: [],
+              recommendedModel: "",
+              reason: "",
+              error: `Ollama is running on ${ollamaHost}, but no models are downloaded yet. Run 'ollama pull qwen2.5-coder:3b' in your terminal.`
+            };
+          }
+          const recModel = rawModels.find(m => m.includes("qwen2.5-coder")) || rawModels.find(m => m.includes("llama3")) || rawModels[0];
+          const models: ModelOption[] = rawModels.map(id => {
+            const isRec = id === recModel;
+            return {
+              id,
+              name: `${id}${isRec ? " — ✨ Recommended" : ""}`,
+              recommended: isRec,
+              tier: isRec ? "cheap_and_best" : "standard",
+              badge: isRec ? "Recommended" : undefined,
+              reason: isRec ? "Best suited for code and structured resume output." : undefined
+            };
+          });
+          return {
+            success: true,
+            provider: "ollama",
+            models,
+            recommendedModel: recModel,
+            reason: `Found ${rawModels.length} installed local model(s). '${recModel}' is recommended.`
+          };
+        }
+      } catch (err: any) {
+        return {
+          success: false,
+          provider: "ollama",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: `Could not connect to Ollama on ${ollamaHost}. Ensure the Ollama app or daemon is running.`
+        };
+      }
+    }
+
+    if (provider === "anthropic") {
+      const key = (apiKey && apiKey.trim()) || this.config.anthropicApiKey;
+      if (!key || !key.trim()) {
+        return {
+          success: false,
+          provider: "anthropic",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: "Anthropic API key is not entered yet. Enter your API key above to load available models."
+        };
+      }
+
+      try {
+        const res = await fetch("https://api.anthropic.com/v1/models", {
+          headers: {
+            "x-api-key": key.trim(),
+            "anthropic-version": "2023-06-01"
+          },
+          signal: AbortSignal.timeout(8000)
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          console.warn("Anthropic models fetch error:", res.status, errBody);
+          return {
+            success: false,
+            provider: "anthropic",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: res.status === 401
+              ? "Authentication failed: Invalid Anthropic API key."
+              : `Anthropic API returned error ${res.status}: ${errBody.slice(0, 100)}`
+          };
+        }
+
+        const data: any = await res.json();
+        const rawList = (data.data || []).filter((m: any) => m.id && m.id.includes("claude"));
+        rawList.sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+
+        // Recommended is Haiku (fastest, lowest cost, best ATS value)
+        const recModel = rawList.find((m: any) => m.id.includes("haiku-5") || m.id.includes("haiku-4-5") || m.id.includes("haiku"))?.id
+          || rawList.find((m: any) => m.id.includes("sonnet-4-5") || m.id.includes("sonnet-5"))?.id
+          || rawList[0]?.id;
+
+        const models: ModelOption[] = rawList.map((m: any) => {
+          const isRec = m.id === recModel;
+          let badge = "";
+          let tier: "cheap_and_best" | "flagship" | "standard" = "standard";
+          if (isRec) {
+            badge = "✨ Recommended · Fast & Lowest Cost";
+            tier = "cheap_and_best";
+          } else if (m.id.includes("sonnet")) {
+            badge = "Flagship Quality";
+            tier = "flagship";
+          } else if (m.id.includes("opus")) {
+            badge = "Comprehensive Reasoning";
+            tier = "flagship";
+          }
+          return {
+            id: m.id,
+            name: `${m.display_name || m.id}${badge ? " — " + badge : ""}`,
+            recommended: isRec,
+            tier,
+            badge,
+            reason: isRec ? "Fastest execution and lowest cost (~$0.80/M tokens) with excellent tailoring accuracy." : undefined
+          };
+        });
+
+        return {
+          success: true,
+          provider: "anthropic",
+          models,
+          recommendedModel: recModel,
+          reason: `Verified ${models.length} active models on your account. '${recModel}' is recommended for lowest cost and fast execution.`
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          provider: "anthropic",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: `Network error connecting to Anthropic: ${err.message}`
+        };
+      }
+    }
+
+    if (provider === "openai") {
+      const key = (apiKey && apiKey.trim()) || this.config.openaiApiKey;
+      if (!key || !key.trim()) {
+        return {
+          success: false,
+          provider: "openai",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: "OpenAI API key is not entered yet. Enter your API key above to load available models."
+        };
+      }
+
+      try {
+        const res = await fetch("https://api.openai.com/v1/models", {
+          headers: { "Authorization": `Bearer ${key.trim()}` },
+          signal: AbortSignal.timeout(8000)
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          console.warn("OpenAI models fetch error:", res.status, errBody);
+          return {
+            success: false,
+            provider: "openai",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: res.status === 401
+              ? "Authentication failed: Invalid OpenAI API key."
+              : `OpenAI API returned error ${res.status}: ${errBody.slice(0, 100)}`
+          };
+        }
+
+        const data: any = await res.json();
+        const rawList = (data.data || [])
+          .map((m: any) => m.id)
+          .filter((id: string) => {
+            const isChat = id.startsWith("gpt-") || id.startsWith("o1") || id.startsWith("o3") || id.startsWith("chatgpt");
+            const isExcluded = id.includes("realtime") || id.includes("audio") || id.includes("tts") || id.includes("whisper") || id.includes("dall-e") || id.includes("embedding") || id.includes("transcription") || id.includes("moderation");
+            return isChat && !isExcluded;
+          });
+
+        if (rawList.length === 0) {
+          return {
+            success: false,
+            provider: "openai",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: "No compatible chat models found on this OpenAI account."
+          };
+        }
+
+        // Priority order: gpt-4o-mini, gpt-4o, o3-mini, o1-mini, o1, gpt-4-turbo, others
+        const priorityOrder = ["gpt-4o-mini", "gpt-4o", "o3-mini", "o1-mini", "o1", "gpt-4-turbo", "gpt-4"];
+        rawList.sort((a: string, b: string) => {
+          const idxA = priorityOrder.findIndex(p => a.startsWith(p));
+          const idxB = priorityOrder.findIndex(p => b.startsWith(p));
+          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+          if (idxA !== -1) return -1;
+          if (idxB !== -1) return 1;
+          return a.localeCompare(b);
+        });
+
+        const recModel = rawList.includes("gpt-4o-mini") ? "gpt-4o-mini" : (rawList.includes("gpt-4o") ? "gpt-4o" : rawList[0]);
+
+        const models: ModelOption[] = rawList.map((id: string) => {
+          const isRec = id === recModel;
+          let badge = "";
+          let tier: "cheap_and_best" | "flagship" | "standard" = "standard";
+          if (isRec) {
+            badge = "✨ Recommended · Fast & Lowest Cost";
+            tier = "cheap_and_best";
+          } else if (id === "gpt-4o") {
+            badge = "Flagship Multimodal";
+            tier = "flagship";
+          } else if (id.startsWith("o1") || id.startsWith("o3")) {
+            badge = "Deep Reasoning";
+            tier = "flagship";
+          }
+          return {
+            id,
+            name: `${id}${badge ? " — " + badge : ""}`,
+            recommended: isRec,
+            tier,
+            badge,
+            reason: isRec ? "OpenAI's most economical intelligent model (~$0.15/M tokens)." : undefined
+          };
+        });
+
+        return {
+          success: true,
+          provider: "openai",
+          models,
+          recommendedModel: recModel,
+          reason: `Verified ${models.length} active models on your account. '${recModel}' is recommended.`
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          provider: "openai",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: `Network error connecting to OpenAI: ${err.message}`
+        };
+      }
+    }
+
+    return {
+      success: false,
+      provider,
+      models: [],
+      recommendedModel: "",
+      reason: "",
+      error: `Unknown provider: ${provider}`
     };
   }
 

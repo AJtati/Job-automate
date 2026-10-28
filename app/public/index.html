@@ -454,14 +454,14 @@
             <input type="radio" name="aiProvider" value="anthropic" />
             <div class="provider-box">
               <div class="provider-title">🧠 Anthropic Claude (Cloud API)</div>
-              <div class="provider-desc">Uses Claude 3.5 Sonnet for state-of-the-art humanized tailoring and reasoning.</div>
+              <div class="provider-desc">Official Anthropic API. Uses active models like Claude Haiku (fast & economical) or Sonnet with live model discovery.</div>
             </div>
           </label>
           <label class="provider-option">
             <input type="radio" name="aiProvider" value="openai" />
             <div class="provider-box">
               <div class="provider-title">🌐 OpenAI (GPT-4o / Compatible)</div>
-              <div class="provider-desc">Uses OpenAI GPT-4o or DeepSeek compatible endpoint.</div>
+              <div class="provider-desc">Official OpenAI API. Uses active models like GPT-4o-mini or GPT-4o with live model discovery.</div>
             </div>
           </label>
           <label class="provider-option">
@@ -476,13 +476,21 @@
           <div class="provider-settings" id="ollamaSettings">
             <div class="form-group">
               <label>Ollama Host URL</label>
-              <input type="text" id="aiOllamaHost" value="http://localhost:11434" />
+              <div style="display: flex; gap: 8px;">
+                <input type="text" id="aiOllamaHost" value="http://localhost:11434" style="flex: 1;" />
+                <button type="button" class="btn-secondary" id="btnScanOllamaModels" style="padding: 6px 12px; font-size: 12px; white-space: nowrap;">🔍 Detect Models</button>
+              </div>
+              <div id="ollamaStatusMsg" style="font-size: 11.5px; margin-top: 5px; display: none;"></div>
             </div>
             <div class="form-group">
-              <label>Selected Model</label>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label style="margin-bottom: 0;">Selected Local Model</label>
+                <button type="button" id="btnUseOllamaRecommended" style="font-size: 11px; color: var(--apple-green); background: none; border: none; cursor: pointer; display: none; text-decoration: underline;">✨ Use Recommended</button>
+              </div>
               <select id="aiOllamaModelSelect">
                 <option value="qwen2.5-coder:3b">qwen2.5-coder:3b</option>
               </select>
+              <div id="ollamaModelHint" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 5px;"></div>
             </div>
           </div>
 
@@ -493,15 +501,19 @@
               <div style="display: flex; gap: 8px;">
                 <input type="password" id="aiAnthropicKey" placeholder="sk-ant-api..." style="flex: 1;" />
                 <button type="button" class="btn-secondary" id="btnToggleAnthropicKey" style="padding: 6px 12px; font-size: 13px;" title="Show / Hide Key">👁️</button>
+                <button type="button" class="btn-secondary" id="btnScanAnthropicModels" style="padding: 6px 12px; font-size: 12px; white-space: nowrap;">🔍 Scan Available Models</button>
               </div>
+              <div id="anthropicKeyStatusMsg" style="font-size: 11.5px; margin-top: 5px; display: none;"></div>
             </div>
             <div class="form-group">
-              <label>Select Claude Model</label>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label style="margin-bottom: 0;">Select Available Claude Model</label>
+                <button type="button" id="btnUseAnthropicRecommended" style="font-size: 11px; color: var(--apple-green); background: none; border: none; cursor: pointer; display: none; text-decoration: underline;">✨ Use Recommended</button>
+              </div>
               <select id="aiAnthropicModelSelect">
-                <option value="claude-3-5-sonnet-20241022" selected>Claude 3.5 Sonnet (Recommended - Best Quality)</option>
-                <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Fast & Lowest Cost)</option>
-                <option value="claude-3-opus-20240229">Claude 3 Opus (Most Comprehensive)</option>
+                <option value="">Enter API key to load available models...</option>
               </select>
+              <div id="anthropicModelHint" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 5px;"></div>
             </div>
           </div>
 
@@ -512,15 +524,19 @@
               <div style="display: flex; gap: 8px;">
                 <input type="password" id="aiOpenAiKey" placeholder="sk-proj-..." style="flex: 1;" />
                 <button type="button" class="btn-secondary" id="btnToggleOpenAiKey" style="padding: 6px 12px; font-size: 13px;" title="Show / Hide Key">👁️</button>
+                <button type="button" class="btn-secondary" id="btnScanOpenAiModels" style="padding: 6px 12px; font-size: 12px; white-space: nowrap;">🔍 Scan Available Models</button>
               </div>
+              <div id="openAiKeyStatusMsg" style="font-size: 11.5px; margin-top: 5px; display: none;"></div>
             </div>
             <div class="form-group">
-              <label>Select OpenAI / Compatible Model</label>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label style="margin-bottom: 0;">Select Available OpenAI Model</label>
+                <button type="button" id="btnUseOpenAiRecommended" style="font-size: 11px; color: var(--apple-green); background: none; border: none; cursor: pointer; display: none; text-decoration: underline;">✨ Use Recommended</button>
+              </div>
               <select id="aiOpenAiModelSelect">
-                <option value="gpt-4o" selected>GPT-4o (Flagship Multimodal)</option>
-                <option value="gpt-4o-mini">GPT-4o-mini (Lightweight & Economical)</option>
-                <option value="o1-preview">o1-preview (Advanced Reasoning)</option>
+                <option value="">Enter API key to load available models...</option>
               </select>
+              <div id="openAiModelHint" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 5px;"></div>
             </div>
           </div>
 

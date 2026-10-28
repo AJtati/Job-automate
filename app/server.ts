@@ -1184,6 +1184,20 @@ serve({
       }
     }
 
+    // API: POST /api/ai/models (Live query verified available models for a provider)
+    if (url.pathname === "/api/ai/models" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { provider = "anthropic", apiKey, host } = body;
+        const result = await aiService.getAvailableModelsForProvider(provider, apiKey, host);
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+      }
+    }
+
     // API: search-source configuration. API keys are write-only and never returned.
     if (url.pathname === "/api/search/config" && req.method === "GET") {
       return Response.json({
