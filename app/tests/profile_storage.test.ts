@@ -83,4 +83,63 @@ describe("uploaded resume persistence", () => {
     expect(p2?.location).toBe("Middlesbrough");
     expect(p2?.headline).toBe("Senior Dynamics Developer");
   });
+
+  test("scales to arbitrary N profiles with strictly isolated trackers, locations, and roles", () => {
+    const dir = mkdtempSync(join(tmpdir(), "multi-profile-isolation-"));
+    const manager = new ProfilesManager(dir);
+
+    const candidates = [
+      { id: "devops-lead", name: "DevOps Candidate", headline: "Lead DevOps Engineer", location: "Manchester", targetRoles: ["DevOps Engineer", "Platform Engineer"] },
+      { id: "dynamics-dev", name: "Dynamics Candidate", headline: "Senior Dynamics 365 Developer", location: "Middlesbrough", targetRoles: ["Dynamics 365 Developer", "Power Platform Consultant"] },
+      { id: "frontend-dev", name: "Frontend Candidate", headline: "Senior React / Frontend Developer", location: "London", targetRoles: ["Frontend Engineer", "React Developer"] },
+      { id: "data-scientist", name: "Data Candidate", headline: "Staff Data Scientist", location: "Cambridge", targetRoles: ["Data Scientist", "Machine Learning Engineer"] },
+      { id: "qa-lead", name: "QA Candidate", headline: "Lead QA Automation Engineer", location: "Leeds", targetRoles: ["QA Engineer", "SDET"] },
+    ];
+
+    for (const c of candidates) {
+      manager.saveProfile({
+        id: c.id,
+        name: c.name,
+        headline: c.headline,
+        email: `${c.id}@example.com`,
+        phone: "",
+        location: c.location,
+        postcode: "",
+        linkedin: "",
+        github: "",
+        visaSponsorshipRequired: false,
+        targetRoles: c.targetRoles,
+        targetLocations: [c.location, "Remote"],
+        preferredRadiusMiles: 30,
+        minSalary: 0,
+        skills: {},
+        experience: [],
+        education: [],
+        certifications: [],
+        spokenLanguages: ["English"],
+        tracker: {
+          [`custom_job_${c.id}`]: { status: "drafted", fitRating: "95", role: c.targetRoles[0] }
+        }
+      });
+    }
+
+    const all = manager.getAll().profiles;
+    expect(all.length).toBeGreaterThanOrEqual(5);
+
+    // Verify each profile is completely isolated
+    for (const c of candidates) {
+      const match = all.find(p => p.id === c.id);
+      expect(match).toBeDefined();
+      expect(match?.name).toBe(c.name);
+      expect(match?.headline).toBe(c.headline);
+      expect(match?.location).toBe(c.location);
+      expect(match?.targetRoles).toEqual(c.targetRoles);
+      // Verify tracker only contains this profile's jobs
+      expect(match?.tracker?.[`custom_job_${c.id}`]?.status).toBe("drafted");
+      // Must NOT contain other profiles' tracker keys
+      for (const other of candidates.filter(o => o.id !== c.id)) {
+        expect(match?.tracker?.[`custom_job_${other.id}`]).toBeUndefined();
+      }
+    }
+  });
 });

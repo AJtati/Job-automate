@@ -96,4 +96,49 @@ describe("application evidence scoring", () => {
     expect(devopsOnDynamics.dimensions.career.score).toBe(0);
     expect(devopsOnDynamics.dimensions.career.note).toContain("Incompatible domain");
   });
+
+  test("accurately curates and scores non-tech candidates (e.g. nurse, accountant) for their respective jobs", () => {
+    const nurseProfile: CandidateProfile = {
+      id: "sarah-nurse", name: "Sarah Connor", headline: "Registered General Nurse",
+      email: "sarah@example.com", phone: "", location: "Manchester, UK", postcode: "M1", linkedin: "", github: "",
+      visaSponsorshipRequired: false, targetRoles: ["Staff Nurse", "Senior Staff Nurse"],
+      targetLocations: ["Manchester, UK"], preferredRadiusMiles: 25, minSalary: 0,
+      skills: {
+        "Clinical": ["Patient Care", "Acute Triage", "IV Cannulation", "Wound Management"],
+        "Certifications": ["BLS", "ACLS"]
+      },
+      experience: [{
+        company: "Manchester Royal Infirmary", role: "Staff Nurse", location: "Manchester, UK", startDate: "2018", endDate: "Present",
+        bullets: ["Provided acute patient care in emergency triage and medical assessment unit.", "Administered IV cannulation and wound management according to NMC guidelines."]
+      }],
+      education: [], certifications: [], spokenLanguages: ["English"]
+    };
+
+    const nurseJob = {
+      company: "NHS Trust",
+      role: "Staff Nurse - Acute Medicine",
+      location: "Manchester",
+      fullJd: "We are recruiting a dedicated Staff Nurse. Must have valid NMC PIN. Key responsibilities include patient care, acute triage, IV cannulation, and wound management. BLS certification required.",
+      keySkills: ["Patient Care", "Triage", "BLS"]
+    };
+
+    const accountingJob = {
+      company: "Deloitte",
+      role: "Senior Financial Auditor",
+      location: "Manchester",
+      fullJd: "Seeking a Senior Financial Auditor with IFRS, financial reporting, and statutory auditing experience.",
+      keySkills: ["Auditing", "IFRS"]
+    };
+
+    // Nurse on Nurse job must be a strong fit
+    const nurseAnalysis = analyzeApplication(nurseProfile, nurseJob);
+    expect(nurseAnalysis.overallScore).toBeGreaterThanOrEqual(75);
+    expect(nurseAnalysis.verdict).toBe("Strong fit");
+    expect(nurseAnalysis.matchedKeywords).toContain("Patient Care");
+
+    // Nurse on Accounting job must be poor fit / incompatible
+    const nurseOnFinance = analyzeApplication(nurseProfile, accountingJob);
+    expect(nurseOnFinance.overallScore).toBeLessThanOrEqual(30);
+    expect(nurseOnFinance.verdict).toMatch(/Poor fit|Weak fit/);
+  });
 });

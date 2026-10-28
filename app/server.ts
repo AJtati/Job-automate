@@ -296,20 +296,47 @@ function isJobRelevantToProfile(item: any, profile: CandidateProfile): boolean {
     return /\bqa\b|quality\s*assurance|tester\b|test\s*engineer|automation\s*engineer|sdet\b|software\s*testing/i.test(title);
   }
 
-  // 4. Universal target roles matching for other disciplines
+  // 4. Universal target roles matching for other disciplines (e.g. Frontend, Data/ML, Mobile, Security, Product, etc.)
   if (targetRoles.length > 0 || profileHeadline) {
+    // Cross-domain negative guards: do not leak pure DevOps, Dynamics, or QA to other disciplines
+    if (!isCandidateDevops && /kubernetes|terraform|platform\s*engineer|sre\b|site\s*reliability|cloud\s*infrastructure/.test(title)) {
+      return false;
+    }
+    if (!isCandidateDynamics && /dynamics\s*365|dynamics\s*crm|power\s*platform|power\s*apps|power\s*automate|dataverse|\bd365\b/.test(title)) {
+      return false;
+    }
+    if (!isCandidateQA && /\bqa\b|tester\b|test\s*automation|sdet\b/.test(title)) {
+      return false;
+    }
+
+    const GENERIC_ROLE_WORDS = new Set([
+      "senior", "junior", "lead", "principal", "staff", "head", "director", "manager",
+      "engineer", "developer", "consultant", "specialist", "analyst", "architect",
+      "officer", "associate", "intern", "graduate", "executive", "expert", "professional",
+      "with", "from", "into", "your", "full", "time", "part"
+    ]);
+
     const rolesToMatch = [...targetRoles];
     if (profileHeadline) rolesToMatch.push(profileHeadline);
 
     return rolesToMatch.some(role => {
-      const words = role.replace(/[^a-z0-9]/g, " ").trim().split(/\s+/).filter(w => w.length > 3);
-      if (words.length === 0) return false;
-      if (title.includes(role)) return true;
-      if (words.length >= 2) {
-        const matchCount = words.filter(w => title.includes(w)).length;
-        if (matchCount >= 2) return true;
+      const cleanRole = role.toLowerCase().trim();
+      if (!cleanRole) return false;
+      if (title.includes(cleanRole)) return true;
+
+      const allWords = cleanRole.replace(/[^a-z0-9]/g, " ").trim().split(/\s+/).filter(w => w.length > 2);
+      const domainWords = allWords.filter(w => !GENERIC_ROLE_WORDS.has(w));
+
+      if (domainWords.length > 0) {
+        // At least one non-generic domain keyword must be found in the job title
+        const hasDomainWord = domainWords.some(dw => title.includes(dw));
+        if (!hasDomainWord) return false;
+
+        const matchCount = allWords.filter(w => title.includes(w)).length;
+        return matchCount >= Math.min(2, allWords.length);
       }
-      return false;
+
+      return title.includes(cleanRole);
     });
   }
 
