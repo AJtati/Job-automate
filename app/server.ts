@@ -1012,8 +1012,7 @@ serve({
         const allProfilesList = profilesManager.getAll().profiles;
 
         // Check if an existing profile should be updated:
-        // 1. Explicit targetProfileId from caller (Update Mode)
-        // 2. Candidate name matches an existing profile exactly (case-insensitive)
+        // Only update an existing profile if targetProfileId was explicitly specified (Update Mode)
         let resolvedProfileId: string | undefined = undefined;
         let existingRecord: CandidateProfile | undefined = undefined;
 
@@ -1023,26 +1022,32 @@ serve({
             resolvedProfileId = matchTarget.id;
             existingRecord = matchTarget;
           }
-        } else if (parsed.name) {
-          const norm = parsed.name.trim().toLowerCase();
-          const matchByName = allProfilesList.find(p => p.name.trim().toLowerCase() === norm);
-          if (matchByName) {
-            resolvedProfileId = matchByName.id;
-            existingRecord = matchByName;
-          }
         }
 
-        // Generate unique clean slug if creating a new profile
+        // Generate unique clean slug if creating a new profile (supports multiple profiles per person)
         let finalId: string;
         if (resolvedProfileId) {
           finalId = resolvedProfileId;
         } else {
           const candidateName = parsed.name || deterministic.profile.name || "candidate";
-          let baseSlug = candidateName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "candidate";
-          finalId = baseSlug;
-          let counter = 2;
-          while (allProfilesList.some(p => p.id === finalId)) {
-            finalId = `${baseSlug}-${counter++}`;
+          const candidateHeadline = (parsed.headline || deterministic.profile.headline || "").toLowerCase();
+          const baseSlug = candidateName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "candidate";
+
+          // If a profile for this candidate already exists, differentiate with their role/discipline
+          if (allProfilesList.some(p => p.id === baseSlug)) {
+            const roleWord = candidateHeadline.match(/dynamics|devops|qa|tester|frontend|backend|cloud|sre|platform|data|security|mobile|nurse|accountant|analyst/)?.[0];
+            const candidateRoleSlug = roleWord ? `${baseSlug}-${roleWord}` : "";
+            if (candidateRoleSlug && !allProfilesList.some(p => p.id === candidateRoleSlug)) {
+              finalId = candidateRoleSlug;
+            } else {
+              let counter = 2;
+              finalId = `${baseSlug}-${counter}`;
+              while (allProfilesList.some(p => p.id === finalId)) {
+                finalId = `${baseSlug}-${++counter}`;
+              }
+            }
+          } else {
+            finalId = baseSlug;
           }
         }
 
