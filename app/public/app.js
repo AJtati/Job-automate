@@ -412,6 +412,9 @@ function setupEventListeners() {
       ollamaSettings.style.display = val === "ollama" ? "block" : "none";
       anthropicSettings.style.display = val === "anthropic" ? "block" : "none";
       openaiSettings.style.display = val === "openai" ? "block" : "none";
+      if (val !== "builtin") {
+        scanProviderModels(val);
+      }
     });
   });
 
@@ -1040,6 +1043,8 @@ async function runScenarioPrompt() {
 // AI Engine Configuration & Health
 // --------------------------------------------------------------------------
 
+let providerModelsCache = {};
+
 async function fetchAiConfig() {
   try {
     const res = await fetch("/api/ai/config");
@@ -1054,9 +1059,9 @@ async function fetchAiConfig() {
       if (provider === "ollama") {
         aiStatusText.textContent = `Ollama: ${aiConfig.ollamaModel}`;
       } else if (provider === "anthropic") {
-        aiStatusText.textContent = "Claude 3.5";
+        aiStatusText.textContent = `Claude: ${aiConfig.anthropicModel || "Active"}`;
       } else if (provider === "openai") {
-        aiStatusText.textContent = "OpenAI GPT-4o";
+        aiStatusText.textContent = `OpenAI: ${aiConfig.openaiModel || "Active"}`;
       } else if (provider === "builtin") {
         aiStatusText.textContent = "Built-in · local";
       } else {
@@ -1067,7 +1072,7 @@ async function fetchAiConfig() {
       aiStatusText.textContent = `AI: ${provider} (Offline)`;
     }
 
-    // Populate model options
+    // Populate model options for ollama if provided
     if (data.models && data.models.length > 0) {
       aiOllamaModelSelect.innerHTML = "";
       data.models.forEach(m => {
@@ -1080,6 +1085,185 @@ async function fetchAiConfig() {
     }
   } catch (err) {
     console.error("AI config load error:", err);
+  }
+}
+
+async function scanProviderModels(provider, explicitKey = "", force = false) {
+  if (!provider || provider === "builtin") return;
+
+  const selectElem = document.getElementById(
+    provider === "anthropic" ? "aiAnthropicModelSelect" :
+    provider === "openai" ? "aiOpenAiModelSelect" : "aiOllamaModelSelect"
+  );
+  const statusElem = document.getElementById(
+    provider === "anthropic" ? "anthropicKeyStatusMsg" :
+    provider === "openai" ? "openAiKeyStatusMsg" : "ollamaStatusMsg"
+  );
+  const hintElem = document.getElementById(
+    provider === "anthropic" ? "anthropicModelHint" :
+    provider === "openai" ? "openAiModelHint" : "ollamaModelHint"
+  );
+  const btnUseRec = document.getElementById(
+    provider === "anthropic" ? "btnUseAnthropicRecommended" :
+    provider === "openai" ? "btnUseOpenAiRecommended" : "btnUseOllamaRecommended"
+  );
+  const scanBtn = document.getElementById(
+    provider === "anthropic" ? "btnScanAnthropicModels" :
+    provider === "openai" ? "btnScanOpenAiModels" : "btnScanOllamaModels"
+  );
+
+  if (!selectElem) return;
+
+  if (!force && providerModelsCache[provider]?.models?.length > 0 && selectElem.options.length > 1) {
+    updateModelHintAndBadge(provider);
+    return;
+  }
+
+  const originalBtnText = scanBtn ? scanBtn.textContent : "";
+  if (scanBtn) {
+    scanBtn.disabled = true;
+    scanBtn.textContent = "⏳ Scanning...";
+  }
+
+  if (statusElem) {
+    statusElem.style.display = "block";
+    statusElem.style.color = "var(--apple-blue)";
+    statusElem.textContent = "Querying API for verified available models...";
+  }
+
+  try {
+    const host = provider === "ollama" ? (aiOllamaHost?.value.trim() || "http://localhost:11434") : undefined;
+    const apiKey = explicitKey || (
+      provider === "anthropic" ? aiAnthropicKey.value.trim() :
+      provider === "openai" ? aiOpenAiKey.value.trim() : ""
+    );
+
+    const res = await fetch("/api/ai/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, apiKey, host })
+    });
+
+    const data = await res.json();
+
+    if (data.success && Array.isArray(data.models) && data.models.length > 0) {
+      providerModelsCache[provider] = data;
+
+      const currentConfigModel = aiConfig ? (
+        provider === "anthropic" ? aiConfig.anthropicModel :
+        provider === "openai" ? aiConfig.openaiModel : aiConfig.ollamaModel
+      ) : null;
+
+      const previouslySelected = selectElem.value || currentConfigModel;
+
+      selectElem.innerHTML = "";
+      data.models.forEach(m => {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.name;
+        if (m.recommended) opt.dataset.recommended = "true";
+        if (m.reason) opt.dataset.reason = m.reason;
+        if (m.badge) opt.dataset.badge = m.badge;
+        selectElem.appendChild(opt);
+      });
+
+      // User flexibility: if user's previously picked model is among the verified available models, keep it!
+      // Otherwise, pick the best recommended model.
+      const matchExists = data.models.some(m => m.id === previouslySelected);
+      if (matchExists && previouslySelected) {
+        selectElem.value = previouslySelected;
+      } else if (data.recommendedModel) {
+        selectElem.value = data.recommendedModel;
+      }
+
+      if (statusElem) {
+        statusElem.style.display = "block";
+        statusElem.style.color = "var(--apple-green)";
+        statusElem.textContent = `✅ Found ${data.models.length} active models on your account.`;
+        setTimeout(() => {
+          if (statusElem) statusElem.style.display = "none";
+        }, 4000);
+      }
+
+      updateModelHintAndBadge(provider);
+    } else {
+      if (statusElem) {
+        statusElem.style.display = "block";
+        statusElem.style.color = "var(--apple-red, #ff453a)";
+        statusElem.textContent = data.error || "Could not retrieve models. Check credentials or connection.";
+      }
+      if (hintElem) hintElem.textContent = "";
+      if (btnUseRec) btnUseRec.style.display = "none";
+    }
+  } catch (err) {
+    if (statusElem) {
+      statusElem.style.display = "block";
+      statusElem.style.color = "var(--apple-red, #ff453a)";
+      statusElem.textContent = "Error scanning models.";
+    }
+  } finally {
+    if (scanBtn) {
+      scanBtn.disabled = false;
+      scanBtn.textContent = originalBtnText || (provider === "ollama" ? "🔍 Detect Models" : "🔍 Scan Available Models");
+    }
+  }
+}
+
+function updateModelHintAndBadge(provider) {
+  const selectElem = document.getElementById(
+    provider === "anthropic" ? "aiAnthropicModelSelect" :
+    provider === "openai" ? "aiOpenAiModelSelect" : "aiOllamaModelSelect"
+  );
+  const hintElem = document.getElementById(
+    provider === "anthropic" ? "anthropicModelHint" :
+    provider === "openai" ? "openAiModelHint" : "ollamaModelHint"
+  );
+  const btnUseRec = document.getElementById(
+    provider === "anthropic" ? "btnUseAnthropicRecommended" :
+    provider === "openai" ? "btnUseOpenAiRecommended" : "btnUseOllamaRecommended"
+  );
+
+  if (!selectElem) return;
+
+  const cache = providerModelsCache[provider];
+  const selectedId = selectElem.value;
+  const modelInfo = cache?.models?.find(m => m.id === selectedId);
+  const recommendedId = cache?.recommendedModel;
+
+  if (hintElem) {
+    if (modelInfo) {
+      if (modelInfo.recommended) {
+        hintElem.innerHTML = `<span style="color: var(--apple-green); font-weight: 600;">✨ Best Recommended:</span> ${modelInfo.reason || "Optimal balance of intelligence, speed, and low token cost."}`;
+      } else {
+        hintElem.innerHTML = `<span style="color: var(--apple-blue); font-weight: 500;">User Choice:</span> ${modelInfo.badge ? modelInfo.badge + ' · ' : ''}<code>${modelInfo.id}</code>`;
+      }
+    } else {
+      hintElem.textContent = selectedId ? `Selected model: ${selectedId}` : "";
+    }
+  }
+
+  if (btnUseRec) {
+    // Only show button if user has currently picked something different from recommended
+    if (recommendedId && selectedId !== recommendedId) {
+      btnUseRec.style.display = "inline-block";
+      btnUseRec.textContent = `✨ Switch to Recommended (${recommendedId})`;
+    } else {
+      btnUseRec.style.display = "none";
+    }
+  }
+}
+
+function useRecommendedModel(provider) {
+  const cache = providerModelsCache[provider];
+  if (!cache || !cache.recommendedModel) return;
+  const selectElem = document.getElementById(
+    provider === "anthropic" ? "aiAnthropicModelSelect" :
+    provider === "openai" ? "aiOpenAiModelSelect" : "aiOllamaModelSelect"
+  );
+  if (selectElem) {
+    selectElem.value = cache.recommendedModel;
+    updateModelHintAndBadge(provider);
+    showToast(`✨ Set to recommended: ${cache.recommendedModel}`);
   }
 }
 
@@ -1098,6 +1282,7 @@ function openAiModal() {
   aiAnthropicKey.placeholder = aiConfig.hasAnthropicKey ? "Configured · leave blank to keep" : "Anthropic API key (sk-ant-...)";
   aiOpenAiKey.placeholder = aiConfig.hasOpenAiKey ? "Configured · leave blank to keep" : "OpenAI API key (sk-...)";
 
+  // Bind key visibility toggle buttons once
   const btnToggleAnthropicKey = document.getElementById("btnToggleAnthropicKey");
   if (btnToggleAnthropicKey && !btnToggleAnthropicKey.dataset.bound) {
     btnToggleAnthropicKey.dataset.bound = "true";
@@ -1115,17 +1300,80 @@ function openAiModal() {
     });
   }
 
+  // Bind manual scan buttons once
+  const btnScanAnthropicModels = document.getElementById("btnScanAnthropicModels");
+  if (btnScanAnthropicModels && !btnScanAnthropicModels.dataset.bound) {
+    btnScanAnthropicModels.dataset.bound = "true";
+    btnScanAnthropicModels.addEventListener("click", () => scanProviderModels("anthropic", aiAnthropicKey.value.trim(), true));
+  }
+  const btnScanOpenAiModels = document.getElementById("btnScanOpenAiModels");
+  if (btnScanOpenAiModels && !btnScanOpenAiModels.dataset.bound) {
+    btnScanOpenAiModels.dataset.bound = "true";
+    btnScanOpenAiModels.addEventListener("click", () => scanProviderModels("openai", aiOpenAiKey.value.trim(), true));
+  }
+  const btnScanOllamaModels = document.getElementById("btnScanOllamaModels");
+  if (btnScanOllamaModels && !btnScanOllamaModels.dataset.bound) {
+    btnScanOllamaModels.dataset.bound = "true";
+    btnScanOllamaModels.addEventListener("click", () => scanProviderModels("ollama", "", true));
+  }
+
+  // Bind 'Use Recommended' quick-select buttons once
+  const btnUseAnthropicRecommended = document.getElementById("btnUseAnthropicRecommended");
+  if (btnUseAnthropicRecommended && !btnUseAnthropicRecommended.dataset.bound) {
+    btnUseAnthropicRecommended.dataset.bound = "true";
+    btnUseAnthropicRecommended.addEventListener("click", () => useRecommendedModel("anthropic"));
+  }
+  const btnUseOpenAiRecommended = document.getElementById("btnUseOpenAiRecommended");
+  if (btnUseOpenAiRecommended && !btnUseOpenAiRecommended.dataset.bound) {
+    btnUseOpenAiRecommended.dataset.bound = "true";
+    btnUseOpenAiRecommended.addEventListener("click", () => useRecommendedModel("openai"));
+  }
+  const btnUseOllamaRecommended = document.getElementById("btnUseOllamaRecommended");
+  if (btnUseOllamaRecommended && !btnUseOllamaRecommended.dataset.bound) {
+    btnUseOllamaRecommended.dataset.bound = "true";
+    btnUseOllamaRecommended.addEventListener("click", () => useRecommendedModel("ollama"));
+  }
+
+  // Bind select dropdown changes once so user can freely choose any model
   const anthropicModelSelect = document.getElementById("aiAnthropicModelSelect");
-  if (anthropicModelSelect && aiConfig.anthropicModel) {
-    anthropicModelSelect.value = aiConfig.anthropicModel;
+  if (anthropicModelSelect && !anthropicModelSelect.dataset.bound) {
+    anthropicModelSelect.dataset.bound = "true";
+    anthropicModelSelect.addEventListener("change", () => updateModelHintAndBadge("anthropic"));
   }
   const openAiModelSelect = document.getElementById("aiOpenAiModelSelect");
-  if (openAiModelSelect && aiConfig.openaiModel) {
-    openAiModelSelect.value = aiConfig.openaiModel;
+  if (openAiModelSelect && !openAiModelSelect.dataset.bound) {
+    openAiModelSelect.dataset.bound = "true";
+    openAiModelSelect.addEventListener("change", () => updateModelHintAndBadge("openai"));
+  }
+  const ollamaModelSelect = document.getElementById("aiOllamaModelSelect");
+  if (ollamaModelSelect && !ollamaModelSelect.dataset.bound) {
+    ollamaModelSelect.dataset.bound = "true";
+    ollamaModelSelect.addEventListener("change", () => updateModelHintAndBadge("ollama"));
+  }
+
+  // Bind API key blur to scan models automatically if user pastes a key
+  if (aiAnthropicKey && !aiAnthropicKey.dataset.bound) {
+    aiAnthropicKey.dataset.bound = "true";
+    aiAnthropicKey.addEventListener("blur", () => {
+      const k = aiAnthropicKey.value.trim();
+      if (k && k.length > 10) scanProviderModels("anthropic", k, true);
+    });
+  }
+  if (aiOpenAiKey && !aiOpenAiKey.dataset.bound) {
+    aiOpenAiKey.dataset.bound = "true";
+    aiOpenAiKey.addEventListener("blur", () => {
+      const k = aiOpenAiKey.value.trim();
+      if (k && k.length > 10) scanProviderModels("openai", k, true);
+    });
   }
 
   testAiConnection();
   aiConfigModal.style.display = "flex";
+
+  // Automatically scan available models for the currently active provider
+  if (aiConfig.provider !== "builtin") {
+    scanProviderModels(aiConfig.provider);
+  }
 }
 
 async function testAiConnection() {
@@ -1157,8 +1405,8 @@ async function saveAiConfig() {
     provider,
     ollamaHost: aiOllamaHost.value.trim(),
     ollamaModel: aiOllamaModelSelect.value,
-    anthropicModel: anthropicModelSelect ? anthropicModelSelect.value : "claude-3-5-sonnet-20241022",
-    openaiModel: openAiModelSelect ? openAiModelSelect.value : "gpt-4o"
+    anthropicModel: anthropicModelSelect?.value || "claude-haiku-4-5-20251001",
+    openaiModel: openAiModelSelect?.value || "gpt-4o-mini"
   };
   if (aiAnthropicKey.value.trim()) payload.anthropicApiKey = aiAnthropicKey.value.trim();
   if (aiOpenAiKey.value.trim()) payload.openaiApiKey = aiOpenAiKey.value.trim();
@@ -1175,6 +1423,8 @@ async function saveAiConfig() {
       aiConfigModal.style.display = "none";
       showToast("AI engine configuration saved!");
       await fetchAiConfig();
+    } else {
+      showToast(data.error || "Failed to save AI configuration");
     }
   } catch (err) {
     showToast("Error saving AI configuration");
@@ -1185,45 +1435,9 @@ async function handleAutoSelectBestModel() {
   const provider = document.querySelector('input[name="aiProvider"]:checked')?.value || "ollama";
   const apiKey = provider === "openai" ? aiOpenAiKey.value.trim() : provider === "anthropic" ? aiAnthropicKey.value.trim() : "";
 
-  showToast("Scanning models and computing best value recommendation...");
-
-  try {
-    const res = await fetch("/api/ai/recommend", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider, apiKey })
-    });
-    const data = await res.json();
-    if (data.success && data.recommendedModel) {
-      if (provider === "ollama") {
-        aiOllamaModelSelect.value = data.recommendedModel;
-      } else if (provider === "anthropic") {
-        const select = document.getElementById("aiAnthropicModelSelect");
-        if (select) select.value = data.recommendedModel;
-      } else if (provider === "openai") {
-        const select = document.getElementById("aiOpenAiModelSelect");
-        if (select) {
-          // If cloud models returned live list, populate select if not present
-          if (data.cloudModels && data.cloudModels.length > 0) {
-            select.innerHTML = "";
-            data.cloudModels.forEach(m => {
-              const opt = document.createElement("option");
-              opt.value = m;
-              opt.textContent = m;
-              select.appendChild(opt);
-            });
-          }
-          select.value = data.recommendedModel;
-        }
-      }
-
-      showToast(`✨ Recommended: ${data.recommendedModel} — ${data.reason}`);
-    } else {
-      showToast("Could not determine model recommendation");
-    }
-  } catch (err) {
-    showToast("Error fetching model recommendation");
-  }
+  showToast("Scanning live models and selecting best value recommendation...");
+  await scanProviderModels(provider, apiKey, true);
+  useRecommendedModel(provider);
 }
 
 // --------------------------------------------------------------------------
