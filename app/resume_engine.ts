@@ -282,8 +282,11 @@ export function createLatexBackbone(): string {
   return DEFAULT_LATEX_BACKBONE;
 }
 
-function getDisplayRole(profile: CandidateProfile, job?: JobInput): string {
+function getDisplayRole(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis): string {
   if (!job?.role) return profile.headline || "Senior Professional";
+  if (analysis && (analysis.verdict === "Poor fit" || analysis.provenance.includes("Domain incompatibility") || analysis.overallScore <= 30)) {
+    return profile.headline || "Senior Professional";
+  }
   const headline = (profile.headline || "").toLowerCase();
   const role = (job.role || "").toLowerCase();
   const isDynamics = /dynamics|power\s*platform|dataverse|crm\b/i.test(headline);
@@ -309,7 +312,7 @@ export function renderTailoredResume(profile: CandidateProfile, job: JobInput, a
     backbone = backbone.split("\\small{" + TOKENS.summary + "}").join(TOKENS.summary);
   }
   const summaryContent = formatSummary(summary || buildGroundedSummary(profile, job, analysis));
-  const displayRole = getDisplayRole(profile, job);
+  const displayRole = getDisplayRole(profile, job, analysis);
 
   const replacements: Record<string, string> = {
     [TOKENS.header]: header(profile, displayRole),

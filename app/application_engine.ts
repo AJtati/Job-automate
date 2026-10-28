@@ -120,6 +120,29 @@ const TECH_TERMS: Record<string, string[]> = {
   "Dynamics 365": ["dynamics 365", "dynamics", "d365", "dynamics crm"],
   "Power Platform": ["power platform", "power apps", "powerapps", "power automate", "dataverse", "power bi", "power pages"],
   "CRM / ERP": ["crm", "erp", "salesforce", "sap"],
+
+  // Healthcare & Nursing
+  "Patient Care": ["patient care", "nursing", "clinical", "triage", "vital signs", "phlebotomy", "iv cannulation", "wound management"],
+  "Life Support & Clinical Compliance": ["bls", "acls", "cpr", "nmc", "infection control", "medication administration", "patient advocacy"],
+
+  // Finance, Accounting & Banking
+  "Financial Accounting & Reporting": ["financial reporting", "accounting", "auditing", "ifrs", "gaap", "taxation", "bookkeeping", "payroll"],
+  "Financial Analysis & Planning": ["financial modeling", "budgeting", "forecasting", "variance analysis", "reconciliation", "cash flow"],
+
+  // Marketing, Growth & Sales
+  "Marketing & Communications": ["digital marketing", "seo", "sem", "content marketing", "social media", "branding", "email marketing"],
+  "Sales & Business Development": ["b2b sales", "lead generation", "account management", "pipeline management", "crm", "client relationship"],
+
+  // Project, Product & Operations
+  "Project Management": ["project management", "pmp", "prince2", "agile", "scrum", "kanban", "jira", "risk management", "stakeholder management"],
+  "Product Management": ["product management", "product strategy", "user stories", "roadmap planning", "market research"],
+
+  // Legal, People & HR
+  "Human Resources": ["talent acquisition", "recruitment", "employee relations", "cipd", "hr policies", "onboarding", "performance management"],
+  "Legal & Compliance": ["legal compliance", "contract drafting", "due diligence", "gdpr", "corporate governance", "regulatory affairs"],
+
+  // Design & Creative
+  "UI/UX & Design": ["ui/ux", "figma", "user research", "wireframing", "prototyping", "adobe creative suite", "graphic design"],
 };
 
 const BEHAVIOR_TERMS: Record<string, string[]> = {
@@ -171,6 +194,17 @@ export function checkDomainCompatibility(profile: CandidateProfile, job: JobInpu
     if (isOtherJob && !isQaJob) {
       return { compatible: false, reason: "Incompatible domain: Role is outside candidate's QA & Test Automation background." };
     }
+  }
+
+  // 4. Other disciplines: Disallow pure DevOps, pure Dynamics, or pure QA if candidate is not in those domains
+  if (!isCandidateDevops && /platform\s*engineer|sre\b|site\s*reliability|kubernetes|terraform/.test(jobTitle)) {
+    return { compatible: false, reason: "Incompatible domain: DevOps / Cloud Infrastructure role does not match candidate's specialization." };
+  }
+  if (!isCandidateDynamics && /dynamics\s*365|dynamics\s*crm|power\s*platform|power\s*apps|power\s*automate|dataverse/.test(jobTitle)) {
+    return { compatible: false, reason: "Incompatible domain: Dynamics 365 / Power Platform role does not match candidate's specialization." };
+  }
+  if (!isCandidateQA && /\bqa\b|tester\b|test\s*automation|sdet\b/.test(jobTitle)) {
+    return { compatible: false, reason: "Incompatible domain: QA / Test role does not match candidate's specialization." };
   }
 
   return { compatible: true };
@@ -276,8 +310,13 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
   const jd = job.fullJd || "";
   const evidence = profileEvidence(profile);
   const combinedEvidence = evidence.join("\n");
+  const candidateSkillsInJd = Object.values(profile.skills || {})
+    .flat()
+    .filter(Boolean)
+    .filter(skill => typeof skill === "string" && skill.length > 2 && includesAlias(jd, [skill]));
   const requestedTechnical = unique([
     ...Object.entries(TECH_TERMS).filter(([, aliases]) => includesAlias(jd, aliases)).map(([term]) => term),
+    ...candidateSkillsInJd,
     ...(job.keySkills || []),
   ]).filter(Boolean);
   const requestedBehavioral = Object.entries(BEHAVIOR_TERMS).filter(([, aliases]) => includesAlias(jd, aliases)).map(([term]) => term);
