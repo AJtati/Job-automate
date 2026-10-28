@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
 import { createLatexBackbone } from "./resume_engine";
+import { detectCandidateCountry } from "./job_sources";
 
 export interface WorkExperience {
   company: string;
@@ -362,15 +363,121 @@ export class ProfilesManager {
     const profile = activeProfile || this.getActiveProfile();
     const loc = (locationStr || "").toLowerCase();
     const profileCity = (profile.location || "").toLowerCase();
+    const countryInfo = detectCandidateCountry(profile.location, profile.targetLocations);
 
-    if (loc.includes("remote")) {
-      return { miles: 0, tag: "Remote (UK)", isRemote: true };
+    if (loc.includes("remote") || loc.includes("worldwide") || loc.includes("anywhere") || loc.includes("telecommute")) {
+      const remoteTag = countryInfo.isUk ? "Remote (UK)" : `Remote (${countryInfo.countryName})`;
+      return { miles: 0, tag: remoteTag, isRemote: true };
     }
 
     // 1. Direct local match against candidate city
     const baseCityName = (profile.location || "").split(",")[0].trim().toLowerCase();
     if (baseCityName && loc.includes(baseCityName)) {
       return { miles: 0, tag: `${profile.location.split(",")[0]} (Local)`, isRemote: false };
+    }
+
+    // Cross-border detection
+    const isUkJob = /united kingdom|\buk\b|england|scotland|wales|london|manchester|birmingham|leeds|glasgow|edinburgh|newcastle|bristol|hartlepool|liverpool|sheffield|durham|sunderland|teesside|reading|oxford|cambridge|lutterworth|birchwood|milton keynes|nottingham|leicester|derby/i.test(loc);
+    const isGermanJob = /germany|deutschland|berlin|munich|münchen|frankfurt|hamburg|cologne|köln|stuttgart|düsseldorf|dusseldorf|leipzig|chemnitz|dresden|sachsen|erfurt|bonn|hannover|nürnberg|nuremberg|bremen/i.test(loc);
+    const isIndianJob = /india|bangalore|bengaluru|hyderabad|mumbai|delhi|pune|chennai|noida|gurgaon|kolkata|ahmedabad|maharashtra|karnataka|tamil nadu|telangana/i.test(loc);
+    const isCanadaJob = /canada|ontario|mississauga|toronto|vancouver|montreal|quebec|ottawa|calgary|alberta|british columbia/i.test(loc);
+    const isUsJob = /united states|\busa\b|\bus\b|new york|california|san francisco|austin|texas|seattle|chicago|boston|los angeles|atlanta|denver|colorado|florida|washington/i.test(loc);
+
+    // GERMANY CANDIDATE
+    if (!countryInfo.isUk && countryInfo.countryName === "Germany") {
+      if (isUkJob) {
+        return { miles: 600, tag: `${locationStr || "United Kingdom"} (UK - Cross Border)`, isRemote: false };
+      }
+      if (isIndianJob) {
+        return { miles: 4200, tag: `${locationStr || "India"} (India - Cross Border)`, isRemote: false };
+      }
+      if (isCanadaJob) {
+        return { miles: 3800, tag: `${locationStr || "Canada"} (Canada - Cross Border)`, isRemote: false };
+      }
+      if (isUsJob) {
+        return { miles: 3900, tag: `${locationStr || "USA"} (USA - Cross Border)`, isRemote: false };
+      }
+
+      const baseGermanCity = profileCity.includes("chemnitz") ? "chemnitz" :
+                             profileCity.includes("leipzig") ? "leipzig" :
+                             profileCity.includes("dresden") ? "dresden" :
+                             profileCity.includes("berlin") ? "berlin" :
+                             profileCity.includes("munich") || profileCity.includes("münchen") ? "munich" :
+                             profileCity.includes("frankfurt") ? "frankfurt" :
+                             profileCity.includes("hamburg") ? "hamburg" :
+                             profileCity.includes("cologne") || profileCity.includes("köln") ? "cologne" :
+                             profileCity.includes("stuttgart") ? "stuttgart" : "germany_general";
+
+      if (baseGermanCity === "chemnitz") {
+        if (loc.includes("chemnitz")) return { miles: 0, tag: "Chemnitz (Local)", isRemote: false };
+        if (loc.includes("zwickau")) return { miles: 25, tag: "Zwickau (~25 mi)", isRemote: false };
+        if (loc.includes("freiberg")) return { miles: 22, tag: "Freiberg (~22 mi)", isRemote: false };
+        if (loc.includes("dresden")) return { miles: 45, tag: "Dresden (~45 mi)", isRemote: false };
+        if (loc.includes("leipzig")) return { miles: 50, tag: "Leipzig (~50 mi)", isRemote: false };
+        if (loc.includes("gera")) return { miles: 40, tag: "Gera (~40 mi)", isRemote: false };
+        if (loc.includes("jena")) return { miles: 65, tag: "Jena (~65 mi)", isRemote: false };
+        if (loc.includes("halle")) return { miles: 70, tag: "Halle (~70 mi)", isRemote: false };
+        if (loc.includes("erfurt")) return { miles: 95, tag: "Erfurt (~95 mi - Regional)", isRemote: false };
+        if (loc.includes("berlin") || loc.includes("potsdam")) return { miles: 160, tag: "Berlin (~160 mi - Hybrid)", isRemote: false };
+        if (loc.includes("nürnberg") || loc.includes("nuremberg")) return { miles: 155, tag: "Nürnberg (~155 mi - Hybrid)", isRemote: false };
+        if (loc.includes("munich") || loc.includes("münchen")) return { miles: 260, tag: "Munich (~260 mi - Remote/Travel)", isRemote: false };
+        if (loc.includes("frankfurt")) return { miles: 270, tag: "Frankfurt (~270 mi - Remote/Travel)", isRemote: false };
+        if (loc.includes("hamburg")) return { miles: 310, tag: "Hamburg (~310 mi - Remote/Travel)", isRemote: false };
+        if (loc.includes("stuttgart")) return { miles: 290, tag: "Stuttgart (~290 mi - Remote/Travel)", isRemote: false };
+      } else if (baseGermanCity === "leipzig") {
+        if (loc.includes("leipzig")) return { miles: 0, tag: "Leipzig (Local)", isRemote: false };
+        if (loc.includes("halle")) return { miles: 25, tag: "Halle (~25 mi)", isRemote: false };
+        if (loc.includes("chemnitz")) return { miles: 50, tag: "Chemnitz (~50 mi)", isRemote: false };
+        if (loc.includes("dresden")) return { miles: 75, tag: "Dresden (~75 mi)", isRemote: false };
+        if (loc.includes("jena") || loc.includes("erfurt")) return { miles: 65, tag: "Thüringen (~65 mi)", isRemote: false };
+        if (loc.includes("berlin")) return { miles: 115, tag: "Berlin (~115 mi - Hybrid)", isRemote: false };
+        if (loc.includes("magdeburg")) return { miles: 80, tag: "Magdeburg (~80 mi)", isRemote: false };
+        if (loc.includes("frankfurt")) return { miles: 240, tag: "Frankfurt (~240 mi - Hybrid)", isRemote: false };
+      } else if (baseGermanCity === "berlin") {
+        if (loc.includes("berlin")) return { miles: 0, tag: "Berlin (Local)", isRemote: false };
+        if (loc.includes("potsdam")) return { miles: 20, tag: "Potsdam (~20 mi)", isRemote: false };
+        if (loc.includes("leipzig")) return { miles: 115, tag: "Leipzig (~115 mi - Hybrid)", isRemote: false };
+        if (loc.includes("dresden")) return { miles: 120, tag: "Dresden (~120 mi - Hybrid)", isRemote: false };
+        if (loc.includes("chemnitz")) return { miles: 160, tag: "Chemnitz (~160 mi - Hybrid)", isRemote: false };
+        if (loc.includes("hamburg")) return { miles: 180, tag: "Hamburg (~180 mi - Hybrid)", isRemote: false };
+        if (loc.includes("munich") || loc.includes("münchen")) return { miles: 360, tag: "Munich (~360 mi - Travel)", isRemote: false };
+      } else if (baseGermanCity === "munich") {
+        if (loc.includes("munich") || loc.includes("münchen")) return { miles: 0, tag: "Munich (Local)", isRemote: false };
+        if (loc.includes("augsburg")) return { miles: 40, tag: "Augsburg (~40 mi)", isRemote: false };
+        if (loc.includes("ingolstadt")) return { miles: 50, tag: "Ingolstadt (~50 mi)", isRemote: false };
+        if (loc.includes("nürnberg") || loc.includes("nuremberg")) return { miles: 105, tag: "Nürnberg (~105 mi - Hybrid)", isRemote: false };
+        if (loc.includes("stuttgart")) return { miles: 140, tag: "Stuttgart (~140 mi - Hybrid)", isRemote: false };
+        if (loc.includes("frankfurt")) return { miles: 245, tag: "Frankfurt (~245 mi - Travel)", isRemote: false };
+      } else if (baseGermanCity === "frankfurt") {
+        if (loc.includes("frankfurt")) return { miles: 0, tag: "Frankfurt (Local)", isRemote: false };
+        if (loc.includes("wiesbaden") || loc.includes("mainz")) return { miles: 25, tag: "Wiesbaden/Mainz (~25 mi)", isRemote: false };
+        if (loc.includes("darmstadt")) return { miles: 20, tag: "Darmstadt (~20 mi)", isRemote: false };
+        if (loc.includes("mannheim") || loc.includes("heidelberg")) return { miles: 50, tag: "Mannheim (~50 mi)", isRemote: false };
+        if (loc.includes("stuttgart")) return { miles: 125, tag: "Stuttgart (~125 mi - Hybrid)", isRemote: false };
+        if (loc.includes("cologne") || loc.includes("köln")) return { miles: 115, tag: "Cologne (~115 mi - Hybrid)", isRemote: false };
+      }
+
+      if (isGermanJob) {
+        return { miles: 120, tag: locationStr || "Germany (Nationwide)", isRemote: false };
+      }
+      return { miles: 600, tag: `${locationStr || "International"} (Cross Border)`, isRemote: false };
+    }
+
+    // UK CANDIDATE
+    if (isIndianJob) {
+      return { miles: 4500, tag: `${locationStr || "India"} (India - Cross Border)`, isRemote: false };
+    }
+    if (isCanadaJob) {
+      return { miles: 3500, tag: `${locationStr || "Canada"} (Canada - Cross Border)`, isRemote: false };
+    }
+    if (isUsJob) {
+      return { miles: 3500, tag: `${locationStr || "USA"} (USA - Cross Border)`, isRemote: false };
+    }
+    if (isGermanJob) {
+      return { miles: 600, tag: `${locationStr || "Germany"} (Germany - Cross Border)`, isRemote: false };
+    }
+    if (!isUkJob) {
+      return { miles: 3000, tag: `${locationStr || "International"} (Cross Border)`, isRemote: false };
     }
 
     // UK City distance approximations relative to candidate location
@@ -470,6 +577,6 @@ export class ProfilesManager {
       if (loc.includes("bristol")) return { miles: 90, tag: "Bristol (~90 mi)", isRemote: false };
     }
 
-    return { miles: 60, tag: locationStr || "United Kingdom", isRemote: false };
+    return { miles: 150, tag: locationStr || "United Kingdom", isRemote: false };
   }
 }

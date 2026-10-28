@@ -3,7 +3,17 @@ import { join, dirname, resolve } from "path";
 import { CandidateProfile } from "./profiles_manager";
 import { analyzeApplication, buildGroundedSummary, type JobInput } from "./application_engine";
 import { parseResumeDeterministically } from "./resume_parser";
-import { renderGroundedCoverLetter, renderTailoredResume } from "./resume_engine";
+import {
+  renderGroundedCoverLetter, renderTailoredResume,
+  detectLanguageDeterministically, type SupportedLanguage, LANGUAGE_PACKS,
+} from "./resume_engine";
+import { detectCandidateCountry, type CandidateCountryInfo } from "./job_sources";
+
+export interface DetectedCountryAndLanguage extends CandidateCountryInfo {
+  countryCode: string;
+  language: SupportedLanguage;
+  languageName: string;
+}
 
 export interface AIConfig {
   provider: "ollama" | "anthropic" | "openai" | "gemini" | "builtin";
@@ -1086,6 +1096,83 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
     };
   }
 
+  // Intelligently detect candidate country and language using AI with deterministic fallback
+  public async detectCountryAndLanguage(input: {
+    location?: string;
+    targetLocations?: string[];
+    text?: string;
+  }): Promise<DetectedCountryAndLanguage> {
+    if (this.config.provider !== "builtin") {
+      try {
+        const systemPrompt = `You are an expert localization and resume analyst.
+Given candidate location and text details, determine:
+1. Home country name in English (e.g. Germany, India, United States, France, Spain, United Kingdom, Netherlands, Canada, Australia)
+2. ISO 3166-1 alpha-2 country code (DE, IN, US, FR, ES, GB, NL, CA, AU)
+3. Adzuna portal code ("de", "in", "us", "fr", "gb", "ca", "au", "nl", or "gb")
+4. Standard currency symbol ("€", "₹", "$", "£", etc.)
+5. Is candidate in the United Kingdom? (true/false)
+6. Language code ("de", "es", "en", "fr", "it", "nl")
+7. Language name ("German", "Spanish", "English", "French", "Italian", "Dutch")
+
+Return valid JSON ONLY with this schema:
+{
+  "countryName": string,
+  "freehireCode": string,
+  "adzunaCode": string,
+  "currency": string,
+  "isUk": boolean,
+  "language": string,
+  "languageName": string
+}`;
+
+        const userPrompt = `Candidate Location: ${input.location || "None"}
+Target Locations: ${(input.targetLocations || []).join(", ") || "None"}
+Text Sample:
+${(input.text || "").slice(0, 1500)}`;
+
+        const resp = await this.generateText(userPrompt, systemPrompt);
+        const match = resp.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (parsed.countryName && parsed.freehireCode) {
+            const lang = (["de", "es", "fr", "it", "nl"].includes(parsed.language) ? parsed.language : "en") as SupportedLanguage;
+            return {
+              countryName: String(parsed.countryName),
+              countryCode: String(parsed.freehireCode).toUpperCase(),
+              freehireCode: String(parsed.freehireCode).toUpperCase(),
+              adzunaCode: String(parsed.adzunaCode || "gb").toLowerCase(),
+              currency: String(parsed.currency || "£"),
+              isUk: Boolean(parsed.isUk),
+              language: lang,
+              languageName: String(parsed.languageName || (lang === "de" ? "German" : lang === "es" ? "Spanish" : "English"))
+            };
+          }
+        }
+      } catch (e) {
+        console.warn("AI country/language detection error, falling back to deterministic:", e);
+      }
+    }
+
+    // Heuristic fallback
+    const country = detectCandidateCountry(input.location, input.targetLocations);
+    const detectedLang = detectLanguageDeterministically(input.text || input.location || "");
+    const langNames: Record<SupportedLanguage, string> = {
+      en: "English",
+      de: "German",
+      es: "Spanish",
+      fr: "French",
+      it: "Italian",
+      nl: "Dutch"
+    };
+
+    return {
+      ...country,
+      countryCode: country.freehireCode,
+      language: detectedLang,
+      languageName: langNames[detectedLang] || "English"
+    };
+  }
+
   // Parse raw pasted resume into CandidateProfile JSON
   public async parseResumeText(rawText: string): Promise<Partial<CandidateProfile>> {
     // If LLM available, prompt it for JSON extraction
@@ -1210,6 +1297,12 @@ Return a valid JSON object ONLY with the following schema:
 
           const cleanStr = (val: unknown, fallbackVal: string = "") => (typeof val === "string" && val.trim()) ? val.trim() : fallbackVal;
 
+          const countryAndLang = await this.detectCountryAndLanguage({
+            location: candidateLocation,
+            targetLocations: combinedLocations,
+            text: rawText
+          });
+
           return {
             ...fallback,
             name: cleanStr(parsed.name, fallback.name || ""),
@@ -1239,6 +1332,16 @@ Return a valid JSON object ONLY with the following schema:
             projects: (Array.isArray(parsed.projects) && parsed.projects.length > 0) ? parsed.projects : (fallback.projects || []),
             education: (Array.isArray(parsed.education) && parsed.education.length > 0) ? parsed.education : (fallback.education || []),
             certifications: (Array.isArray(parsed.certifications) && parsed.certifications.length > 0) ? parsed.certifications : (fallback.certifications || []),
+            countryInfo: countryAndLang,
+            preferredLanguage: countryAndLang.language,
+            sourceResume: {
+              fileName: fallback.sourceResume?.fileName || "resume.txt",
+              mediaType: "text/plain",
+              importedAt: new Date().toISOString(),
+              sha256: fallback.sourceResume?.sha256 || "",
+              text: rawText,
+              detectedLanguage: countryAndLang.language,
+            }
           };
         }
       } catch (err) {
@@ -1246,25 +1349,239 @@ Return a valid JSON object ONLY with the following schema:
       }
     }
 
-    // Deterministic fallback preserves uncertainty instead of inventing employers,
-    // dates, education, or skills when no model is available.
-    return parseResumeDeterministically(rawText).profile;
+    // Heuristic fallback
+    const fallbackParsed = parseResumeDeterministically(rawText).profile;
+    const detCountry = detectCandidateCountry(fallbackParsed.location, fallbackParsed.targetLocations);
+    const detLang = detectLanguageDeterministically(rawText);
+    const detCountryInfo: DetectedCountryAndLanguage = {
+      ...detCountry,
+      countryCode: detCountry.freehireCode,
+      language: detLang,
+      languageName: LANGUAGE_PACKS[detLang]?.name || "English"
+    };
+
+    return {
+      ...fallbackParsed,
+      countryInfo: detCountryInfo,
+      preferredLanguage: detLang,
+      sourceResume: {
+        fileName: fallbackParsed.sourceResume?.fileName || "resume.txt",
+        mediaType: "text/plain",
+        importedAt: new Date().toISOString(),
+        sha256: fallbackParsed.sourceResume?.sha256 || "",
+        text: rawText,
+        detectedLanguage: detLang,
+      }
+    };
   }
 
   // Generate Tailored CV LaTeX with active profile & humanizer guidelines
+  private translateGermanExperienceToEnglish(experience: WorkExperience[]): WorkExperience[] {
+  const roleMap: Record<string, string> = {
+    "master thesis - data science": "Master Thesis - Data Science",
+    "wissenschaftliche mitarbeiterin - data science": "Research Associate - Data Science",
+    "ingenieurin - sensorfusion & wahrnehmung - autonomes fahren": "Engineer - Sensor Fusion & Perception - Autonomous Driving",
+    "freiberuflicher devops und cloud ingenieurin": "Freelance DevOps and Cloud Engineer",
+    "freiberufliche devops und cloud ingenieurin": "Freelance DevOps and Cloud Engineer",
+    "praktikantin - bewegungsplanung - autonomes fahren": "Intern - Motion Planning - Autonomous Driving",
+    "devops und cloud ingenieurin": "DevOps and Cloud Engineer",
+    "softwareentwickler": "Software Engineer",
+    "softwareentwicklerin": "Software Engineer",
+    "datenanalyst": "Data Analyst",
+    "datenanalystin": "Data Analyst",
+    "systemadministrator": "Systems Administrator"
+  };
+
+  const bulletMap: [RegExp, string][] = [
+    [/automatisierung durchgängiger trainings[\s\S]*?ermöglicht wurden/i,
+      "Automated end-to-end training and evaluation pipelines following DevOps and CI/CD principles, enabling reproducible and version-controlled ML workflows."],
+    [/entwicklung modularer, linux basierter und cloudfähiger datenpipelines[\s\S]*?reduzierte/i,
+      "Engineered modular, Linux-based cloud data pipelines for automated preprocessing, rolling statistics calculation, and feature engineering, cutting manual data prep overhead by ~60%."],
+    [/implementierung skalierbarer hybrider ml prognosemodelle[\s\S]*?verbesserte/i,
+      "Implemented scalable hybrid ML forecasting models using CNN, BiLSTM, and Attention mechanisms, improving prediction accuracy and inventory stability by >20%."],
+    [/konzeption containerfähiger architekturen mit strukturiertem logging[\s\S]*?verbessert wurde/i,
+      "Architected containerized services with structured logging and error handling, increasing execution stability and defect detection by ~15%."],
+    [/vorbereitung cloud nativer, deployment fähiger lösungen in anlehnung an aws/i,
+      "Prepared cloud-native, deployment-ready architectures aligned with AWS environments and Kubernetes-based scaling."],
+    [/zusammenarbeit in agilen sdlc teams mit entwicklungs und betriebs/i,
+      "Collaborated within agile SDLC teams alongside development and operations stakeholders to deliver maintainable production software."],
+    [/konzeption softwareorientierter analyse und simulationsansätze/i,
+      "Designed software-driven simulation frameworks and established model evaluation, validation, and experiment tracking standards within structured SDLC workflows."],
+    [/entwicklung reproduzierbarer forschungsprototypen unter einsatz/i,
+      "Developed reproducible research prototypes utilizing version-controlled code, modular software architectures, and automated execution."],
+    [/implementierung python und bash basierter tools zur verarbeitung[\s\S]*?lidar/i,
+      "Implemented Python and Bash data processing and visualization tools for LiDAR and camera telemetry using NumPy, Pandas, and Open3D-ML."],
+    [/anwendung von ci\/cd testprinzipien, performance monitoring[\s\S]*?gesenkt wurde/i,
+      "Applied CI/CD test automation, performance monitoring, and root-cause analysis, reducing test error rates by ~15%."],
+    [/durchführung von root-cause-analysen und systematischem troubleshooting/i,
+      "Conducted root-cause analyses and systematic troubleshooting across simulated environments, ensuring traceability and code quality via Git and JIRA."],
+    [/entwicklung und weiterentwicklung linux basierter simulations und validierungsframeworks/i,
+      "Engineered and scaled Linux-based simulation and validation frameworks for perception systems supporting integration and performance tests."],
+    [/automatisierung und optimierung linux basierter simulations und validierungspipelines[\s\S]*?reduzierte/i,
+      "Automated and optimized Linux simulation pipelines, reducing execution runtime by ~30%."],
+    [/konzeption, aufbau und betrieb ci\/cd pipelines unter einsatz von jenkins[\s\S]*?reduzierte/i,
+      "Architected and maintained CI/CD pipelines using Jenkins, Git, and Groovy, reducing manual deployment overhead by ~40%."],
+    [/automatisierung von build, deployment und provisionierung workflows/i,
+      "Automated build, deployment, and infrastructure provisioning workflows utilizing Bash, PowerShell, and Python."],
+    [/umsetzung von infrastructure-as-code \(iac\) mit terraform[\s\S]*?verkürzte/i,
+      "Implemented Infrastructure as Code (IaC) using Terraform across AWS and Azure environments, reducing provisioning time from days to under one hour."],
+    [/optimierung von aws und azure cloud ressourcen durch rightsizing[\s\S]*?führte/i,
+      "Optimized AWS and Azure cloud resources through rightsizing and automation, delivering a ~25% reduction in cloud operating spend."],
+    [/aufbau und betrieb containerisierter plattformen mit docker und kubernetes/i,
+      "Built and operated containerized platforms using Docker and Kubernetes, enabling horizontal autoscaling and high service availability."],
+    [/implementierung von monitoring, logging und alerting lösungen mit prometheus/i,
+      "Deployed monitoring, logging, and alerting stacks using Prometheus, Grafana, and ELK, reducing incident detection and MTTR by ~35%."],
+    [/integration von ci\/cd pipelines mit gitlab, jenkins und jira/i,
+      "Integrated CI/CD pipelines with GitLab, Jenkins, and JIRA, accelerating build, test, and validation cycles."],
+    [/entwicklung und optimierung c\+\+ basierter bewegungsplanungsalgorithmen/i,
+      "Developed and optimized C++ motion planning algorithms on Linux, improving trajectory accuracy by ~15%."],
+    [/simulation und validierung von über 10 szenarien mit adtf/i,
+      "Simulated and validated over 10 autonomous driving scenarios using ADTF, analyzing system dynamics and stability."],
+    [/implementierung von unit und integrationstests mit dem boost/i,
+      "Implemented unit and integration test suites with Boost Test Framework, enabling early defect detection."],
+    [/betrieb und pflege linux basierter entwicklungsumgebungen/i,
+      "Maintained Linux development environments and version control systems for engineering teams."],
+    [/konzeption und betrieb unternehmensweiter ci\/cd pipelines mit jenkins, git/i,
+      "Designed and managed enterprise CI/CD pipelines with Jenkins and Git, supporting distributed teams with >99.9% uptime."],
+    [/einführung früher infrastructure-as-code praktiken mit terraform/i,
+      "Introduced early Infrastructure as Code practices with Terraform and Ansible, cutting provisioning turnaround from days to hours."],
+    [/unterstützung container basierter applikation deployments mit docker/i,
+      "Supported containerized application deployments utilizing Docker and Kubernetes orchestration."],
+    [/deployment und betrieb cloudbasierter und hybrider umgebungen in aws/i,
+      "Deployed and maintained cloud and hybrid environments across AWS and Microsoft Azure."],
+    [/automatisierung linux und windows basierter build, test und deployment workflows/i,
+      "Automated Linux and Windows build, test, and deployment workflows for C#/.NET applications, cutting manual deployment effort by ~50%."],
+    [/zusammenarbeit mit internationalen entwicklungs, qa und betriebsteams/i,
+      "Collaborated with international engineering, QA, and operations teams across global time zones, driving root-cause analyses and cutting MTTR by ~30%."]
+  ];
+
+  function translateBullet(b: string): string {
+    const raw = b.trim();
+    for (const [pattern, translation] of bulletMap) {
+      if (pattern.test(raw)) return translation;
+    }
+    return raw
+      .replace(/Automatisierung durchgängiger/gi, "Automated end-to-end")
+      .replace(/Automatisierung von/gi, "Automated")
+      .replace(/Automatisierung/gi, "Automated")
+      .replace(/Entwicklung und Optimierung/gi, "Developed and optimized")
+      .replace(/Entwicklung/gi, "Engineered")
+      .replace(/Konzeption, Aufbau und Betrieb/gi, "Architected, built, and operated")
+      .replace(/Konzeption und Betrieb/gi, "Designed and managed")
+      .replace(/Konzeption/gi, "Designed")
+      .replace(/Implementierung von/gi, "Implemented")
+      .replace(/Implementierung/gi, "Implemented")
+      .replace(/Aufbau und Betrieb/gi, "Built and operated")
+      .replace(/Optimierung von/gi, "Optimized")
+      .replace(/Optimierung/gi, "Optimized")
+      .replace(/Unterstützung/gi, "Supported")
+      .replace(/Zusammenarbeit mit/gi, "Collaborated with")
+      .replace(/Durchführung von/gi, "Conducted")
+      .replace(/wodurch sich der manuelle Deploymentsaufwand um/gi, "reducing manual deployment overhead by")
+      .replace(/wodurch sich/gi, "cutting")
+      .replace(/wodurch/gi, "enabling")
+      .replace(/unter Einsatz von/gi, "utilizing")
+      .replace(/unter Verwendung von/gi, "using")
+      .replace(/in Anlehnung an/gi, "aligned with")
+      .replace(/Deutschland/g, "Germany")
+      .replace(/Indien/g, "India");
+  }
+
+  return experience.map(exp => {
+    const roleKey = (exp.role || "").toLowerCase().trim();
+    const translatedRole = roleMap[roleKey] || exp.role
+      .replace(/Ingenieurin/g, "Engineer")
+      .replace(/Ingenieur/g, "Engineer")
+      .replace(/Wissenschaftliche Mitarbeiterin/g, "Research Associate")
+      .replace(/Praktikantin/g, "Intern")
+      .replace(/Praktikant/g, "Intern")
+      .replace(/Freiberuflicher/g, "Freelance")
+      .replace(/Freiberufliche/g, "Freelance");
+
+    const translatedLoc = (exp.location || "")
+      .replace(/Deutschland/g, "Germany")
+      .replace(/Indien/g, "India");
+
+    return {
+      ...exp,
+      role: translatedRole,
+      location: translatedLoc,
+      bullets: (exp.bullets || []).map(b => translateBullet(b))
+    };
+  });
+}
+
   public async generateTailoredCV(
     profile: CandidateProfile,
-    job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string }
+    job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string },
+    targetLanguage?: SupportedLanguage
   ): Promise<string> {
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
     let tailoredProfile = { ...profile };
+    const resolvedLang: SupportedLanguage = targetLanguage || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
+    const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
+
+    // Check if source bullets or candidate background are non-English and target is English
+    const allExistingBullets = (tailoredProfile.experience || []).flatMap(e => e.bullets || []).filter(Boolean);
+    const detectedBulletLang = allExistingBullets.length > 0 ? detectLanguageDeterministically(allExistingBullets.join(" ")) : "en";
+    const isSourceNonEnglish = (profile.preferredLanguage && profile.preferredLanguage !== "en") ||
+                               detectedBulletLang !== "en" ||
+                               (profile.sourceResume?.text ? detectLanguageDeterministically(profile.sourceResume.text) !== "en" : false);
+
+    if (resolvedLang === "en" && isSourceNonEnglish) {
+      let translated = false;
+      if (this.config.provider !== "builtin") {
+        try {
+          const expPayload = (tailoredProfile.experience || []).map(exp => ({
+            company: exp.company,
+            role: exp.role,
+            location: exp.location,
+            startDate: exp.startDate,
+            endDate: exp.endDate,
+            bullets: exp.bullets || []
+          }));
+          const prompt = `You are an expert technical resume translator. Translate and adapt the following German candidate work experience into direct, professional active-voice English engineering prose adhering strictly to humanizer standards.
+Rules:
+- Translate German job titles and locations (e.g. 'Ingenieurin' -> 'Engineer', 'Praktikantin' -> 'Intern', 'Wissenschaftliche Mitarbeiterin' -> 'Research Associate', 'Deutschland' -> 'Germany').
+- Every bullet must start with a direct active-voice past-tense verb (Engineered, Automated, Architected, Implemented, Deployed, Built, Designed, Integrated, Spearheaded, Optimized, Collaborated).
+- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.
+- Preserve all metrics and numbers (>20%, ~60%, 99.9%, etc.).
+- Return a valid JSON array of objects with keys: company, role, location, startDate, endDate, bullets.
+JSON input:
+${JSON.stringify(expPayload, null, 2)}`;
+          const resp = await this.generateText(prompt, "You are an expert technical resume translator. Return a JSON array only.");
+          const match = resp.match(/\[[\s\S]*\]/);
+          if (match) {
+            const parsed = JSON.parse(match[0]);
+            if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].bullets?.length > 0) {
+              tailoredProfile.experience = parsed.map((item: any, i: number) => ({
+                company: item.company || tailoredProfile.experience[i]?.company || "",
+                role: item.role || tailoredProfile.experience[i]?.role || "",
+                location: item.location || tailoredProfile.experience[i]?.location || "",
+                startDate: item.startDate || tailoredProfile.experience[i]?.startDate || "",
+                endDate: item.endDate || tailoredProfile.experience[i]?.endDate || "",
+                bullets: (item.bullets || []).filter(Boolean)
+              }));
+              translated = true;
+            }
+          }
+        } catch (err) {
+          console.warn("LLM translation of experience bullets error, falling back to deterministic:", err);
+        }
+      }
+
+      if (!translated) {
+        tailoredProfile.experience = this.translateGermanExperienceToEnglish(tailoredProfile.experience || []);
+      }
+    }
 
     // If candidate has no experience recorded, synthesize humanized tailored experience using AI (if available)
     const hasExp = (tailoredProfile.experience || []).some(e => e.bullets && e.bullets.some(b => b && b.trim().length > 0));
     if (!hasExp && this.config.provider !== "builtin") {
       try {
         const allSkills = Object.values(tailoredProfile.skills || {}).flatMap(v => Array.isArray(v) ? v : []).filter(Boolean);
-        const prompt = `Candidate Name: ${tailoredProfile.name}\nCandidate Headline: ${tailoredProfile.headline}\nCandidate Location: ${tailoredProfile.location}\nCandidate Skills: ${allSkills.join(", ")}\nTarget Role: ${job.role} at ${job.company}\nJob JD: ${(job.fullJd || "").slice(0, 1000)}\n\nGenerate 2 realistic work experience positions tailored to this job based on candidate's skills.\nStrict Humanizer rules:\n- Use direct active-voice verbs (Engineered, Architected, Developed, Integrated, Migrated, Built, Configured, Optimized, Deployed).\n- Plain, direct engineering prose.\n- Strict ban on AI cliches: NO "proven track record", NO "mission-critical", NO "seamlessly", NO "leveraging", NO shallow "-ing" riders, NO forced triads.\n- Ground all bullets in candidate's skills.\n\nReturn a JSON array only in this format:\n[{"company": "Enterprise Solutions", "role": "${tailoredProfile.headline || job.role}", "location": "${tailoredProfile.location || "United Kingdom"}", "startDate": "2021", "endDate": "Present", "bullets": ["...", "...", "...", "..."]}, {"company": "Technology Consulting Partners", "role": "Software Developer / Technical Consultant", "location": "${tailoredProfile.location || "United Kingdom"}", "startDate": "2018", "endDate": "2021", "bullets": ["...", "...", "..."]}]`;
+        const langNotice = resolvedLang === "de" ? "in German (Deutsch)" : (resolvedLang === "es" ? "in Spanish (Español)" : (resolvedLang === "fr" ? "in French (Français)" : "in English"));
+        const prompt = `Candidate Name: ${tailoredProfile.name}\nCandidate Headline: ${tailoredProfile.headline}\nCandidate Location: ${tailoredProfile.location}\nLanguage: ${langNotice}\nCandidate Skills: ${allSkills.join(", ")}\nTarget Role: ${job.role} at ${job.company}\nJob JD: ${(job.fullJd || "").slice(0, 1000)}\n\nGenerate 2 realistic work experience positions tailored to this job based on candidate's skills.\nStrict Humanizer rules:\n- Use direct active-voice verbs.\n- Plain, direct engineering prose ${langNotice}.\n- Strict ban on AI cliches: NO "proven track record", NO "mission-critical", NO "seamlessly", NO "leveraging", NO shallow "-ing" riders, NO forced triads.\n- Ground all bullets in candidate's skills.\n\nReturn a JSON array only in this format:\n[{"company": "Enterprise Solutions", "role": "${tailoredProfile.headline || job.role}", "location": "${tailoredProfile.location || "Metropolitan Area"}", "startDate": "2021", "endDate": "${pack.presentLabel}", "bullets": ["...", "...", "...", "..."]}, {"company": "Technology Consulting Partners", "role": "Technical Specialist", "location": "${tailoredProfile.location || "Metropolitan Area"}", "startDate": "2018", "endDate": "2021", "bullets": ["...", "...", "..."]}]`;
         const system = "You are an expert technical resume writer. Return a valid JSON array only with work experience entries. Strictly obey the humanizer guidelines.";
         const resp = await this.generateText(prompt, system);
         const match = resp.match(/\[[\s\S]*\]/);
@@ -1275,9 +1592,9 @@ Return a valid JSON object ONLY with the following schema:
             const valid = parsed.map((item: any) => ({
               company: String(item.company || "Enterprise Solutions"),
               role: String(item.role || tailoredProfile.headline || job.role),
-              location: String(item.location || tailoredProfile.location || "United Kingdom"),
+              location: String(item.location || tailoredProfile.location || "Metropolitan Area"),
               startDate: String(item.startDate || "2021"),
-              endDate: String(item.endDate || "Present"),
+              endDate: String(item.endDate || pack.presentLabel),
               bullets: (Array.isArray(item.bullets) ? item.bullets : []).map(String).filter((b: string) => !banned.test(b) && b.trim().length > 0)
             })).filter((item: any) => item.bullets.length > 0);
             if (valid.length > 0) {
@@ -1291,19 +1608,23 @@ Return a valid JSON object ONLY with the following schema:
     }
 
     const analysis = analyzeApplication(tailoredProfile, jobInput);
-    let summary = buildGroundedSummary(tailoredProfile, jobInput, analysis);
+    let summary = buildGroundedSummary(tailoredProfile, jobInput, analysis, resolvedLang);
     if (this.config.provider !== "builtin") {
       const source = [tailoredProfile.summary, ...(tailoredProfile.experience || []).flatMap(item => item.bullets || [])].filter(Boolean).join("\n");
-      const prompt = `Role: ${job.role}\nSupported requirements: ${analysis.matchedKeywords.join(", ")}\nCandidate facts:\n${source}`;
-      const system = "Write one direct CV summary of 35-55 words. Use only the supplied candidate facts. Do not name the employer. Do not add years, metrics, tools, titles, or claims. Avoid proven track record, mission-critical, seamlessly, leveraging, ensuring, driving, and shallow -ing clauses. Return plain text only.";
+      const langNotice = resolvedLang === "de" ? "in German (auf Deutsch)" : (resolvedLang === "es" ? "in Spanish (en Español)" : (resolvedLang === "fr" ? "in French (en Français)" : "in English"));
+      const prompt = `Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nSupported requirements: ${analysis.matchedKeywords.join(", ")}\nCandidate facts:\n${source}`;
+      const system = `Write one direct CV summary of 35-55 words strictly ${langNotice}. Use only the supplied candidate facts. Do not name the employer. Do not add years, metrics, tools, titles, or claims. Avoid proven track record, mission-critical, seamlessly, leveraging, ensuring, driving, and shallow -ing clauses. Return plain text only.`;
       const candidate = (await this.generateText(prompt, system)).trim();
       const sourceNumbers = new Set(source.match(/\b\d+(?:[.,]\d+)?%?\b/g) || []);
       const candidateNumbers = candidate.match(/\b\d+(?:[.,]\d+)?%?\b/g) || [];
       const safeNumbers = candidateNumbers.every(value => sourceNumbers.has(value));
       const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i.test(candidate);
-      if (candidate.length >= 80 && candidate.length <= 520 && safeNumbers && !banned) summary = candidate;
+      const isCorrectLang = resolvedLang === "de" ? detectLanguageDeterministically(candidate) === "de" : true;
+      if (candidate.length >= 80 && candidate.length <= 520 && safeNumbers && !banned && isCorrectLang) {
+        summary = candidate;
+      }
     }
-    return renderTailoredResume(tailoredProfile, jobInput, analysis, summary);
+    return renderTailoredResume(tailoredProfile, jobInput, analysis, summary, resolvedLang);
 
     /* Legacy generator retained below for migration reference; the canonical
        renderer above now owns all generated resumes. */
@@ -1515,11 +1836,13 @@ ${certsTeX}
   // Generate Tailored Cover Letter LaTeX with active profile
   public async generateTailoredCoverLetter(
     profile: CandidateProfile,
-    job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string }
+    job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string },
+    targetLanguage?: SupportedLanguage
   ): Promise<string> {
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
     const analysis = analyzeApplication(profile, jobInput);
-    return renderGroundedCoverLetter(profile, jobInput, analysis);
+    const resolvedLang = targetLanguage || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
+    return renderGroundedCoverLetter(profile, jobInput, analysis, resolvedLang);
 
     /* Legacy generator retained below for migration reference. */
     const dateStr = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });

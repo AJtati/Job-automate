@@ -174,8 +174,111 @@ export function normalizeRemotiveJobs(payload: any): SourceJob[] {
   })).filter((job: SourceJob) => job.title && job.company && job.url);
 }
 
+export interface CandidateCountryInfo {
+  countryName: string;
+  freehireCode: string;
+  adzunaCode: string;
+  currency: string;
+  isUk: boolean;
+}
+
+export function detectCandidateCountry(locationStr?: string, targetLocations: string[] = []): CandidateCountryInfo {
+  const combined = [locationStr || "", ...targetLocations].join(" ").toLowerCase();
+
+  if (/germany|deutschland|berlin|munich|münchen|frankfurt|hamburg|cologne|köln|stuttgart|düsseldorf|dusseldorf|leipzig|chemnitz|dresden|sachsen|erfurt|bonn|hannover|nürnberg|nuremberg|bremen|kiel|augsburg|mannheim|wiesbaden|mainz|karlsruhe|essen|dortmund/i.test(combined)) {
+    return { countryName: "Germany", freehireCode: "DE", adzunaCode: "de", currency: "€", isUk: false };
+  }
+  if (/india|bangalore|bengaluru|hyderabad|mumbai|delhi|noida|gurgaon|gurugram|pune|chennai|kolkata/i.test(combined)) {
+    return { countryName: "India", freehireCode: "IN", adzunaCode: "in", currency: "₹", isUk: false };
+  }
+  if (/united states|\bua\b|usa|america|new york|california|san francisco|austin|texas|seattle|chicago|boston|los angeles/i.test(combined)) {
+    return { countryName: "United States", freehireCode: "US", adzunaCode: "us", currency: "$", isUk: false };
+  }
+  if (/france|paris|lyon|marseille/i.test(combined)) {
+    return { countryName: "France", freehireCode: "FR", adzunaCode: "fr", currency: "€", isUk: false };
+  }
+  if (/netherlands|holland|amsterdam|rotterdam/i.test(combined)) {
+    return { countryName: "Netherlands", freehireCode: "NL", adzunaCode: "nl", currency: "€", isUk: false };
+  }
+  if (/canada|toronto|vancouver|montreal/i.test(combined)) {
+    return { countryName: "Canada", freehireCode: "CA", adzunaCode: "ca", currency: "CA$", isUk: false };
+  }
+  if (/australia|sydney|melbourne|brisbane/i.test(combined)) {
+    return { countryName: "Australia", freehireCode: "AU", adzunaCode: "au", currency: "AU$", isUk: false };
+  }
+
+  return { countryName: "United Kingdom", freehireCode: "GB", adzunaCode: "gb", currency: "£", isUk: true };
+}
+
+export function detectJobCountry(job: { location?: string; portal?: string }): { countryName: string; isUk: boolean; isRemote: boolean } {
+  const loc = (job.location || "").toLowerCase();
+  const portal = (job.portal || "").toLowerCase();
+  const isRemote = loc.includes("remote") || loc.includes("worldwide") || loc.includes("anywhere") || loc.includes("telecommute");
+
+  if (portal === "reed" || portal === "cv-library") {
+    return { countryName: "United Kingdom", isUk: true, isRemote };
+  }
+  if (portal === "arbeitnow") {
+    return { countryName: "Germany", isUk: false, isRemote };
+  }
+
+  if (/germany|deutschland|berlin|munich|münchen|frankfurt|hamburg|cologne|köln|stuttgart|düsseldorf|dusseldorf|leipzig|chemnitz|dresden|sachsen|erfurt|bonn|hannover|nürnberg|nuremberg|bremen/i.test(loc)) {
+    return { countryName: "Germany", isUk: false, isRemote };
+  }
+  if (/united kingdom|\buk\b|england|scotland|wales|london|manchester|birmingham|leeds|glasgow|edinburgh|newcastle|bristol|hartlepool|liverpool|sheffield|durham|sunderland|teesside|reading|oxford|cambridge|lutterworth|birchwood|ancoats/i.test(loc)) {
+    return { countryName: "United Kingdom", isUk: true, isRemote };
+  }
+  if (/canada|ontario|mississauga|toronto|vancouver|montreal|quebec|ottawa|calgary|alberta|british columbia/i.test(loc)) {
+    return { countryName: "Canada", isUk: false, isRemote };
+  }
+  if (/india|bangalore|bengaluru|hyderabad|mumbai|delhi|pune|chennai|noida|gurgaon|kolkata|ahmedabad|maharashtra|karnataka|tamil nadu|telangana/i.test(loc)) {
+    return { countryName: "India", isUk: false, isRemote };
+  }
+  if (/united states|\busa\b|\bus\b|new york|california|san francisco|austin|texas|seattle|chicago|boston|los angeles|atlanta|denver|colorado|florida|washington/i.test(loc)) {
+    return { countryName: "United States", isUk: false, isRemote };
+  }
+  if (/australia|sydney|melbourne|brisbane|perth|adelaide/i.test(loc)) {
+    return { countryName: "Australia", isUk: false, isRemote };
+  }
+  if (/ireland|dublin|cork|galway/i.test(loc)) {
+    return { countryName: "Ireland", isUk: false, isRemote };
+  }
+  if (/netherlands|amsterdam|rotterdam|utrecht|hague|eindhoven/i.test(loc)) {
+    return { countryName: "Netherlands", isUk: false, isRemote };
+  }
+  if (/france|paris|lyon|marseille|toulouse/i.test(loc)) {
+    return { countryName: "France", isUk: false, isRemote };
+  }
+  if (/spain|españa|madrid|barcelona|valencia/i.test(loc)) {
+    return { countryName: "Spain", isUk: false, isRemote };
+  }
+
+  return { countryName: isRemote ? "Remote" : "Unknown", isUk: false, isRemote };
+}
+
+export function detectAdzunaCountry(location: string): string {
+  const loc = (location || "").toLowerCase();
+  if (/germany|deutschland|berlin|munich|frankfurt|hamburg|chemnitz|leipzig|dresden/i.test(loc)) return "de";
+  if (/india|bangalore|hyderabad|mumbai|delhi|pune|chennai/i.test(loc)) return "in";
+  if (/united states|\bua\b|usa|america|new york|california|texas|san francisco|austin|seattle|chicago/i.test(loc)) return "us";
+  if (/france|paris|lyon/i.test(loc)) return "fr";
+  if (/canada|toronto|vancouver|montreal/i.test(loc)) return "ca";
+  if (/australia|sydney|melbourne|brisbane/i.test(loc)) return "au";
+  if (/netherlands|holland|amsterdam|rotterdam/i.test(loc)) return "nl";
+  if (/poland|warsaw|krakow/i.test(loc)) return "pl";
+  if (/brazil|brasil|sao paulo/i.test(loc)) return "br";
+  if (/south africa|johannesburg|cape town/i.test(loc)) return "za";
+  if (/italy|italia|milan|rome/i.test(loc)) return "it";
+  if (/austria|vienna|wien/i.test(loc)) return "at";
+  if (/new zealand|auckland|wellington/i.test(loc)) return "nz";
+  if (/singapore/i.test(loc)) return "sg";
+  return "gb";
+}
+
 export async function searchCvLibrary(config: SearchConfig, query: string, location: string): Promise<SourceJob[]> {
   if (!config.cvLibraryApiKey) throw new Error("CV-Library API key is not configured");
+  const isNonUk = /germany|deutschland|india|united states|\busa\b|france|canada|australia/i.test(location || "");
+  if (isNonUk) return [];
   const url = new URL("https://www.cv-library.co.uk/search-jobs-json");
   url.searchParams.set("key", config.cvLibraryApiKey);
   url.searchParams.set("q", query);
@@ -192,6 +295,8 @@ export async function searchCvLibrary(config: SearchConfig, query: string, locat
 
 export async function searchReed(config: SearchConfig, query: string, location: string): Promise<SourceJob[]> {
   if (!config.reedApiKey) throw new Error("Reed API key is not configured");
+  const isNonUk = /germany|deutschland|india|united states|\busa\b|france|canada|australia/i.test(location || "");
+  if (isNonUk) return [];
   const url = new URL("https://www.reed.co.uk/api/1.0/search");
   url.searchParams.set("keywords", query);
   url.searchParams.set("locationName", location || "United Kingdom");
@@ -218,12 +323,15 @@ export async function searchGoogleJobs(config: SearchConfig, query: string, loca
 
 export async function searchAdzuna(config: SearchConfig, query: string, location: string): Promise<SourceJob[]> {
   if (!config.adzunaAppId || !config.adzunaAppKey) throw new Error("Adzuna credentials are not configured");
-  const url = new URL("https://api.adzuna.com/v1/api/jobs/gb/search/1");
+  const country = detectAdzunaCountry(location);
+  const url = new URL(`https://api.adzuna.com/v1/api/jobs/${country}/search/1`);
   url.searchParams.set("app_id", config.adzunaAppId);
   url.searchParams.set("app_key", config.adzunaAppKey);
   url.searchParams.set("results_per_page", "30");
   url.searchParams.set("what", query);
-  if (location && !/^(remote|united kingdom)$/i.test(location)) url.searchParams.set("where", location);
+  if (location && !/^(remote|united kingdom|germany|india|united states|usa)$/i.test(location.trim())) {
+    url.searchParams.set("where", location);
+  }
   url.searchParams.set("max_days_old", "7");
   url.searchParams.set("content-type", "application/json");
   const response = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
