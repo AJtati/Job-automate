@@ -33,6 +33,9 @@
           <button class="dropdown-action-btn" id="btnOpenEditProfileModal">
             <span>✏️</span> Edit Current Profile
           </button>
+          <button class="dropdown-action-btn" id="btnDropdownOpenScheduleModal">
+            <span>⏰</span> Auto-Search Schedule
+          </button>
           <button class="dropdown-action-btn danger" id="btnDeleteCurrentProfile">
             <span>🗑️</span> Delete Profile
           </button>
@@ -56,6 +59,7 @@
           <span id="scrapeSpinner" style="display: none;">⏳</span>
           <span id="scrapeLabel">⚡ Run Daily Scrape</span>
         </button>
+        <button class="btn-secondary" id="btnSchedule" title="Configure automated scraper schedule (intervals or daily time)">⏰ Schedule</button>
         <button class="btn-secondary" id="btnSearchSettings" title="Choose job sources and sponsorship verification">Sources</button>
         <button class="btn-secondary" id="btnRefresh" title="Refresh job feed">🔄</button>
       </div>
@@ -620,6 +624,124 @@
         <div class="modal-footer">
           <button type="button" class="btn-secondary" id="btnRefreshSponsors">Refresh GOV.UK register</button>
           <button type="button" class="btn-primary" id="btnSaveSearchConfig">Save sources</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 5: Automated Scraper Schedule -->
+  <div class="modal-backdrop" id="scheduleModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div>
+          <h3>⏰ Automated Search Schedule</h3>
+          <div id="scheduleCandidateSubtitle" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 2px;">Candidate Profile</div>
+        </div>
+        <button class="modal-close-btn" id="btnCloseScheduleModal" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-intro">Set an automated background timer to scrape and curate fresh matching jobs without needing to run searches manually.</p>
+        
+        <!-- Enable Toggle Card -->
+        <div class="schedule-toggle-card">
+          <label class="schedule-switch">
+            <input type="checkbox" id="schedEnabledToggle">
+            <span class="schedule-slider"></span>
+          </label>
+          <div class="schedule-toggle-info">
+            <div class="schedule-toggle-title">Automated Background Searching</div>
+            <div class="schedule-toggle-desc" id="schedToggleDesc">Enable timer to periodically fetch new roles for this candidate.</div>
+          </div>
+        </div>
+
+        <div id="scheduleOptionsContainer">
+          <!-- Mode Selector -->
+          <div class="form-group" style="margin-top: 16px;">
+            <label style="font-weight: 600; margin-bottom: 8px; display: block;">Schedule Frequency</label>
+            <div class="schedule-mode-tabs">
+              <label class="schedule-mode-tab" id="tabModeInterval">
+                <input type="radio" name="schedMode" value="interval" checked>
+                <div class="mode-tab-content">
+                  <span class="mode-tab-icon">🔄</span>
+                  <span class="mode-tab-title">Periodic Interval</span>
+                  <span class="mode-tab-sub">Every X hours</span>
+                </div>
+              </label>
+              <label class="schedule-mode-tab" id="tabModeDaily">
+                <input type="radio" name="schedMode" value="daily">
+                <div class="mode-tab-content">
+                  <span class="mode-tab-icon">📅</span>
+                  <span class="mode-tab-title">Daily Specific Time</span>
+                  <span class="mode-tab-sub">Once per day</span>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Interval Options Section -->
+          <div id="schedIntervalSection" class="schedule-config-section">
+            <div class="form-group">
+              <label for="schedIntervalSelect">Repeat Every</label>
+              <select id="schedIntervalSelect" class="form-select">
+                <option value="1">Every 1 Hour (Frequent update)</option>
+                <option value="2">Every 2 Hours</option>
+                <option value="4" selected>Every 4 Hours (Recommended)</option>
+                <option value="6">Every 6 Hours</option>
+                <option value="8">Every 8 Hours</option>
+                <option value="12">Every 12 Hours (Twice daily)</option>
+                <option value="24">Every 24 Hours (Once daily)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Daily Options Section -->
+          <div id="schedDailySection" class="schedule-config-section" style="display: none;">
+            <div class="form-group">
+              <label for="schedDailyTimeInput">Run Every Day At</label>
+              <input type="time" id="schedDailyTimeInput" class="form-input" value="08:00" style="max-width: 180px;">
+              <small style="color: var(--text-tertiary); display: block; margin-top: 4px;">Search runs automatically at this local time each morning or afternoon.</small>
+            </div>
+          </div>
+
+          <!-- Sync to all profiles -->
+          <div class="form-group" style="margin-top: 16px; padding: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: 8px;">
+            <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin: 0;">
+              <input type="checkbox" id="schedApplyToAll" style="margin-top: 3px;">
+              <div>
+                <b style="color: var(--text-primary); font-size: 13px;">Apply this schedule to ALL candidate profiles</b>
+                <div style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 2px;">Synchronizes this automated schedule across every candidate track. If unchecked, this schedule only applies to the active profile.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Schedule Status & Diagnostics Card -->
+        <div class="schedule-status-card" id="scheduleStatusCard">
+          <div class="schedule-status-header">
+            <span class="schedule-status-pill" id="schedStatusBadge">Active</span>
+            <span class="schedule-countdown" id="schedCountdownText">Next run: calculating...</span>
+          </div>
+          <div class="schedule-status-body">
+            <div class="schedule-info-row">
+              <span class="info-label">Last Execution:</span>
+              <span class="info-value" id="schedLastRunText">Never run yet</span>
+            </div>
+            <div class="schedule-info-row" id="schedResultRow" style="display: none;">
+              <span class="info-label">Last Result:</span>
+              <span class="info-value" id="schedLastResultText">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+          <button type="button" class="btn-secondary" id="btnTestRunSchedule" title="Run background scrape now for this candidate to verify">
+            <span id="testRunSpinner" style="display: none;">⏳</span>
+            <span id="testRunLabel">⚡ Run Scraper Now (Test)</span>
+          </button>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" class="btn-secondary" id="btnCancelSchedule">Cancel</button>
+            <button type="button" class="btn-primary" id="btnSaveSchedule">💾 Save Schedule</button>
+          </div>
         </div>
       </div>
     </div>

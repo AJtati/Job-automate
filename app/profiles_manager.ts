@@ -85,6 +85,23 @@ export interface CandidateProfile {
     notes?: string;
   }>;
   scenarioHistory?: string[];
+  schedule?: ProfileScheduleConfig;
+}
+
+export interface ProfileScheduleConfig {
+  enabled: boolean;
+  mode: "interval" | "daily"; // "interval" (every X hours) or "daily" (at a specific HH:MM time)
+  intervalHours?: number; // e.g. 1, 2, 4, 6, 8, 12, 24
+  dailyTime?: string; // "HH:MM", e.g. "08:00"
+  lastRunAt?: string; // ISO timestamp
+  nextRunAt?: string; // ISO timestamp
+  lastRunResult?: {
+    timestamp: string;
+    foundCount: number;
+    addedCount: number;
+    status: "success" | "error";
+    message?: string;
+  };
 }
 
 export interface ProfilesData {
@@ -259,6 +276,14 @@ export class ProfilesManager {
     return this.data;
   }
 
+  public getAllProfiles(): CandidateProfile[] {
+    return this.data.profiles;
+  }
+
+  public getProfile(id: string): CandidateProfile | undefined {
+    return this.data.profiles.find(p => p.id === id);
+  }
+
   public getLoadWarning(): string | null {
     return this.loadWarning;
   }
@@ -315,6 +340,22 @@ export class ProfilesManager {
       updatedAt: new Date().toISOString()
     };
     this.saveProfile(profile);
+  }
+
+  public updateProfileSchedule(profileId: string, schedule: ProfileScheduleConfig): CandidateProfile {
+    const profile = this.getProfile(profileId);
+    if (!profile) throw new Error(`Profile with ID '${profileId}' not found`);
+    profile.schedule = { ...schedule };
+    return this.saveProfile(profile);
+  }
+
+  public applyScheduleToAll(schedule: ProfileScheduleConfig): CandidateProfile[] {
+    this.data.profiles = this.data.profiles.map(p => ({
+      ...p,
+      schedule: { ...schedule }
+    }));
+    this.saveProfiles(this.data);
+    return this.data.profiles;
   }
 
   public calculateDistance(locationStr: string, activeProfile?: CandidateProfile): { miles: number; tag: string; isRemote: boolean } {

@@ -4,11 +4,12 @@ import { join, resolve, relative, basename, dirname, isAbsolute } from "path";
 import { tmpdir, homedir } from "os";
 import { spawnSync } from "child_process";
 import { createHash } from "crypto";
-import { ProfilesManager, CandidateProfile } from "./profiles_manager";
+import { ProfilesManager, CandidateProfile, type ProfileScheduleConfig } from "./profiles_manager";
 import { AIService } from "./ai_service";
 import { analyzeApplication } from "./application_engine";
 import { createLatexBackbone } from "./resume_engine";
 import { parseResumeDeterministically } from "./resume_parser";
+import { SchedulerService, computeNextRun, type ScrapeExecutionResult } from "./scheduler_service";
 import { SponsorRegistry, assessSponsorship, matchesSponsorshipMode, type SponsorshipMode } from "./sponsorship";
 import { SearchConfigManager } from "./search_config";
 import {
@@ -496,7 +497,37 @@ function saveSeenJobs(data: Record<string, any>) {
   writeFileSync(SEEN_JOBS_FILE, JSON.stringify({ seen: data }, null, 2));
 }
 
-function fetchJobDescription(job: { id?: string; url?: string; portal?: string; title?: string }): string | null {
+async function runCliAsync(cmd: string[], timeoutMs: number = 15000): Promise<{ status: number; stdout: string; stderr: string }> {
+  try {
+    const proc = Bun.spawn(cmd, {
+      cwd: APP_ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    let timer: any;
+    const timeoutPromise = new Promise<{ status: number; stdout: string; stderr: string }>((_, reject) => {
+      timer = setTimeout(() => {
+        try { proc.kill(); } catch {}
+        reject(new Error("Process timed out"));
+      }, timeoutMs);
+    });
+
+    const execPromise = (async () => {
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const status = await proc.exited;
+      clearTimeout(timer);
+      return { status, stdout, stderr };
+    })();
+
+    return await Promise.race([execPromise, timeoutPromise]);
+  } catch (err: any) {
+    return { status: 1, stdout: "", stderr: err.message };
+  }
+}
+
+async function fetchJobDescription(job: { id?: string; url?: string; portal?: string; title?: string }): Promise<string | null> {
   const url = job.url || "";
   const portal = job.portal || "";
 
@@ -505,11 +536,7 @@ function fetchJobDescription(job: { id?: string; url?: string; portal?: string; 
     const liCliPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
     if (existsSync(liCliPath) && url) {
       try {
-        const res = spawnSync(BUN_EXECUTABLE, ["run", liCliPath, "detail", url, "--format", "json"], {
-          cwd: APP_ROOT,
-          encoding: "utf-8",
-          timeout: 10000
-        });
+        const res = await runCliAsync([BUN_EXECUTABLE, "run", liCliPath, "detail", url, "--format", "json"], 10000);
         if (res.status === 0 && res.stdout) {
           const parsed = JSON.parse(res.stdout);
           if (parsed.description && parsed.description.length > 50) {
@@ -529,11 +556,7 @@ function fetchJobDescription(job: { id?: string; url?: string; portal?: string; 
       const slugOrUrl = url || job.id?.replace(/^fh_/, "") || "";
       if (slugOrUrl) {
         try {
-          const res = spawnSync(BUN_EXECUTABLE, ["run", freehireCliPath, "detail", slugOrUrl, "--format", "json"], {
-            cwd: APP_ROOT,
-            encoding: "utf-8",
-            timeout: 10000
-          });
+          const res = await runCliAsync([BUN_EXECUTABLE, "run", freehireCliPath, "detail", slugOrUrl, "--format", "json"], 10000);
           if (res.status === 0 && res.stdout) {
             const parsed = JSON.parse(res.stdout);
             if (parsed.description && parsed.description.length > 50) {
@@ -565,11 +588,7 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
     const liCliPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
     if (existsSync(liCliPath)) {
       try {
-        const res = spawnSync(BUN_EXECUTABLE, ["run", liCliPath, "detail", targetUrl, "--format", "json"], {
-          cwd: APP_ROOT,
-          encoding: "utf-8",
-          timeout: 12000
-        });
+        const res = await runCliAsync([BUN_EXECUTABLE, "run", liCliPath, "detail", targetUrl, "--format", "json"], 12000);
         if (res.status === 0 && res.stdout) {
           const parsed = JSON.parse(res.stdout);
           if (parsed.title) title = parsed.title;
@@ -795,6 +814,230 @@ function initializeSeed() {
 }
 
 initializeSeed();
+
+export interface ScrapeOutcome {
+  success: boolean;
+  addedCount: number;
+  enrichedCount: number;
+  filteredCount: number;
+  foundCount: number;
+  sponsorshipMode: SponsorshipMode;
+  sponsorRegistry?: any;
+  sources: SourceReport[];
+  query: string | null;
+  location: string | null;
+  completedAt: string;
+  error?: string;
+}
+
+export async function runScrapeForProfile(
+  profile: CandidateProfile,
+  options?: { query?: string; location?: string; minSalary?: number; sponsorshipMode?: SponsorshipMode }
+): Promise<ScrapeOutcome> {
+  const config = searchConfigManager.get();
+  const sponsorshipMode = ["all", "licensed", "explicit"].includes(options?.sponsorshipMode || "")
+    ? options!.sponsorshipMode!
+    : config.sponsorshipMode;
+  const registry = await sponsorRegistry.refresh(false);
+  const targetRoles = options?.query
+    ? [options.query]
+    : (profile?.targetRoles && profile.targetRoles.length > 0)
+    ? profile.targetRoles.slice(0, 4)
+    : [profile?.headline || "Software Engineer"];
+
+  const targetLocations = options?.location
+    ? [options.location]
+    : (profile?.targetLocations && profile.targetLocations.length > 0)
+    ? profile.targetLocations.slice(0, 3)
+    : [profile?.location || "United Kingdom"];
+
+  // Dynamically build search queries from active candidate's target roles and locations
+  const liQueries: Array<{ q: string; l: string }> = [];
+  for (const role of targetRoles) {
+    liQueries.push({ q: role, l: "United Kingdom" });
+    for (const loc of targetLocations) {
+      if (loc.toLowerCase() !== "united kingdom" && loc.toLowerCase() !== "remote") {
+        liQueries.push({ q: role, l: loc });
+      }
+    }
+  }
+  if (targetRoles.length > 0) {
+    liQueries.push({ q: targetRoles[0], l: "Remote, United Kingdom" });
+  }
+
+  let addedCount = 0;
+  let enrichedCount = 0;
+  let filteredCount = 0;
+  let totalFoundCount = 0;
+  const seen = readSeenJobs();
+  const activeSkills = Object.values(profile?.skills || {})
+    .flat()
+    .filter(Boolean)
+    .slice(0, 6) as string[];
+  const reports: SourceReport[] = [];
+  const countResult = (result: ReturnType<typeof ingestDiscoveredJob>) => {
+    if (result === "added") addedCount++;
+    else if (result === "enriched") enrichedCount++;
+    else if (result === "filtered") filteredCount++;
+  };
+  const counters = () => ({ addedCount, enrichedCount, filteredCount });
+  const withCounts = (report: SourceReport, before: ReturnType<typeof counters>): SourceReport => ({
+    ...report,
+    added: addedCount - before.addedCount,
+    enriched: enrichedCount - before.enrichedCount,
+    filtered: filteredCount - before.filteredCount,
+  });
+
+  if (config.sources.linkedin) {
+    const before = counters();
+    const liCliPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
+    let found = 0;
+    let successfulQueries = 0;
+    let lastError = "";
+    if (existsSync(liCliPath)) {
+      for (const query of liQueries.slice(0, 4)) {
+        const res = await runCliAsync([BUN_EXECUTABLE, "run", liCliPath, "search", "-q", query.q, "-l", query.l, "--jobage", "7", "--limit", "8"]);
+        if (res.status !== 0 || !res.stdout) {
+          lastError = res.stderr || "Search process failed";
+          continue;
+        }
+        try {
+          const data = JSON.parse(res.stdout);
+          successfulQueries++;
+          for (const item of Array.isArray(data.results) ? data.results : []) {
+            found++;
+            totalFoundCount++;
+            countResult(ingestDiscoveredJob(seen, {
+              id: `li_${item.id}`, title: item.title, company: item.company, url: item.url,
+              location: item.location || "United Kingdom", postedDate: item.date, description: item.snippet || item.summary || "",
+              skills: activeSkills, portal: "linkedin-search", source: "cli",
+            }, profile, sponsorshipMode));
+          }
+        } catch (error: any) { lastError = `Unreadable scraper response: ${error.message}`; }
+      }
+    } else {
+      lastError = "Built-in LinkedIn scraper files are missing from this installation.";
+    }
+    reports.push(withCounts({ source: "LinkedIn", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : (lastError || "Search returned no readable response"), guidance: successfulQueries ? undefined : "Reinstall the latest app package, then retry. If the files are present, check the internet connection and wait before retrying to avoid rate limits." }, before));
+  } else reports.push({ source: "LinkedIn", status: "skipped", found: 0, reason: "Disabled" });
+
+  if (config.sources.freehire) {
+    const before = counters();
+    const freehireCliPath = join(APP_ROOT, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
+    let found = 0;
+    let successfulQueries = 0;
+    let lastError = "";
+    if (existsSync(freehireCliPath)) {
+      const freehireArgsList: Array<string[]> = [];
+      for (const role of targetRoles.slice(0, 3)) {
+        freehireArgsList.push(["search", "-q", role, "--country", "GB", "--jobage", "7", "--limit", "15"]);
+      }
+
+      const candidateSkillsFaceted = activeSkills
+        .map(s => s.toLowerCase().split(/[\s(/,]/)[0])
+        .filter(s => s && s.length > 2 && s.length < 15)
+        .slice(0, 4);
+
+      if (candidateSkillsFaceted.length > 0) {
+        freehireArgsList.push(["search", "--skill", candidateSkillsFaceted.join(","), "--country", "GB", "--jobage", "7", "--limit", "15"]);
+      }
+
+      for (const args of freehireArgsList.slice(0, 4)) {
+        const res = await runCliAsync([BUN_EXECUTABLE, "run", freehireCliPath, ...args]);
+
+        if (res.status === 0 && res.stdout) {
+          try {
+            const data = JSON.parse(res.stdout);
+            successfulQueries++;
+            const items = data.results || data.jobs || [];
+            if (Array.isArray(items)) {
+              for (const job of items) {
+                found++;
+                totalFoundCount++;
+                const cleanSlug = (job.slug || job.id || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+                const compName = job.company || job.company_name || "Tech Company";
+                countResult(ingestDiscoveredJob(seen, {
+                  id: `fh_${cleanSlug}`, title: job.title, company: compName, url: job.url,
+                  location: job.location || (job.work_mode === "remote" ? "Remote (UK)" : "United Kingdom"),
+                  postedDate: job.date || job.posted_at?.split("T")[0], description: job.description || "",
+                  summary: job.summary || "", skills: job.skills || [],
+                  salary: job.salary_min ? `£${job.salary_min.toLocaleString()} - £${(job.salary_max || job.salary_min).toLocaleString()}` : undefined,
+                  portal: "freehire-ats", source: "cli",
+                }, profile, sponsorshipMode));
+              }
+            }
+          } catch (err) {
+            console.error("Error parsing Freehire result:", err);
+            lastError = `Unreadable scraper response: ${String(err)}`;
+          }
+        } else lastError = res.stderr || "Search process failed";
+      }
+    } else lastError = "Built-in Direct ATS scraper files are missing from this installation.";
+    reports.push(withCounts({ source: "Direct ATS", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : (lastError || "Search returned no readable response"), guidance: successfulQueries ? undefined : "Reinstall the latest app package, then retry. If the files are present, check the internet connection." }, before));
+  } else reports.push({ source: "Direct ATS", status: "skipped", found: 0, reason: "Disabled" });
+
+  const apiLocation = targetLocations.find(location => location.toLowerCase() !== "remote") || "United Kingdom";
+  const apiSources: Array<{ enabled: boolean; name: string; keyReady: boolean; search: (query: string, location: string) => Promise<SourceJob[]> }> = [
+    { enabled: config.sources.cvLibrary, name: "CV-Library", keyReady: Boolean(config.cvLibraryApiKey), search: (q, l) => searchCvLibrary(config, q, l) },
+    { enabled: config.sources.reed, name: "Reed", keyReady: Boolean(config.reedApiKey), search: (q, l) => searchReed(config, q, l) },
+    { enabled: config.sources.googleJobs, name: "Google Jobs", keyReady: Boolean(config.serpApiKey), search: (q, l) => searchGoogleJobs(config, q, l) },
+    { enabled: config.sources.adzuna, name: "Adzuna", keyReady: Boolean(config.adzunaAppId && config.adzunaAppKey), search: (q, l) => searchAdzuna(config, q, l) },
+    { enabled: config.sources.jobicy, name: "Jobicy", keyReady: true, search: (q, l) => searchJobicy(config, q, l) },
+    { enabled: config.sources.arbeitnow, name: "Arbeitnow", keyReady: true, search: (q, l) => searchArbeitnow(config, q, l) },
+    { enabled: config.sources.remotive, name: "Remotive", keyReady: true, search: (q, l) => searchRemotive(config, q, l) },
+  ];
+  for (const provider of apiSources) {
+    const before = counters();
+    if (!provider.enabled) {
+      reports.push({ source: provider.name, status: "skipped", found: 0, reason: "Disabled" });
+      continue;
+    }
+    if (!provider.keyReady) {
+      reports.push({ source: provider.name, status: "skipped", found: 0, reason: "API key not configured", guidance: `Open Sources, enter the ${provider.name} credentials, save, and retry.` });
+      continue;
+    }
+    try {
+      const jobs = (await Promise.all(targetRoles.slice(0, 2).map(role => provider.search(role, apiLocation)))).flat();
+      for (const job of jobs) {
+        totalFoundCount++;
+        countResult(ingestDiscoveredJob(seen, {
+          id: `${job.portal}_${job.externalId}`, title: job.title, company: job.company, url: job.url,
+          location: job.location, postedDate: job.postedDate, description: job.description,
+          salary: job.salary, portal: job.portal, source: "api",
+        }, profile, sponsorshipMode));
+      }
+      reports.push(withCounts({ source: provider.name, status: "ok", found: jobs.length }, before));
+    } catch (error: any) {
+      reports.push(withCounts({ source: provider.name, status: "failed", found: 0, reason: error.message, guidance: "Check the internet connection and provider availability, or disable this supplemental source temporarily." }, before));
+    }
+  }
+
+  saveSeenJobs(seen);
+  const searchStatus: ScrapeOutcome = {
+    success: true, addedCount, enrichedCount, filteredCount,
+    foundCount: totalFoundCount,
+    sponsorshipMode,
+    sponsorRegistry: registry, sources: reports,
+    query: options?.query || null, location: options?.location || null,
+    completedAt: new Date().toISOString(),
+  };
+  try {
+    writeFileSync(LAST_SEARCH_STATUS_FILE, JSON.stringify(searchStatus, null, 2), "utf-8");
+  } catch (e) {
+    console.error("Could not write LAST_SEARCH_STATUS_FILE:", e);
+  }
+  return searchStatus;
+}
+
+const schedulerService = new SchedulerService(profilesManager, async (profile) => {
+  const result = await runScrapeForProfile(profile);
+  return {
+    foundCount: result.foundCount,
+    addedCount: result.addedCount,
+    error: result.success ? undefined : (result.error || "Failed"),
+  };
+});
+schedulerService.start();
 
 // Start Bun HTTP server
 serve({
@@ -1359,195 +1602,70 @@ serve({
         console.log("Starting automated live search across priority locations...");
         const scrapeRequest = await req.json().catch(() => ({})) as { query?: string; location?: string; minSalary?: number; sponsorshipMode?: SponsorshipMode };
         const activeProfile = profilesManager.getActiveProfile();
-        const config = searchConfigManager.get();
-        const sponsorshipMode = ["all", "licensed", "explicit"].includes(scrapeRequest.sponsorshipMode || "")
-          ? scrapeRequest.sponsorshipMode!
-          : config.sponsorshipMode;
-        const registry = await sponsorRegistry.refresh(false);
-        const targetRoles = scrapeRequest.query
-          ? [scrapeRequest.query]
-          : (activeProfile?.targetRoles && activeProfile.targetRoles.length > 0)
-          ? activeProfile.targetRoles.slice(0, 4)
-          : [activeProfile?.headline || "Software Engineer"];
-
-        const targetLocations = scrapeRequest.location
-          ? [scrapeRequest.location]
-          : (activeProfile?.targetLocations && activeProfile.targetLocations.length > 0)
-          ? activeProfile.targetLocations.slice(0, 3)
-          : [activeProfile?.location || "United Kingdom"];
-
-        // Dynamically build search queries from active candidate's target roles and locations
-        const liQueries: Array<{ q: string; l: string }> = [];
-        for (const role of targetRoles) {
-          liQueries.push({ q: role, l: "United Kingdom" });
-          for (const loc of targetLocations) {
-            if (loc.toLowerCase() !== "united kingdom" && loc.toLowerCase() !== "remote") {
-              liQueries.push({ q: role, l: loc });
-            }
-          }
-        }
-        if (targetRoles.length > 0) {
-          liQueries.push({ q: targetRoles[0], l: "Remote, United Kingdom" });
-        }
-
-        let addedCount = 0;
-        let enrichedCount = 0;
-        let filteredCount = 0;
-        const seen = readSeenJobs();
-        const activeSkills = Object.values(activeProfile?.skills || {})
-          .flat()
-          .filter(Boolean)
-          .slice(0, 6) as string[];
-        const reports: SourceReport[] = [];
-        const countResult = (result: ReturnType<typeof ingestDiscoveredJob>) => {
-          if (result === "added") addedCount++;
-          else if (result === "enriched") enrichedCount++;
-          else if (result === "filtered") filteredCount++;
-        };
-        const counters = () => ({ addedCount, enrichedCount, filteredCount });
-        const withCounts = (report: SourceReport, before: ReturnType<typeof counters>): SourceReport => ({
-          ...report,
-          added: addedCount - before.addedCount,
-          enriched: enrichedCount - before.enrichedCount,
-          filtered: filteredCount - before.filteredCount,
-        });
-
-        if (config.sources.linkedin) {
-          const before = counters();
-          const liCliPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
-          let found = 0;
-          let successfulQueries = 0;
-          let lastError = "";
-          if (existsSync(liCliPath)) {
-            for (const query of liQueries) {
-              const res = spawnSync(BUN_EXECUTABLE, ["run", liCliPath, "search", "-q", query.q, "-l", query.l, "--jobage", "7", "--limit", "8"], { cwd: APP_ROOT, encoding: "utf-8" });
-              if (res.status !== 0 || !res.stdout) {
-                lastError = res.error?.message || String(res.stderr || "Search process failed").trim().slice(0, 240);
-                continue;
-              }
-              try {
-                const data = JSON.parse(res.stdout);
-                successfulQueries++;
-                for (const item of Array.isArray(data.results) ? data.results : []) {
-                  found++;
-                  const fullJd = fetchJobDescription({ url: item.url, portal: "linkedin-search" }) || "";
-                  countResult(ingestDiscoveredJob(seen, {
-                    id: `li_${item.id}`, title: item.title, company: item.company, url: item.url,
-                    location: item.location || "United Kingdom", postedDate: item.date, description: fullJd,
-                    skills: activeSkills, portal: "linkedin-search", source: "cli",
-                  }, activeProfile, sponsorshipMode));
-                }
-              } catch (error: any) { lastError = `Unreadable scraper response: ${error.message}`; }
-            }
-          } else {
-            lastError = "Built-in LinkedIn scraper files are missing from this installation.";
-          }
-          reports.push(withCounts({ source: "LinkedIn", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : (lastError || "Search returned no readable response"), guidance: successfulQueries ? undefined : "Reinstall the latest app package, then retry. If the files are present, check the internet connection and wait before retrying to avoid rate limits." }, before));
-        } else reports.push({ source: "LinkedIn", status: "skipped", found: 0, reason: "Disabled" });
-
-        if (config.sources.freehire) {
-          const before = counters();
-          const freehireCliPath = join(APP_ROOT, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
-          let found = 0;
-          let successfulQueries = 0;
-          let lastError = "";
-          if (existsSync(freehireCliPath)) {
-          const freehireArgsList: Array<string[]> = [];
-          for (const role of targetRoles.slice(0, 3)) {
-            freehireArgsList.push(["search", "-q", role, "--country", "GB", "--jobage", "7", "--limit", "15"]);
-          }
-
-          const candidateSkillsFaceted = activeSkills
-            .map(s => s.toLowerCase().split(/[\s(/,]/)[0])
-            .filter(s => s && s.length > 2 && s.length < 15)
-            .slice(0, 4);
-
-          if (candidateSkillsFaceted.length > 0) {
-            freehireArgsList.push(["search", "--skill", candidateSkillsFaceted.join(","), "--country", "GB", "--jobage", "7", "--limit", "15"]);
-          }
-
-            for (const args of freehireArgsList) {
-            const res = spawnSync(BUN_EXECUTABLE, ["run", freehireCliPath, ...args], {
-              cwd: APP_ROOT,
-              encoding: "utf-8"
-            });
-
-            if (res.status === 0 && res.stdout) {
-              try {
-                const data = JSON.parse(res.stdout);
-                successfulQueries++;
-                const items = data.results || data.jobs || [];
-                if (Array.isArray(items)) {
-                  for (const job of items) {
-                    found++;
-                    const cleanSlug = (job.slug || job.id || "").replace(/[^a-zA-Z0-9_-]/g, "_");
-                    const compName = job.company || job.company_name || "Tech Company";
-                    countResult(ingestDiscoveredJob(seen, {
-                      id: `fh_${cleanSlug}`, title: job.title, company: compName, url: job.url,
-                      location: job.location || (job.work_mode === "remote" ? "Remote (UK)" : "United Kingdom"),
-                      postedDate: job.date || job.posted_at?.split("T")[0], description: job.description || "",
-                      summary: job.summary || "", skills: job.skills || [],
-                      salary: job.salary_min ? `£${job.salary_min.toLocaleString()} - £${(job.salary_max || job.salary_min).toLocaleString()}` : undefined,
-                      portal: "freehire-ats", source: "cli",
-                    }, activeProfile, sponsorshipMode));
-                  }
-                }
-              } catch (err) {
-                console.error("Error parsing Freehire result:", err);
-                lastError = `Unreadable scraper response: ${String(err)}`;
-              }
-            } else lastError = res.error?.message || String(res.stderr || "Search process failed").trim().slice(0, 240);
-            }
-          } else lastError = "Built-in Direct ATS scraper files are missing from this installation.";
-          reports.push(withCounts({ source: "Direct ATS", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : (lastError || "Search returned no readable response"), guidance: successfulQueries ? undefined : "Reinstall the latest app package, then retry. If the files are present, check the internet connection." }, before));
-        } else reports.push({ source: "Direct ATS", status: "skipped", found: 0, reason: "Disabled" });
-
-        const apiLocation = targetLocations.find(location => location.toLowerCase() !== "remote") || "United Kingdom";
-        const apiSources: Array<{ enabled: boolean; name: string; keyReady: boolean; search: (query: string, location: string) => Promise<SourceJob[]> }> = [
-          { enabled: config.sources.cvLibrary, name: "CV-Library", keyReady: Boolean(config.cvLibraryApiKey), search: (q, l) => searchCvLibrary(config, q, l) },
-          { enabled: config.sources.reed, name: "Reed", keyReady: Boolean(config.reedApiKey), search: (q, l) => searchReed(config, q, l) },
-          { enabled: config.sources.googleJobs, name: "Google Jobs", keyReady: Boolean(config.serpApiKey), search: (q, l) => searchGoogleJobs(config, q, l) },
-          { enabled: config.sources.adzuna, name: "Adzuna", keyReady: Boolean(config.adzunaAppId && config.adzunaAppKey), search: (q, l) => searchAdzuna(config, q, l) },
-          { enabled: config.sources.jobicy, name: "Jobicy", keyReady: true, search: (q, l) => searchJobicy(config, q, l) },
-          { enabled: config.sources.arbeitnow, name: "Arbeitnow", keyReady: true, search: (q, l) => searchArbeitnow(config, q, l) },
-          { enabled: config.sources.remotive, name: "Remotive", keyReady: true, search: (q, l) => searchRemotive(config, q, l) },
-        ];
-        for (const provider of apiSources) {
-          const before = counters();
-          if (!provider.enabled) {
-            reports.push({ source: provider.name, status: "skipped", found: 0, reason: "Disabled" });
-            continue;
-          }
-          if (!provider.keyReady) {
-            reports.push({ source: provider.name, status: "skipped", found: 0, reason: "API key not configured", guidance: `Open Sources, enter the ${provider.name} credentials, save, and retry.` });
-            continue;
-          }
-          try {
-            const jobs = (await Promise.all(targetRoles.slice(0, 2).map(role => provider.search(role, apiLocation)))).flat();
-            for (const job of jobs) countResult(ingestDiscoveredJob(seen, {
-              id: `${job.portal}_${job.externalId}`, title: job.title, company: job.company, url: job.url,
-              location: job.location, postedDate: job.postedDate, description: job.description,
-              salary: job.salary, portal: job.portal, source: "api",
-            }, activeProfile, sponsorshipMode));
-            reports.push(withCounts({ source: provider.name, status: "ok", found: jobs.length }, before));
-          } catch (error: any) {
-            reports.push(withCounts({ source: provider.name, status: "failed", found: 0, reason: error.message, guidance: "Check the internet connection and provider availability, or disable this supplemental source temporarily." }, before));
-          }
-        }
-
-        saveSeenJobs(seen);
-        const searchStatus = {
-          success: true, addedCount, enrichedCount, filteredCount, sponsorshipMode,
-          sponsorRegistry: registry, sources: reports,
-          query: scrapeRequest.query || null, location: scrapeRequest.location || null,
-          completedAt: new Date().toISOString(),
-        };
-        writeFileSync(LAST_SEARCH_STATUS_FILE, JSON.stringify(searchStatus, null, 2), "utf-8");
+        const searchStatus = await runScrapeForProfile(activeProfile, scrapeRequest);
         return new Response(JSON.stringify(searchStatus), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err: any) {
         return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+      }
+    }
+
+    // API: GET /api/schedule (Fetch active profile schedule and all candidate schedules)
+    if (url.pathname === "/api/schedule" && req.method === "GET") {
+      const targetProfileId = url.searchParams.get("profileId") || profilesManager.getActiveProfile().id;
+      const status = schedulerService.getStatus(targetProfileId);
+      return Response.json(status);
+    }
+
+    // API: POST /api/schedule (Update schedule for candidate profile or sync to all)
+    if (url.pathname === "/api/schedule" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const targetProfileId = body.profileId || profilesManager.getActiveProfile().id;
+        const targetProfile = profilesManager.getProfile(targetProfileId) || profilesManager.getActiveProfile();
+        const enabled = Boolean(body.enabled);
+        const mode = body.mode === "daily" ? "daily" : "interval";
+        const intervalHours = Math.max(1, Math.min(168, Number(body.intervalHours) || 4));
+        const dailyTime = (body.dailyTime || "08:00").trim();
+
+        const scheduleConfig: ProfileScheduleConfig = {
+          enabled,
+          mode,
+          intervalHours,
+          dailyTime,
+          lastRunAt: targetProfile.schedule?.lastRunAt,
+          nextRunAt: computeNextRun({
+            enabled,
+            mode,
+            intervalHours,
+            dailyTime,
+            lastRunAt: targetProfile.schedule?.lastRunAt,
+          }) || undefined,
+          lastRunResult: targetProfile.schedule?.lastRunResult,
+        };
+
+        if (body.applyToAll) {
+          profilesManager.applyScheduleToAll(scheduleConfig);
+        } else {
+          profilesManager.updateProfileSchedule(targetProfile.id, scheduleConfig);
+        }
+
+        return Response.json({ success: true, schedule: scheduleConfig });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 400 });
+      }
+    }
+
+    // API: POST /api/schedule/run-now (Immediately test-run scraping for target profile)
+    if (url.pathname === "/api/schedule/run-now" && req.method === "POST") {
+      try {
+        const body = await req.json().catch(() => ({}));
+        const targetProfileId = body.profileId || profilesManager.getActiveProfile().id;
+        const result = await schedulerService.executeForProfile(targetProfileId);
+        return Response.json({ success: !result.error, ...result });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500 });
       }
     }
 
@@ -1567,7 +1685,7 @@ serve({
 
         let fullJd = String(body.fullJd || storedJob.full_jd || storedJob.summary || "").trim();
         if (fullJd.length < 150) {
-          const fetchedJd = fetchJobDescription(storedJob);
+          const fetchedJd = await fetchJobDescription(storedJob);
           if (fetchedJd && fetchedJd.length > 50) {
             fullJd = fetchedJd;
             storedJob.full_jd = fullJd;
@@ -1746,7 +1864,7 @@ serve({
           });
         }
 
-        const fetched = fetchJobDescription(stored);
+        const fetched = await fetchJobDescription(stored);
         if (fetched && fetched.length > 50) {
           stored.full_jd = fetched;
           seen[jobId] = stored;
