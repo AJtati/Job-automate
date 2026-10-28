@@ -785,9 +785,24 @@ async function handleSaveProfileForm(e) {
   const targetLocations = document.getElementById("formTargetLocations").value.split(",").map(s => s.trim()).filter(Boolean);
   const rawSkills = document.getElementById("formSkills").value.split(",").map(s => s.trim()).filter(Boolean);
 
-  const existingByName = allProfiles.find(p => p.name.trim().toLowerCase() === name.toLowerCase());
-  const existing = allProfiles.find(p => p.id === id) || existingByName;
-  const resolvedId = id || existingByName?.id || name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const existing = id ? allProfiles.find(p => p.id === id) : null;
+  let resolvedId = id;
+  if (!resolvedId) {
+    const baseSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "candidate";
+    const roleWord = headline.toLowerCase().match(/dynamics|devops|qa|tester|frontend|backend|cloud|sre|platform|data|security|mobile|nurse|accountant|analyst/)?.[0];
+    const candidateRoleSlug = roleWord ? `${baseSlug}-${roleWord}` : "";
+    if (candidateRoleSlug && !allProfiles.some(p => p.id === candidateRoleSlug)) {
+      resolvedId = candidateRoleSlug;
+    } else if (!allProfiles.some(p => p.id === baseSlug)) {
+      resolvedId = baseSlug;
+    } else {
+      let counter = 2;
+      resolvedId = `${baseSlug}-${counter}`;
+      while (allProfiles.some(p => p.id === resolvedId)) {
+        resolvedId = `${baseSlug}-${++counter}`;
+      }
+    }
+  }
 
   const baseSkills = pendingModalProfileData?.skills || existing?.skills;
   const finalSkills = groupManualSkills(rawSkills, baseSkills);

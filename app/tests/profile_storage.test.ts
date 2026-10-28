@@ -142,4 +142,74 @@ describe("uploaded resume persistence", () => {
       }
     }
   });
+
+  test("allows the same candidate to hold multiple distinct profiles for different career tracks", () => {
+    const dir = mkdtempSync(join(tmpdir(), "same-person-multi-profile-"));
+    const manager = new ProfilesManager(dir);
+
+    // Profile 1: Manjubhargavi - Dynamics Track
+    const profileDynamics = {
+      id: "manjubhargavi-cherupally-dynamics",
+      name: "Manjubhargavi Cherupally",
+      headline: "Senior Dynamics 365 Developer",
+      email: "manju@example.com",
+      phone: "+44 7774 483588",
+      location: "Middlesbrough, UK",
+      postcode: "TS1",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: ["Senior Dynamics Developer", "Power Platform Developer"],
+      targetLocations: ["Remote", "Middlesbrough, UK"],
+      preferredRadiusMiles: 40,
+      minSalary: 75000,
+      skills: { "Dynamics": ["Dynamics 365", "Power Apps", "Dataverse"] },
+      experience: [], education: [], certifications: [], spokenLanguages: ["English"],
+      tracker: { "job_dyn_1": { status: "drafted" } }
+    };
+
+    // Profile 2: Manjubhargavi - DevOps Track (same person, different track)
+    const profileDevops = {
+      id: "manjubhargavi-cherupally-devops",
+      name: "Manjubhargavi Cherupally",
+      headline: "DevOps Engineer / Cloud Engineer",
+      email: "manju@example.com",
+      phone: "+44 7774 483588",
+      location: "Middlesbrough, UK",
+      postcode: "TS1",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: ["DevOps Engineer", "Platform Engineer", "Cloud Engineer"],
+      targetLocations: ["Remote", "Middlesbrough, UK", "Manchester, UK"],
+      preferredRadiusMiles: 50,
+      minSalary: 80000,
+      skills: { "DevOps": ["Azure DevOps", "Kubernetes", "Terraform", "CI/CD"] },
+      experience: [], education: [], certifications: [], spokenLanguages: ["English"],
+      tracker: { "job_devops_1": { status: "applied" } }
+    };
+
+    manager.saveProfile(profileDynamics);
+    manager.saveProfile(profileDevops);
+
+    const all = manager.getAll().profiles;
+    const dynamicsMatch = all.find(p => p.id === "manjubhargavi-cherupally-dynamics");
+    const devopsMatch = all.find(p => p.id === "manjubhargavi-cherupally-devops");
+
+    // Both profiles must exist simultaneously
+    expect(dynamicsMatch).toBeDefined();
+    expect(devopsMatch).toBeDefined();
+
+    // Verify both have the same candidate name but different tracks and target roles
+    expect(dynamicsMatch?.name).toBe("Manjubhargavi Cherupally");
+    expect(devopsMatch?.name).toBe("Manjubhargavi Cherupally");
+    expect(dynamicsMatch?.headline).toBe("Senior Dynamics 365 Developer");
+    expect(devopsMatch?.headline).toBe("DevOps Engineer / Cloud Engineer");
+
+    // Verify trackers are independent
+    expect(dynamicsMatch?.tracker?.["job_dyn_1"]?.status).toBe("drafted");
+    expect(dynamicsMatch?.tracker?.["job_devops_1"]).toBeUndefined();
+    expect(devopsMatch?.tracker?.["job_devops_1"]?.status).toBe("applied");
+    expect(devopsMatch?.tracker?.["job_dyn_1"]).toBeUndefined();
+  });
 });
