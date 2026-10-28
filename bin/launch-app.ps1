@@ -31,4 +31,26 @@ foreach ($attempt in 1..30) {
     } catch {}
 }
 if (-not $running) { throw "The Studio server did not start. Check '$LogFile' and '$LogFile.error', confirm Bun is installed, or set AI_JOB_SEARCH_PORT to a free port." }
-Start-Process $AppUrl
+
+# Launch as dedicated standalone desktop window if Edge or Chrome is installed, else default browser
+$EdgeCandidates = @(
+    "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+    "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+    "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe"
+)
+$EdgePath = $EdgeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+$ChromeCandidates = @(
+    "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+    "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+)
+$ChromePath = $ChromeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($EdgePath) {
+    Start-Process -FilePath $EdgePath -ArgumentList "--app=$AppUrl"
+} elseif ($ChromePath) {
+    Start-Process -FilePath $ChromePath -ArgumentList "--app=$AppUrl"
+} else {
+    Start-Process $AppUrl
+}

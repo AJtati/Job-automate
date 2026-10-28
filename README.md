@@ -97,13 +97,45 @@ python3 -m unittest tests.test_readme_assets tests.test_onboarding_privacy
 
 The broader Python suite requires Python 3.10 or newer.
 
-## macOS package
+## Desktop Applications & Packaging
 
+### macOS App (.app & DMG)
 ```bash
 bun run build:dmg
 ```
+* Compiles a native Swift Cocoa/WebKit application (`/Applications/AI Job Search Studio.app`) with macOS Dock integration.
+* Creates `dist/AI-Job-Search-Studio.dmg` for distribution.
 
-This builds the optional Cocoa/WebKit wrapper and DMG. Windows uses the PowerShell launcher and the user’s default browser; the application functionality is the same.
+### Windows Application (Portable Standalone ZIP)
+The Windows package is completely self-contained and portable—it bundles the **Bun runtime** (`runtime/bun.exe`) and has **zero external npm dependencies**. The end user does not need to install Bun, Node.js, or Python.
+
+#### 1. Running the Windows Package
+1. Download or extract **`AI-Job-Search-Studio-Windows.zip`**.
+2. Double-click **`AI Job Search Studio.cmd`**.
+3. The app automatically launches in a dedicated desktop application window (powered by Microsoft Edge App Mode, hiding browser bars and tabs for a native window feel).
+4. All candidate data, profiles, and tailored files are preserved in `%LOCALAPPDATA%\AI Job Search Studio\`.
+
+#### 2. Optional: PDF Compilation on Windows
+To compile LaTeX resumes directly to PDF on Windows, install a LaTeX engine using Windows Package Manager (`winget`):
+```powershell
+# Recommended: Fast, self-contained modern compiler
+winget install Tectonic.Tectonic
+
+# Or full TeX Live / MiKTeX distribution:
+winget install MiKTeX.MiKTeX
+```
+*Alternatively, you can click **"Open Overleaf ↗"** or **"Copy LaTeX"** inside the app to render PDFs online with zero local tools.*
+
+#### 3. Building the Windows Package
+You can build the Windows distribution from **either Windows or macOS/Linux**:
+```bash
+# From macOS or Linux (downloads official Windows bun.exe and zips package):
+bun run build:windows:sh
+
+# From Windows PowerShell:
+bun run build:windows
+```
+Output: `dist/AI-Job-Search-Studio-Windows.zip` (portable, ~52 MB compressed).
 
 ## Project structure
 
