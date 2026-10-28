@@ -282,16 +282,38 @@ export function createLatexBackbone(): string {
   return DEFAULT_LATEX_BACKBONE;
 }
 
+function getDisplayRole(profile: CandidateProfile, job?: JobInput): string {
+  if (!job?.role) return profile.headline || "Senior Professional";
+  const headline = (profile.headline || "").toLowerCase();
+  const role = (job.role || "").toLowerCase();
+  const isDynamics = /dynamics|power\s*platform|dataverse|crm\b/i.test(headline);
+  const isDevops = /devops|platform\s*engineer|sre\b|kubernetes|infrastructure/i.test(headline);
+  const isQA = /\bqa\b|tester\b|quality\s*assurance|sdet\b/i.test(headline);
+
+  if (isDynamics && (/platform\s*engineer|sre\b|devops|qa\b|tester/i.test(role) && !/dynamics|crm/i.test(role))) {
+    return profile.headline || "Senior Dynamics Developer";
+  }
+  if (isDevops && (/dynamics|power\s*platform|crm\b|qa\b|tester/i.test(role))) {
+    return profile.headline || "DevOps / Platform Engineer";
+  }
+  if (isQA && (/devops|platform\s*engineer|dynamics|crm/i.test(role))) {
+    return profile.headline || "QA Automation Engineer";
+  }
+
+  return job.role;
+}
+
 export function renderTailoredResume(profile: CandidateProfile, job: JobInput, analysis: ApplicationAnalysis, summary?: string): string {
   let backbone = profile.latexBackbone?.includes(TOKENS.experience) ? profile.latexBackbone : DEFAULT_LATEX_BACKBONE;
   if (backbone.includes("\\small{" + TOKENS.summary + "}")) {
     backbone = backbone.split("\\small{" + TOKENS.summary + "}").join(TOKENS.summary);
   }
   const summaryContent = formatSummary(summary || buildGroundedSummary(profile, job, analysis));
+  const displayRole = getDisplayRole(profile, job);
 
   const replacements: Record<string, string> = {
-    [TOKENS.header]: header(profile, job.role || profile.headline),
-    [TOKENS.headline]: escapeLatex(job.role || profile.headline),
+    [TOKENS.header]: header(profile, displayRole),
+    [TOKENS.headline]: escapeLatex(displayRole),
     [TOKENS.summary]: summaryContent,
     [TOKENS.experience]: experience(profile, analysis, job),
     [TOKENS.projects]: projects(profile),

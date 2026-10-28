@@ -233,10 +233,32 @@ function setupEventListeners() {
   btnOpenImportResumeModal.addEventListener("click", () => {
     profileDropdownMenu.style.display = "none";
     rawResumeInput.value = "";
+    selectedResumeFile = null;
+    const defaultState = document.getElementById("dropzoneDefaultState");
+    const selectedState = document.getElementById("dropzoneSelectedState");
+    if (defaultState) defaultState.style.display = "block";
+    if (selectedState) selectedState.style.display = "none";
+
+    const newRadio = document.querySelector('input[name="importProfileMode"][value="new"]');
+    if (newRadio) newRadio.checked = true;
+    const updateLabel = document.getElementById("importUpdateProfileLabel");
+    if (updateLabel) updateLabel.textContent = `✏️ Update Active Profile (${activeProfile?.name || 'Current'})`;
+
     importResumeModal.style.display = "flex";
   });
   document.getElementById("btnSidebarUploadResume")?.addEventListener("click", () => {
     rawResumeInput.value = "";
+    selectedResumeFile = null;
+    const defaultState = document.getElementById("dropzoneDefaultState");
+    const selectedState = document.getElementById("dropzoneSelectedState");
+    if (defaultState) defaultState.style.display = "block";
+    if (selectedState) selectedState.style.display = "none";
+
+    const updateRadio = document.querySelector('input[name="importProfileMode"][value="update"]');
+    if (updateRadio) updateRadio.checked = true;
+    const updateLabel = document.getElementById("importUpdateProfileLabel");
+    if (updateLabel) updateLabel.textContent = `✏️ Update Active Profile (${activeProfile?.name || 'Current'})`;
+
     importResumeModal.style.display = "flex";
   });
   // In-Modal Profile Resume Dropzone & AI Auto-Fill Listeners
@@ -906,12 +928,15 @@ async function handleImportResume() {
   importSpinner.style.display = "inline-block";
 
   try {
+    const isUpdate = document.querySelector('input[name="importProfileMode"]:checked')?.value === "update";
+    const targetProfileId = isUpdate ? activeProfile?.id : undefined;
+
     let res;
     if (selectedResumeFile) {
       const formData = new FormData();
       formData.append("file", selectedResumeFile);
-      if (activeProfile?.id) {
-        formData.append("targetProfileId", activeProfile.id);
+      if (targetProfileId) {
+        formData.append("targetProfileId", targetProfileId);
       }
       if (text && !selectedResumeFile.name.toLowerCase().endsWith(".pdf")) {
         formData.append("resumeText", text);
@@ -921,10 +946,12 @@ async function handleImportResume() {
         body: formData
       });
     } else {
+      const payload = { resumeText: text };
+      if (targetProfileId) payload.targetProfileId = targetProfileId;
       res = await fetch("/api/profiles/import-resume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resumeText: text, targetProfileId: activeProfile?.id })
+        body: JSON.stringify(payload)
       });
     }
 
