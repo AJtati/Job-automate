@@ -59,10 +59,13 @@ export class SearchConfigManager {
       }
     } catch {}
 
-    // Check if APP_ROOT has saved keys to seed if current config is missing them
-    const appRoot = process.env.AI_JOB_SEARCH_APP_ROOT;
-    if (appRoot) {
-      const seedFile = join(appRoot, "data", "search_config.json");
+    // Check candidate config locations (e.g. macOS Application Support or APP_ROOT) to seed missing keys
+    const candidatePaths = [
+      process.env.AI_JOB_SEARCH_APP_ROOT ? join(process.env.AI_JOB_SEARCH_APP_ROOT, "data", "search_config.json") : null,
+      process.env.HOME ? join(process.env.HOME, "Library", "Application Support", "AI Job Search Studio", "data", "search_config.json") : null,
+    ].filter(Boolean) as string[];
+
+    for (const seedFile of candidatePaths) {
       if (resolve(seedFile) !== resolve(this.configFile) && existsSync(seedFile)) {
         try {
           const seed = JSON.parse(readFileSync(seedFile, "utf-8"));

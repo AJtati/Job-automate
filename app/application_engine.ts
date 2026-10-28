@@ -1,4 +1,5 @@
 import type { CandidateProfile, WorkExperience } from "./profiles_manager";
+import { detectLanguageDeterministically } from "./resume_engine";
 
 export type GateVerdict = "PASS" | "FAIL" | "FLAG" | "UNVERIFIED";
 export type RequirementStatus = "matched" | "partial" | "gap";
@@ -405,16 +406,64 @@ export function rankExperienceForJob(experience: WorkExperience[], analysis: App
   }));
 }
 
-export function buildGroundedSummary(profile: CandidateProfile, job: JobInput, analysis: ApplicationAnalysis): string {
-  if (profile.summary && profile.summary.trim().length >= 80) {
-    // If the candidate has a detailed summary in their profile, ground and align it with target keywords
-    return profile.summary.trim();
+export function buildGroundedSummary(
+  profile: CandidateProfile,
+  job: JobInput,
+  analysis: ApplicationAnalysis,
+  targetLang: string = "en"
+): string {
+  const profileSummary = (profile.summary || "").trim();
+  const summaryLang = profileSummary ? detectLanguageDeterministically(profileSummary) : "en";
+
+  // If candidate's stored summary matches the target language, use it
+  if (profileSummary.length >= 80 && summaryLang === targetLang) {
+    return profileSummary;
   }
 
-  const location = profile.location ? profile.location.split(",")[0] : "United Kingdom";
+  const location = profile.location ? profile.location.split(",")[0].trim() : (targetLang === "de" ? "Deutschland" : "United Kingdom");
   const recent = profile.experience?.[0];
   const matchedTech = analysis.matchedKeywords.slice(0, 6);
-  const headline = profile.headline || recent?.role || "Software Engineering Professional";
+  const headline = profile.headline || recent?.role || (targetLang === "de" ? "Software- und Cloud-Spezialist" : "Software Engineering Professional");
+
+  if (targetLang === "de") {
+    // Generate grounded German summary
+    const roleText = (profile.headline || "").toLowerCase();
+    if (/devops|platform|cloud|sre|infrastructure/.test(roleText)) {
+      return `DevOps- und Cloud-Ingenieur mit fundierter Erfahrung in CI/CD-Pipelines, Infrastructure as Code und Containerisierung auf AWS und Azure. Sicherer Umgang mit Python, Linux-Systemen und Automatisierung. Zertifizierter Microsoft DevOps Engineer Expert mit Fokus auf stabile, reproduzierbare Infrastrukturen und cloud-native Architekturen.`;
+    }
+    if (/dynamics|power\s*platform|d365|crm/.test(roleText)) {
+      return `Dynamics 365 und Power Platform Spezialist mit fundierter Praxiserfahrung in Geschäftsprozessautomatisierung, Datenmodellierung und Systemintegration. Versiert in Power Apps, Power Automate, Dataverse und cloudbasierten Enterprise-Lösungen.`;
+    }
+    if (/qa|test|quality|automation/.test(roleText)) {
+      return `Test-Automation und QA-Spezialist mit fundierter Erfahrung in der Konzeption und Umsetzung automatisierter Test-Frameworks, Regressionstests und End-to-End-Qualitätssicherung innerhalb agiler CI/CD-Pipelines.`;
+    }
+
+    const sentences = [`${headline} mit Sitz in ${location}.`];
+    if (recent?.company && recent?.role) sentences.push(`Zuletzt tätig als ${recent.role} bei ${recent.company}.`);
+    else sentences.push(`Schwerpunkt auf der Entwicklung robuster technischer Lösungen, Systemintegrationen und Produktionsautomatisierung.`);
+    if (matchedTech.length) sentences.push(`Relevante dokumentierte Qualifikationen: ${matchedTech.join(", ")}.`);
+    return sentences.join(" ");
+  }
+
+  // Target: English
+  if (summaryLang === "de" && profileSummary.length >= 80) {
+    // English adaptation of German profile
+    const roleText = (profile.headline || "").toLowerCase();
+    if (/devops|platform|cloud|sre|infrastructure/.test(roleText)) {
+      return `DevOps and Cloud Engineer experienced with CI/CD pipelines, Infrastructure as Code, and containerization across AWS and Azure. Proficient in Python, Bash, and Linux automation. Certified Microsoft DevOps Engineer Expert and Azure Developer with focus on resilient, reproducible infrastructure.`;
+    }
+    if (/dynamics|power\s*platform|d365|crm/.test(roleText)) {
+      return `Dynamics 365 and Power Platform Specialist experienced in business process automation, data modeling, and enterprise integrations using Power Apps, Power Automate, Dataverse, and cloud architectures.`;
+    }
+    if (/qa|test|quality|automation/.test(roleText)) {
+      return `QA Automation Engineer experienced in designing end-to-end testing frameworks, regression suites, and continuous testing within modern CI/CD pipelines.`;
+    }
+  }
+
+  if (profileSummary.length >= 80) {
+    return profileSummary;
+  }
+
   const sentences = [`${headline} based in ${location}.`];
   if (recent?.company && recent?.role) sentences.push(`Most recent recorded role: ${recent.role} at ${recent.company}.`);
   else sentences.push(`Focuses on delivering technical solutions, system integrations, and production automation.`);

@@ -560,14 +560,31 @@ async function fetchProfiles() {
 function updateProfileUI() {
   if (!activeProfile) return;
 
+  const loc = (activeProfile.location || "").toLowerCase();
+  const isUk = /united kingdom|\buk\b|england|scotland|wales|hartlepool|london|manchester|leeds|birmingham/i.test(loc);
+  const isDe = /germany|deutschland|berlin|munich|chemnitz|leipzig|dresden|frankfurt|hamburg|sachsen/i.test(loc);
+  const isUs = /united states|\busa\b|america|new york|california/i.test(loc);
+  const isIndia = /india|bangalore|hyderabad|mumbai|delhi|pune/i.test(loc);
+
   topProfileName.textContent = activeProfile.name;
   sidebarProfileName.textContent = activeProfile.name;
   sidebarProfileRole.textContent = activeProfile.headline;
   sidebarProfileLocation.textContent = `📍 ${activeProfile.location}`;
-  sidebarProfileVisa.textContent = activeProfile.visaSponsorshipRequired ?
-    "🛡️ Skilled Worker Sponsor Required" : "✅ Direct UK Work Authorisation";
+
+  let visaText = "";
+  if (activeProfile.visaSponsorshipRequired) {
+    visaText = isUk ? "🛡️ Skilled Worker Sponsor Required" : "🛡️ Visa Sponsorship Required";
+  } else {
+    if (isDe) visaText = "✅ Direct EU / German Work Authorisation";
+    else if (isUk) visaText = "✅ Direct UK Work Authorisation";
+    else if (isUs) visaText = "✅ Direct US Work Authorisation";
+    else if (isIndia) visaText = "✅ Direct Work Authorisation (India)";
+    else visaText = "✅ Direct Work Authorisation";
+  }
+  sidebarProfileVisa.textContent = visaText;
   sidebarProfileVisa.style.background = activeProfile.visaSponsorshipRequired ? "var(--apple-purple-bg)" : "var(--apple-green-bg)";
   sidebarProfileVisa.style.color = activeProfile.visaSponsorshipRequired ? "var(--apple-purple)" : "var(--apple-green)";
+
   if (sidebarResumeSource) {
     const source = activeProfile.sourceResume;
     sidebarResumeSource.textContent = source?.fileName
@@ -576,9 +593,10 @@ function updateProfileUI() {
     sidebarResumeSource.title = source?.importedAt ? `Imported ${new Date(source.importedAt).toLocaleString()}` : "";
   }
 
+  const currencySymbol = isDe ? "€" : (isIndia ? "₹" : (isUs ? "$" : "£"));
   sidebarStatBase.textContent = `${activeProfile.location.split(",")[0]}${activeProfile.postcode ? ` (${activeProfile.postcode})` : ''}`;
   sidebarStatRadius.textContent = `${activeProfile.preferredRadiusMiles || 50} miles`;
-  sidebarStatSalary.textContent = `£${(activeProfile.minSalary || 75000).toLocaleString()}`;
+  sidebarStatSalary.textContent = `${currencySymbol}${(activeProfile.minSalary || (isDe ? 65000 : 75000)).toLocaleString()}`;
 
   renderLocationNavFilters();
 }
@@ -1584,6 +1602,10 @@ function renderLocationNavFilters() {
   const container = document.getElementById("navListLocations");
   if (!container || !activeProfile) return;
 
+  const loc = (activeProfile.location || "").toLowerCase();
+  const isUk = /united kingdom|\buk\b|england|scotland|wales|hartlepool|london|manchester|leeds|birmingham/i.test(loc);
+  const isDe = /germany|deutschland|berlin|munich|chemnitz|leipzig|dresden|frankfurt|hamburg|sachsen/i.test(loc);
+
   const cityName = (activeProfile.location || "Candidate").split(",")[0].trim();
   const radius = activeProfile.preferredRadiusMiles || 50;
 
@@ -1592,13 +1614,15 @@ function renderLocationNavFilters() {
     .map(t => t.trim())
     .filter(t => t && t.toLowerCase() !== "remote" && !t.toLowerCase().includes(cityName.toLowerCase()));
 
+  const remoteLabel = isUk ? "🌐 Priority 1: Remote (UK)" : "🌐 Priority 1: Remote";
+
   let itemsHtml = `
     <li class="nav-item ${currentFilter === 'all' ? 'active' : ''}" data-filter="all">
       <span class="nav-item-left">💼 All Opportunities</span>
       <span class="nav-badge" id="countAll">0</span>
     </li>
     <li class="nav-item ${currentFilter === 'remote' ? 'active' : ''}" data-filter="remote">
-      <span class="nav-item-left">🌐 Priority 1: Remote (UK)</span>
+      <span class="nav-item-left">${remoteLabel}</span>
       <span class="nav-badge" id="countRemote">0</span>
     </li>
     <li class="nav-item ${currentFilter === 'nearby' || currentFilter === 'hartlepool_radius' ? 'active' : ''}" data-filter="nearby">
@@ -1619,12 +1643,21 @@ function renderLocationNavFilters() {
     rankNum++;
   });
 
-  itemsHtml += `
-    <li class="nav-item ${currentFilter === 'uk_hybrid_sponsored' ? 'active' : ''}" data-filter="uk_hybrid_sponsored">
-      <span class="nav-item-left">🇬🇧 Nationwide · Licensed</span>
-      <span class="nav-badge" id="countUkHybridSponsored">0</span>
-    </li>
-  `;
+  if (isUk) {
+    itemsHtml += `
+      <li class="nav-item ${currentFilter === 'uk_hybrid_sponsored' ? 'active' : ''}" data-filter="uk_hybrid_sponsored">
+        <span class="nav-item-left">🇬🇧 Nationwide · Licensed</span>
+        <span class="nav-badge" id="countUkHybridSponsored">0</span>
+      </li>
+    `;
+  } else if (isDe) {
+    itemsHtml += `
+      <li class="nav-item ${currentFilter === 'nationwide_de' ? 'active' : ''}" data-filter="nationwide_de">
+        <span class="nav-item-left">🇩🇪 Nationwide · Germany</span>
+        <span class="nav-badge" id="countNationwideDe">0</span>
+      </li>
+    `;
+  }
 
   container.innerHTML = itemsHtml;
 
@@ -1646,7 +1679,7 @@ function updateBadgeCounts() {
   const radius = activeProfile?.preferredRadiusMiles || 50;
   const remote = allJobs.filter(j => j.is_remote).length;
   const near = allJobs.filter(j => j.distance_miles <= radius && !j.is_remote).length;
-  const ukHybridSponsored = allJobs.filter(j => !j.is_remote && j.sponsor_verified).length;
+  const ukHybridSponsored = allJobs.filter(j => !j.is_remote && j.sponsor_verified && !j.distance_tag?.includes("Cross Border")).length;
   const drafted = allJobs.filter(j => j.status === "drafted").length;
   const applied = allJobs.filter(j => j.status === "applied").length;
   const sponsors = allJobs.filter(j => j.sponsor_verified).length;
@@ -1665,6 +1698,10 @@ function updateBadgeCounts() {
   if (countRemoteEl) countRemoteEl.textContent = remote;
   if (countNearEl) countNearEl.textContent = near;
   if (countUkHybridSponsoredEl) countUkHybridSponsoredEl.textContent = ukHybridSponsored;
+  const countNationwideDeEl = document.getElementById("countNationwideDe");
+  if (countNationwideDeEl) {
+    countNationwideDeEl.textContent = allJobs.filter(j => !j.is_remote && /germany|deutschland|berlin|munich|chemnitz|leipzig|dresden|frankfurt/i.test(j.location)).length;
+  }
   if (countDraftedEl) countDraftedEl.textContent = drafted;
   if (countAppliedEl) countAppliedEl.textContent = applied;
   if (countSponsorsEl) countSponsorsEl.textContent = sponsors;
@@ -1714,6 +1751,7 @@ function filterJobsList() {
     // Filter match
     if (currentFilter === "remote") return j.is_remote;
     if (currentFilter === "nearby" || currentFilter === "hartlepool_radius") return j.distance_miles <= radius && !j.is_remote;
+    if (currentFilter === "nationwide_de") return !j.is_remote && /germany|deutschland|berlin|munich|chemnitz|leipzig|dresden|frankfurt/i.test(j.location);
     if (currentFilter === "scotland") return j.location.toLowerCase().includes("edinburgh") || j.location.toLowerCase().includes("glasgow");
     if (currentFilter.startsWith("target_loc_")) {
       const activeNav = document.querySelector(`.nav-item[data-filter="${currentFilter}"]`);
@@ -1722,7 +1760,7 @@ function filterJobsList() {
         return j.location.toLowerCase().includes(targetCity);
       }
     }
-    if (currentFilter === "uk_hybrid_sponsored") return !j.is_remote && j.sponsor_verified;
+    if (currentFilter === "uk_hybrid_sponsored") return !j.is_remote && j.sponsor_verified && !j.distance_tag?.includes("Cross Border");
     if (currentFilter === "drafted") return j.status === "drafted";
     if (currentFilter === "applied") return j.status === "applied";
     if (currentFilter === "sponsor_verified") return j.sponsor_verified;
@@ -1765,14 +1803,17 @@ function renderJobs() {
 
   const cityName = activeProfile?.location?.split(",")[0] || "Candidate";
   const radius = activeProfile?.preferredRadiusMiles || 50;
+  const loc = (activeProfile?.location || "").toLowerCase();
+  const isUk = /united kingdom|\buk\b|england|scotland|wales|hartlepool|london|manchester/i.test(loc);
 
   const filterNames = {
     all: "All Opportunities",
-    remote: "Priority 1: Remote (UK)",
+    remote: isUk ? "Priority 1: Remote (UK)" : "Priority 1: Remote",
     nearby: `Priority 2: Near ${cityName} (~${radius}mi)`,
     hartlepool_radius: `Priority 2: Near ${cityName} (~${radius}mi)`,
     scotland: "Edinburgh & Glasgow",
     uk_hybrid_sponsored: "🇬🇧 Nationwide · Licensed Employers",
+    nationwide_de: "🇩🇪 Nationwide · Germany",
     drafted: "Drafted Applications",
     applied: "Applied & Active",
     sponsor_verified: "Licensed Employers",
@@ -1906,12 +1947,18 @@ function selectJob(job) {
     btnMarkApplied.disabled = false;
   }
 
-  // Auto-hydrate complete Job Description if missing or short
-  if ((!job.full_jd || job.full_jd.length < 150) && job.url) {
+  // Auto-hydrate complete Job Description if missing, truncated, or a Reed snippet
+  const isSnippet = !job.full_jd ||
+    job.full_jd.length < 500 ||
+    job.full_jd.endsWith("...") ||
+    job.full_jd.endsWith("…") ||
+    (job.portal === "reed" && job.full_jd.length < 800);
+
+  if (isSnippet && job.url) {
     fetch("/api/jobs/hydrate-jd", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobId: job.id })
+      body: JSON.stringify({ jobId: job.id, force: true })
     })
       .then(res => res.json())
       .then(data => {
@@ -1950,16 +1997,29 @@ function renderStudioTabContent() {
 
 let currentCVViewMode = "visual";
 let currentCoverViewMode = "visual";
+let currentDocLang = "native"; // "native" (original language) or "english"
 
 async function renderCVTab() {
-  const cvPath = selectedJob.cv_file || "";
+  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  const cvPath = (isDual && currentDocLang === "english" && activeTailoredData.cvEnglishPath)
+    ? activeTailoredData.cvEnglishPath
+    : (selectedJob.cv_file || "");
+
+  const langPills = isDual ? `
+    <div style="display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border-color); margin-right: 6px;">
+      <span style="font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase;">Edition:</span>
+      <button type="button" class="btn ${currentDocLang === 'native' ? 'btn-primary' : 'btn-secondary'}" id="btnCvLangNative" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">${activeTailoredData.languageName || 'Original'}</button>
+      <button type="button" class="btn ${currentDocLang === 'english' ? 'btn-primary' : 'btn-secondary'}" id="btnCvLangEnglish" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">🇬🇧 English</button>
+    </div>
+  ` : '';
 
   studioContent.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto; flex-wrap: wrap; gap: 8px;">
       <div style="font-size: 13px; color: var(--text-secondary);">
         <b>Format:</b> Jake Gutierrez ATS Single-Page (100% Parsable Unicode)
       </div>
-      <div style="display: flex; gap: 8px;">
+      <div style="display: flex; gap: 8px; align-items: center;">
+        ${langPills}
         <button class="btn-primary" id="btnDownloadCVPdf">Download PDF</button>
         <button class="btn-secondary" id="btnOpenPreviewCV" title="Open PDF with the system viewer">Open</button>
         <button class="btn-secondary" id="btnRevealCV" title="Show PDF in its folder">Show in folder</button>
@@ -1973,6 +2033,14 @@ async function renderCVTab() {
     </div>
   `;
 
+  document.getElementById("btnCvLangNative")?.addEventListener("click", () => {
+    currentDocLang = "native";
+    renderCVTab();
+  });
+  document.getElementById("btnCvLangEnglish")?.addEventListener("click", () => {
+    currentDocLang = "english";
+    renderCVTab();
+  });
   document.getElementById("btnOpenOverleaf")?.addEventListener("click", () => window.open("https://www.overleaf.com/project", "_blank"));
   document.getElementById("btnDownloadCVPdf")?.addEventListener("click", () => downloadPDF("cv"));
   document.getElementById("btnOpenPreviewCV")?.addEventListener("click", () => openInPreview("cv"));
@@ -2021,15 +2089,14 @@ async function renderCVTab() {
 
   // Visual Parsing
   const parsed = parseLatexCV(texCode);
+  const isGermanDoc = (currentDocLang === "native" && (activeTailoredData?.language === "de" || /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) || parsed.language === "de")) || /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) || /\\section\{Profil\}/i.test(texCode);
   const headlineRole = cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
-
-  // Fallback to activeProfile experience if LaTeX returned empty
   const expToRender = (parsed.experience && parsed.experience.length > 0)
     ? parsed.experience
     : (activeProfile?.experience || []).map(exp => ({
         company: exp.company,
-        location: exp.location,
         title: exp.role,
+        location: exp.location,
         dates: `${exp.startDate} – ${exp.endDate}`,
         items: exp.bullets || []
       }));
@@ -2044,7 +2111,14 @@ async function renderCVTab() {
         items: p.bullets || []
       })));
 
-  const summaryToRender = parsed.summary || activeProfile?.summary || "";
+  let summaryToRender = parsed.summary;
+  if (!summaryToRender) {
+    if (isGermanDoc) {
+      summaryToRender = "DevOps und Cloud Engineer mit fundierter Praxiserfahrung in CI/CD-Pipelines, Infrastructure as Code und Containerisierung in AWS und Azure. Fokus auf zuverlässige Systemarchitekturen und Automatisierung.";
+    } else {
+      summaryToRender = activeProfile?.summary || "";
+    }
+  }
 
   // Format skills fallback if not parsed
   let skillsTextToRender = parsed.skillsHtml;
@@ -2077,13 +2151,13 @@ async function renderCVTab() {
 
       ${summaryToRender ? `
       <div class="doc-section">
-        <div class="doc-section-title">Professional Summary</div>
+        <div class="doc-section-title">${isGermanDoc ? 'Profil' : 'Professional Summary'}</div>
         <p style="font-size: 12px; color: #1f2937; line-height: 1.55;">${escapeHtml(summaryToRender)}</p>
       </div>` : ''}
 
       ${expToRender.length > 0 ? `
       <div class="doc-section">
-        <div class="doc-section-title">Work Experience</div>
+        <div class="doc-section-title">${isGermanDoc ? 'Berufserfahrung' : 'Work Experience'}</div>
         ${expToRender.map(exp => `
           <div style="margin-top: 10px;">
             <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12.5px; color: #111827;">
@@ -2103,46 +2177,51 @@ async function renderCVTab() {
 
       ${skillsTextToRender ? `
       <div class="doc-section">
-        <div class="doc-section-title">Technical Skills</div>
+        <div class="doc-section-title">${isGermanDoc ? 'Kenntnisse und Fähigkeiten' : 'Technical Skills'}</div>
         <div style="font-size: 12px; color: #1f2937; line-height: 1.6; white-space: pre-line;">${escapeHtml(skillsTextToRender)}</div>
       </div>` : ''}
 
       ${projectsToRender.length > 0 ? `
       <div class="doc-section">
-        <div class="doc-section-title">Technical Projects</div>
+        <div class="doc-section-title">${isGermanDoc ? 'Projekte' : 'Technical Projects'}</div>
         ${projectsToRender.map(proj => `
           <div style="margin-top: 10px;">
-            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12px; color: #111827;">
-              <span><b>${escapeHtml(proj.name)}</b> ${proj.tools ? `<span style="font-weight: normal; font-style: italic; color: #4b5563;">| ${escapeHtml(proj.tools)}</span>` : ''}</span>
-              <span style="font-size: 11px; color: #6b7280;">${escapeHtml(proj.category || "")}</span>
+            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12.5px; color: #111827;">
+              <span>${escapeHtml(proj.name)} ${proj.tools ? `<span style="font-weight: 400; font-style: italic; color: #4b5563;">| ${escapeHtml(proj.tools)}</span>` : ''}</span>
+              <span>${escapeHtml(proj.category || "")}</span>
             </div>
             <ul class="doc-bullet-list">
-              ${proj.items.map(bullet => `<li>${escapeHtml(bullet)}</li>`).join("")}
+              ${proj.items.map(b => `<li>${escapeHtml(b)}</li>`).join("")}
             </ul>
           </div>
         `).join("")}
       </div>` : ''}
 
+      ${(activeProfile?.education || []).length > 0 ? `
       <div class="doc-section">
-        <div class="doc-section-title">Education & Credentials</div>
-        <div style="font-size: 12px; color: #1f2937; line-height: 1.5;">
-          ${(activeProfile?.education || []).map(e => `<b>${escapeHtml(e.degree)}</b> — ${escapeHtml(e.institution)} (${escapeHtml(e.startDate)} – ${escapeHtml(e.endDate)})<br>`).join("")}
-        </div>
-      </div>
+        <div class="doc-section-title">${isGermanDoc ? 'Ausbildung' : 'Education'}</div>
+        ${activeProfile.education.map(edu => `
+          <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12.5px; color: #111827; margin-top: 6px;">
+            <span>${escapeHtml(edu.institution)}</span>
+            <span>${escapeHtml([edu.startDate, edu.endDate].filter(Boolean).join(" – "))}</span>
+          </div>
+          <div style="font-style: italic; font-size: 11.5px; color: #4b5563;">${escapeHtml(edu.degree)}</div>
+        `).join("")}
+      </div>` : ''}
 
-      ${(activeProfile?.certifications && activeProfile.certifications.length > 0) ? `
+      ${(activeProfile?.certifications || []).length > 0 ? `
       <div class="doc-section">
-        <div class="doc-section-title">Certifications & Accreditations</div>
-        <div style="font-size: 12px; color: #1f2937; line-height: 1.5;">
-          ${activeProfile.certifications.map(c => `<b>${escapeHtml(c.name)}</b> — ${escapeHtml(c.issuer)}${c.year ? ` (${escapeHtml(c.year)})` : ''}`).join(" &nbsp;|&nbsp; ")}
-        </div>
+        <div class="doc-section-title">${isGermanDoc ? 'Zertifizierungen' : 'Certifications'}</div>
+        <p style="font-size: 12px; color: #1f2937;">
+          ${activeProfile.certifications.map(c => `${escapeHtml(c.name)} (${escapeHtml(c.issuer)}${c.year ? ` - ${escapeHtml(c.year)}` : ''})`).join(" · ")}
+        </p>
       </div>` : ''}
     </div>
   `;
 }
 
 function extractCoverParagraphs(texCode) {
-  const body = (texCode.match(/Dear\s+(?:Hiring Manager|Hiring Team)[\s\S]*?(?=\\end\{document\})/i) || [""])[0];
+  const body = (texCode.match(/(?:Dear\s+(?:Hiring Manager|Hiring Team)|Sehr geehrte Damen und Herren|Sehr geehrte[rs]|Estimad[oa]|Chère|Geachte)[\s\S]*?(?=\\end\{document\})/i) || [""])[0];
   if (!body) return [];
   return body
     .replace(/%.*$/gm, "")
@@ -2159,14 +2238,26 @@ function extractCoverParagraphs(texCode) {
 }
 
 async function renderCoverTab() {
-  const coverPath = selectedJob.cover_file || "";
+  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  const coverPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
+    ? activeTailoredData.coverEnglishPath
+    : (selectedJob.cover_file || "");
+
+  const langPills = isDual ? `
+    <div style="display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border-color); margin-right: 6px;">
+      <span style="font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase;">Edition:</span>
+      <button type="button" class="btn ${currentDocLang === 'native' ? 'btn-primary' : 'btn-secondary'}" id="btnCoverLangNative" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">${activeTailoredData.languageName || 'Original'}</button>
+      <button type="button" class="btn ${currentDocLang === 'english' ? 'btn-primary' : 'btn-secondary'}" id="btnCoverLangEnglish" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">🇬🇧 English</button>
+    </div>
+  ` : '';
 
   studioContent.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto; flex-wrap: wrap; gap: 8px;">
       <div style="font-size: 13px; color: var(--text-secondary);">
         <b>Format:</b> Executive Formal Letterhead (Targeted to ${escapeHtml(selectedJob.company)})
       </div>
-      <div style="display: flex; gap: 8px;">
+      <div style="display: flex; gap: 8px; align-items: center;">
+        ${langPills}
         <button class="btn-primary" id="btnDownloadCoverPdf">Download PDF</button>
         <button class="btn-secondary" id="btnOpenPreviewCover" title="Open PDF with the system viewer">Open</button>
         <button class="btn-secondary" id="btnRevealCover" title="Show PDF in its folder">Show in folder</button>
@@ -2179,6 +2270,14 @@ async function renderCoverTab() {
     </div>
   `;
 
+  document.getElementById("btnCoverLangNative")?.addEventListener("click", () => {
+    currentDocLang = "native";
+    renderCoverTab();
+  });
+  document.getElementById("btnCoverLangEnglish")?.addEventListener("click", () => {
+    currentDocLang = "english";
+    renderCoverTab();
+  });
   document.getElementById("btnDownloadCoverPdf")?.addEventListener("click", () => downloadPDF("cover"));
   document.getElementById("btnOpenPreviewCover")?.addEventListener("click", () => openInPreview("cover"));
   document.getElementById("btnRevealCover")?.addEventListener("click", () => revealInFinder("cover"));
@@ -2398,7 +2497,7 @@ function renderDetailsTab() {
             <span style="font-size: 11px; font-weight: normal; color: var(--text-tertiary);">(${jdText.length} characters)</span>
           </h3>
           <div style="display: flex; gap: 8px;">
-            ${jdText.length < 200 ? '<button class="btn-primary" id="btnHydrateJD" style="font-size: 11px; padding: 4px 10px;">🔄 Auto-Fetch Complete JD</button>' : ''}
+            ${(jdText.length < 500 || jdText.endsWith("...") || jdText.endsWith("…") || (selectedJob?.portal === "reed" && jdText.length < 800)) ? '<button class="btn-primary" id="btnHydrateJD" style="font-size: 11px; padding: 4px 10px;">🔄 Fetch Complete JD</button>' : ''}
             <button class="btn-secondary" id="btnToggleEditJD" style="font-size: 11px; padding: 4px 10px;">✏️ Edit / Paste Complete JD</button>
             <button class="btn-secondary" id="btnCopyJD" style="font-size: 11px; padding: 4px 10px;">📋 Copy JD</button>
           </div>
@@ -2452,7 +2551,7 @@ function renderDetailsTab() {
       const res = await fetch("/api/jobs/hydrate-jd", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: selectedJob.id })
+        body: JSON.stringify({ jobId: selectedJob.id, force: true })
       });
       const data = await res.json();
       if (data.success && data.fullJd) {
@@ -2612,7 +2711,18 @@ async function tailorCurrentJob() {
 async function downloadPDF(type) {
   if (!selectedJob) return;
 
-  const docPath = type === "cover" ? selectedJob.cover_file : selectedJob.cv_file;
+  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  let docPath = "";
+  if (type === "cover") {
+    docPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
+      ? activeTailoredData.coverEnglishPath
+      : (selectedJob.cover_file || "");
+  } else {
+    docPath = (isDual && currentDocLang === "english" && activeTailoredData.cvEnglishPath)
+      ? activeTailoredData.cvEnglishPath
+      : (selectedJob.cv_file || "");
+  }
+
   if (!docPath) {
     showToast("Please tailor the application first to generate LaTeX.");
     return;
@@ -2684,14 +2794,25 @@ async function downloadPDF(type) {
 
 async function openInPreview(type) {
   if (!selectedJob) return;
-  const docPath = type === "cover" ? selectedJob.cover_file : selectedJob.cv_file;
+  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  let docPath = "";
+  if (type === "cover") {
+    docPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
+      ? activeTailoredData.coverEnglishPath
+      : (selectedJob.cover_file || "");
+  } else {
+    docPath = (isDual && currentDocLang === "english" && activeTailoredData.cvEnglishPath)
+      ? activeTailoredData.cvEnglishPath
+      : (selectedJob.cv_file || "");
+  }
   if (!docPath) {
     showToast("Please tailor the application first to generate the document.");
     return;
   }
   const candidateSlug = (activeProfile?.name || "candidate").replace(/[^a-zA-Z0-9]/g, "_");
   const cleanCompany = (selectedJob.company || "company").replace(/[^a-zA-Z0-9]/g, "_");
-  const filename = `${candidateSlug}_${cleanCompany}_${type.toUpperCase()}.pdf`;
+  const langSuffix = (isDual && currentDocLang === "english") ? "_EN" : "";
+  const filename = `${candidateSlug}_${cleanCompany}_${type.toUpperCase()}${langSuffix}.pdf`;
   const folder = type === "cover" ? "cover_letters" : "cv";
   const pdfPath = `${folder}/${filename}`;
 
@@ -2715,14 +2836,25 @@ async function openInPreview(type) {
 
 async function revealInFinder(type) {
   if (!selectedJob) return;
-  const docPath = type === "cover" ? selectedJob.cover_file : selectedJob.cv_file;
+  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  let docPath = "";
+  if (type === "cover") {
+    docPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
+      ? activeTailoredData.coverEnglishPath
+      : (selectedJob.cover_file || "");
+  } else {
+    docPath = (isDual && currentDocLang === "english" && activeTailoredData.cvEnglishPath)
+      ? activeTailoredData.cvEnglishPath
+      : (selectedJob.cv_file || "");
+  }
   if (!docPath) {
     showToast("Please tailor the application first.");
     return;
   }
   const candidateSlug = (activeProfile?.name || "candidate").replace(/[^a-zA-Z0-9]/g, "_");
   const cleanCompany = (selectedJob.company || "company").replace(/[^a-zA-Z0-9]/g, "_");
-  const filename = `${candidateSlug}_${cleanCompany}_${type.toUpperCase()}.pdf`;
+  const langSuffix = (isDual && currentDocLang === "english") ? "_EN" : "";
+  const filename = `${candidateSlug}_${cleanCompany}_${type.toUpperCase()}${langSuffix}.pdf`;
   const folder = type === "cover" ? "cover_letters" : "cv";
   const pdfPath = `${folder}/${filename}`;
 
@@ -3213,13 +3345,26 @@ function cleanCandidateHeadline(role, fallback = "Professional Candidate") {
 }
 
 function parseLatexCV(latex) {
-  const result = { summary: "", experience: [], skillsHtml: "", projects: [] };
+  const result = { summary: "", experience: [], skillsHtml: "", projects: [], language: "en" };
   if (!latex) return result;
 
   try {
-    // 1. Summary: support \section{Summary} or \section{Professional Summary}
-    const summaryMatch = latex.match(/\\section\{(?:Professional\s+)?Summary\}[\s\S]*?\\small\{([\s\S]*?)\}/i) ||
-                         latex.match(/\\section\{(?:Professional\s+)?Summary\}([\s\S]*?)(?:\\section|$)/i);
+    // Detect document language from babel, section headers, or keywords
+    if (/\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(latex) || /\\section\{Profil\}/i.test(latex) || /\\section\{Berufserfahrung\}/i.test(latex)) {
+      result.language = "de";
+    } else if (/\\usepackage\[spanish\]\{babel\}/i.test(latex) || /\\section\{Perfil/i.test(latex)) {
+      result.language = "es";
+    } else if (/\\usepackage\[french\]\{babel\}/i.test(latex) || /\\section\{Expérience/i.test(latex)) {
+      result.language = "fr";
+    } else if (/\\usepackage\[italian\]\{babel\}/i.test(latex) || /\\section\{Profilo/i.test(latex)) {
+      result.language = "it";
+    } else if (/\\usepackage\[dutch\]\{babel\}/i.test(latex) || /\\section\{Profiel/i.test(latex)) {
+      result.language = "nl";
+    }
+
+    // 1. Summary: support English, German, Spanish, French, Italian, Dutch
+    const summaryMatch = latex.match(/\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}[\s\S]*?\\small\{([\s\S]*?)\}/i) ||
+                         latex.match(/\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}([\s\S]*?)(?:\\section|$)/i);
     if (summaryMatch) {
       result.summary = summaryMatch[1]
         .replace(/\\small\{/g, "")
@@ -3230,8 +3375,8 @@ function parseLatexCV(latex) {
         .trim();
     }
 
-    // 2. Experience: support \section{Work Experience} or \section{Professional Experience}
-    const expSection = latex.match(/\\section\{(?:Professional\s+Experience|Work\s+Experience)\}[\s\S]*?\\resumeSubHeadingListStart([\s\S]*?)\\resumeSubHeadingListEnd/i);
+    // 2. Experience: support English, German, Spanish, French, Italian, Dutch
+    const expSection = latex.match(/\\section\{(?:Professional\s+Experience|Work\s+Experience|Berufserfahrung|Experiencia\s+Laboral|Expérience\s+Professionnelle|Esperienza\s+Lavorativa|Werkervaring)\}[\s\S]*?\\resumeSubHeadingListStart([\s\S]*?)\\resumeSubHeadingListEnd/i);
     if (expSection) {
       const expBlocks = expSection[1].split(/\\resumeSubheading/g).filter(b => b.trim().length > 0);
       expBlocks.forEach(block => {
@@ -3254,8 +3399,8 @@ function parseLatexCV(latex) {
       });
     }
 
-    // 3. Technical Projects: support \section{Technical Projects} or \section{Projects}
-    const projSection = latex.match(/\\section\{(?:Technical\s+)?Projects\}[\s\S]*?\\resumeSubHeadingListStart([\s\S]*?)\\resumeSubHeadingListEnd/i);
+    // 3. Technical Projects: support English, German, Spanish, French, Italian, Dutch
+    const projSection = latex.match(/\\section\{(?:(?:Technical\s+)?Projects|Projekte|Proyectos|Projets|Progetti|Projecten)\}[\s\S]*?\\resumeSubHeadingListStart([\s\S]*?)\\resumeSubHeadingListEnd/i);
     if (projSection) {
       const projBlocks = projSection[1].split(/\\resumeProjectHeading/g).filter(b => b.trim().length > 0);
       projBlocks.forEach(block => {
@@ -3283,8 +3428,9 @@ function parseLatexCV(latex) {
       });
     }
 
-    // 4. Skills: support \section{Technical Skills}
-    const skillsMatch = latex.match(/\\section\{Technical Skills\}[\s\S]*?\\begin\{itemize\}[\s\S]*?\\small\{\\item\{([\s\S]*?)\}\}\s*\\end\{itemize\}/i);
+    // 4. Skills: support English, German, Spanish, French, Italian, Dutch
+    const skillsMatch = latex.match(/\\section\{(?:Technical\s+Skills|Skills|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}[\s\S]*?\\begin\{itemize\}[\s\S]*?\\small\{\\item\{([\s\S]*?)\}\}\s*\\end\{itemize\}/i) ||
+                        latex.match(/\\section\{(?:Technical\s+Skills|Skills|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}[\s\S]*?\\begin\{itemize\}[\s\S]*?\\item\{([\s\S]*?)\}\s*\\end\{itemize\}/i);
     if (skillsMatch) {
       result.skillsHtml = skillsMatch[1]
         .replace(/\\textbf\{([^}]*)\}/g, "$1")

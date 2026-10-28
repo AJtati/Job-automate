@@ -7,12 +7,13 @@ import { createHash } from "crypto";
 import { ProfilesManager, CandidateProfile, type ProfileScheduleConfig } from "./profiles_manager";
 import { AIService } from "./ai_service";
 import { analyzeApplication } from "./application_engine";
-import { createLatexBackbone } from "./resume_engine";
+import { createLatexBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, type SupportedLanguage } from "./resume_engine";
 import { parseResumeDeterministically } from "./resume_parser";
 import { SchedulerService, computeNextRun, type ScrapeExecutionResult } from "./scheduler_service";
 import { SponsorRegistry, assessSponsorship, matchesSponsorshipMode, type SponsorshipMode } from "./sponsorship";
 import { SearchConfigManager } from "./search_config";
 import {
+  detectCandidateCountry, detectJobCountry, type CandidateCountryInfo,
   searchAdzuna, searchArbeitnow, searchCvLibrary, searchGoogleJobs,
   searchJobicy, searchReed, searchRemotive, type SourceJob, type SourceReport,
 } from "./job_sources";
@@ -230,6 +231,45 @@ function isJobRelevantToProfile(item: any, profile: CandidateProfile): boolean {
   // If a job was explicitly tagged with a different candidate's profileId, isolate it
   if (item.profileId && item.profileId !== profile.id) {
     return false;
+  }
+
+  // Geographic / Country Filter:
+  // Isolate cross-country non-remote jobs unless candidate explicitly targeted that country/city
+  const candidateCountry = detectCandidateCountry(profile.location, profile.targetLocations);
+  const targetLocationsCombined = (profile.targetLocations || []).join(" ").toLowerCase();
+  const jobCountry = detectJobCountry(item);
+
+  if (!jobCountry.isRemote) {
+    if (candidateCountry.isUk) {
+      // Candidate is in UK: reject any non-remote job located outside the UK (India, Canada, US, Germany, etc.)
+      // unless candidate explicitly included that country or city in targetLocations
+      if (!jobCountry.isUk) {
+        const countryTerm = (jobCountry.countryName || "").toLowerCase();
+        const targeted = countryTerm && countryTerm !== "unknown" && targetLocationsCombined.includes(countryTerm);
+        if (!targeted) {
+          return false;
+        }
+      }
+    } else {
+      // Candidate is outside UK (e.g. Germany, India, US):
+      // Reject jobs located in other countries unless candidate explicitly targeted that country
+      if (jobCountry.countryName !== "Unknown" && jobCountry.countryName !== candidateCountry.countryName) {
+        const countryTerm = (jobCountry.countryName || "").toLowerCase();
+        const targeted = countryTerm && targetLocationsCombined.includes(countryTerm);
+        if (!targeted) {
+          return false;
+        }
+      }
+    }
+  } else {
+    // If job is remote, check if it specifies another country's restriction
+    const jobLoc = (item.location || "").toLowerCase();
+    if (!candidateCountry.isUk && /uk\s*only|united kingdom only|must reside in the uk/i.test(jobLoc)) {
+      return false;
+    }
+    if (candidateCountry.isUk && /germany only|eu only|must reside in the eu|us only|india only/i.test(jobLoc)) {
+      return false;
+    }
   }
 
   const title = (item.title || "").toLowerCase();
@@ -527,6 +567,26 @@ async function runCliAsync(cmd: string[], timeoutMs: number = 15000): Promise<{ 
   }
 }
 
+function cleanHtmlDescription(html: string): string {
+  if (!html) return "";
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<li>/gi, "• ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 async function fetchJobDescription(job: { id?: string; url?: string; portal?: string; title?: string }): Promise<string | null> {
   const url = job.url || "";
   const portal = job.portal || "";
@@ -570,16 +630,73 @@ async function fetchJobDescription(job: { id?: string; url?: string; portal?: st
     }
   }
 
+  // 3. Reed detail (Full job description from official API or web page)
+  if (portal === "reed" || url.includes("reed.co.uk")) {
+    const reedJobIdMatch = url.match(/reed\.co\.uk\/jobs\/[^/]+\/(\d+)/i) ||
+                           url.match(/\/(\d{6,10})/i) ||
+                           (job.id ? job.id.match(/^reed_(\d+)/) : null);
+    const reedJobId = reedJobIdMatch ? reedJobIdMatch[1] : null;
+    const config = searchConfigManager.get();
+
+    // 3a. Use official Reed Job Details API if API key is configured
+    if (config.reedApiKey && reedJobId) {
+      try {
+        const auth = Buffer.from(`${config.reedApiKey}:`).toString("base64");
+        const resp = await fetch(`https://www.reed.co.uk/api/1.0/jobs/${reedJobId}`, {
+          headers: { Authorization: `Basic ${auth}` },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as any;
+          const desc = data?.jobDescription;
+          if (desc && desc.length > 50) {
+            return cleanHtmlDescription(desc);
+          }
+        }
+      } catch (e) {
+        console.warn("Reed API detail fetch error:", e);
+      }
+    }
+
+    // 3b. Fallback to Reed web page __NEXT_DATA__ extraction
+    const targetUrl = url || (reedJobId ? `https://www.reed.co.uk/jobs/${reedJobId}` : "");
+    if (targetUrl) {
+      try {
+        const resp = await fetch(targetUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+          },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (resp.ok) {
+          const html = await resp.text();
+          const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
+          if (nextDataMatch) {
+            const data = JSON.parse(nextDataMatch[1]);
+            const desc = data?.props?.pageProps?.consolidatedJobDetails?.jobDetails?.description;
+            if (desc && desc.length > 50) {
+              return cleanHtmlDescription(desc);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Reed web detail fetch error:", e);
+      }
+    }
+  }
+
   return null;
 }
 
-// Scrape and structure any job posting from a direct URL (LinkedIn, Freehire, Greenhouse, Lever, direct web)
+// Scrape and structure any job posting from a direct URL (LinkedIn, Freehire, Reed, Greenhouse, Lever, direct web)
 async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
   const seen = readSeenJobs();
   const jobId = `ext_${Date.now()}`;
   let title = "Job Vacancy";
   let company = "Hiring Company";
   let location = "Remote / United Kingdom";
+  let salary = "Competitive";
   let fullJd = "";
   let keySkills: string[] = [];
 
@@ -603,7 +720,63 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
     }
   }
 
-  // 2. Generic HTTP fetch for any web page (Greenhouse, Lever, Workable, direct website)
+  // 2. If it's a Reed URL, fetch via official Reed API or __NEXT_DATA__
+  if (targetUrl.includes("reed.co.uk")) {
+    const reedJobIdMatch = targetUrl.match(/reed\.co\.uk\/jobs\/[^/]+\/(\d+)/i) || targetUrl.match(/\/(\d{6,10})/i);
+    const reedJobId = reedJobIdMatch ? reedJobIdMatch[1] : null;
+    const config = searchConfigManager.get();
+
+    if (config.reedApiKey && reedJobId) {
+      try {
+        const auth = Buffer.from(`${config.reedApiKey}:`).toString("base64");
+        const resp = await fetch(`https://www.reed.co.uk/api/1.0/jobs/${reedJobId}`, {
+          headers: { Authorization: `Basic ${auth}` },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as any;
+          if (data.jobTitle) title = data.jobTitle;
+          if (data.employerName) company = data.employerName;
+          if (data.locationName) location = data.locationName;
+          if (data.salary) salary = data.salary;
+          if (data.jobDescription) fullJd = cleanHtmlDescription(data.jobDescription);
+        }
+      } catch (e) {
+        console.warn("Reed API scrape error:", e);
+      }
+    }
+
+    if (!fullJd) {
+      try {
+        const resp = await fetch(targetUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+          },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (resp.ok) {
+          const html = await resp.text();
+          const nextDataMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
+          if (nextDataMatch) {
+            const data = JSON.parse(nextDataMatch[1]);
+            const cjd = data?.props?.pageProps?.consolidatedJobDetails;
+            const jd = cjd?.jobDetails;
+            const ga = cjd?.gaTags;
+            if (ga?.jobTitle) title = ga.jobTitle;
+            if (ga?.jobRecruiterName) company = ga.jobRecruiterName;
+            if (ga?.jobLocation) location = ga.jobLocation;
+            if (jd?.jobSalary?.displaySalary) salary = jd.jobSalary.displaySalary;
+            if (jd?.description) fullJd = cleanHtmlDescription(jd.description);
+          }
+        }
+      } catch (e) {
+        console.warn("Reed web scrape error:", e);
+      }
+    }
+  }
+
+  // 3. Generic HTTP fetch for any web page (Greenhouse, Lever, Workable, direct website)
   if (!fullJd || fullJd.length < 50) {
     try {
       const res = await fetch(targetUrl, {
@@ -845,24 +1018,28 @@ export async function runScrapeForProfile(
     ? profile.targetRoles.slice(0, 4)
     : [profile?.headline || "Software Engineer"];
 
+  const countryInfo = detectCandidateCountry(profile?.location, options?.location ? [options.location] : profile?.targetLocations);
+  const defaultFallbackLoc = profile?.location || countryInfo.countryName;
   const targetLocations = options?.location
     ? [options.location]
     : (profile?.targetLocations && profile.targetLocations.length > 0)
     ? profile.targetLocations.slice(0, 3)
-    : [profile?.location || "United Kingdom"];
+    : [defaultFallbackLoc];
 
-  // Dynamically build search queries from active candidate's target roles and locations
+  const primaryLoc = targetLocations[0] || defaultFallbackLoc;
+
+  // Dynamically build search queries from active candidate's target roles and actual locations
   const liQueries: Array<{ q: string; l: string }> = [];
   for (const role of targetRoles) {
-    liQueries.push({ q: role, l: "United Kingdom" });
-    for (const loc of targetLocations) {
-      if (loc.toLowerCase() !== "united kingdom" && loc.toLowerCase() !== "remote") {
+    liQueries.push({ q: role, l: primaryLoc });
+    for (const loc of targetLocations.slice(1)) {
+      if (loc.toLowerCase() !== primaryLoc.toLowerCase() && loc.toLowerCase() !== "remote") {
         liQueries.push({ q: role, l: loc });
       }
     }
   }
   if (targetRoles.length > 0) {
-    liQueries.push({ q: targetRoles[0], l: "Remote, United Kingdom" });
+    liQueries.push({ q: targetRoles[0], l: `Remote, ${countryInfo.countryName}` });
   }
 
   let addedCount = 0;
@@ -930,7 +1107,7 @@ export async function runScrapeForProfile(
     if (existsSync(freehireCliPath)) {
       const freehireArgsList: Array<string[]> = [];
       for (const role of targetRoles.slice(0, 3)) {
-        freehireArgsList.push(["search", "-q", role, "--country", "GB", "--jobage", "7", "--limit", "15"]);
+        freehireArgsList.push(["search", "-q", role, "--country", countryInfo.freehireCode, "--jobage", "7", "--limit", "15"]);
       }
 
       const candidateSkillsFaceted = activeSkills
@@ -939,7 +1116,7 @@ export async function runScrapeForProfile(
         .slice(0, 4);
 
       if (candidateSkillsFaceted.length > 0) {
-        freehireArgsList.push(["search", "--skill", candidateSkillsFaceted.join(","), "--country", "GB", "--jobage", "7", "--limit", "15"]);
+        freehireArgsList.push(["search", "--skill", candidateSkillsFaceted.join(","), "--country", countryInfo.freehireCode, "--jobage", "7", "--limit", "15"]);
       }
 
       for (const args of freehireArgsList.slice(0, 4)) {
@@ -958,7 +1135,7 @@ export async function runScrapeForProfile(
                 const compName = job.company || job.company_name || "Tech Company";
                 countResult(ingestDiscoveredJob(seen, {
                   id: `fh_${cleanSlug}`, title: job.title, company: compName, url: job.url,
-                  location: job.location || (job.work_mode === "remote" ? "Remote (UK)" : "United Kingdom"),
+                  location: job.location || (job.work_mode === "remote" ? `Remote (${countryInfo.countryName})` : countryInfo.countryName),
                   postedDate: job.date || job.posted_at?.split("T")[0], description: job.description || "",
                   summary: job.summary || "", skills: job.skills || [],
                   salary: job.salary_min ? `£${job.salary_min.toLocaleString()} - £${(job.salary_max || job.salary_min).toLocaleString()}` : undefined,
@@ -976,7 +1153,7 @@ export async function runScrapeForProfile(
     reports.push(withCounts({ source: "Direct ATS", status: successfulQueries ? "ok" : "failed", found, reason: successfulQueries ? undefined : (lastError || "Search returned no readable response"), guidance: successfulQueries ? undefined : "Reinstall the latest app package, then retry. If the files are present, check the internet connection." }, before));
   } else reports.push({ source: "Direct ATS", status: "skipped", found: 0, reason: "Disabled" });
 
-  const apiLocation = targetLocations.find(location => location.toLowerCase() !== "remote") || "United Kingdom";
+  const apiLocation = targetLocations.find(location => location.toLowerCase() !== "remote") || primaryLoc;
   const apiSources: Array<{ enabled: boolean; name: string; keyReady: boolean; search: (query: string, location: string) => Promise<SourceJob[]> }> = [
     { enabled: config.sources.cvLibrary, name: "CV-Library", keyReady: Boolean(config.cvLibraryApiKey), search: (q, l) => searchCvLibrary(config, q, l) },
     { enabled: config.sources.reed, name: "Reed", keyReady: Boolean(config.reedApiKey), search: (q, l) => searchReed(config, q, l) },
@@ -1705,8 +1882,19 @@ serve({
         const cleanCompany = (company || "Company").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         const cleanRole = (role || "Role").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         
-        const cvPath = `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
-        const coverPath = `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
+        const detectedLang = (activeProfile.preferredLanguage as SupportedLanguage) ||
+                             detectLanguageDeterministically(activeProfile.sourceResume?.text) ||
+                             detectLanguageDeterministically(fullJd) ||
+                             "en";
+        const isNonEnglish = detectedLang !== "en";
+        const langPack = LANGUAGE_PACKS[detectedLang] || LANGUAGE_PACKS.en;
+
+        const cvPath = isNonEnglish
+          ? `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}_${detectedLang}.tex`
+          : `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
+        const coverPath = isNonEnglish
+          ? `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}_${detectedLang}.tex`
+          : `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
 
         const cvFullPath = join(ROOT_DIR, cvPath);
         const coverFullPath = join(ROOT_DIR, coverPath);
@@ -1714,21 +1902,73 @@ serve({
         let cvContent = "";
         let coverContent = "";
 
-        // Regenerate if force requested, file doesn't exist, or file is a legacy basic stub (< 100 lines)
-        const isCvStale = !existsSync(cvFullPath) || force || (existsSync(cvFullPath) && readFileSync(cvFullPath, "utf-8").split("\n").length < 100);
+        // Regenerate if force requested, file doesn't exist, or file is a legacy basic stub / wrong language
+        const isCvStale = !existsSync(cvFullPath) || force || (() => {
+          const content = readFileSync(cvFullPath, "utf-8");
+          if (content.split("\n").length < 100) return true;
+          if (detectedLang === "de" && !/\\section\{Profil\}/i.test(content)) return true;
+          return false;
+        })();
         if (isCvStale) {
-          cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd });
+          cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang);
           writeFileSync(cvFullPath, cvContent);
         } else {
           cvContent = readFileSync(cvFullPath, "utf-8");
         }
 
-        const isCoverStale = !existsSync(coverFullPath) || force || (existsSync(coverFullPath) && readFileSync(coverFullPath, "utf-8").split("\n").length < 30);
+        const isCoverStale = !existsSync(coverFullPath) || force || (() => {
+          const content = readFileSync(coverFullPath, "utf-8");
+          if (content.split("\n").length < 30) return true;
+          if (detectedLang === "de" && /Dear Hiring Manager/i.test(content)) return true;
+          return false;
+        })();
         if (isCoverStale) {
-          coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd });
+          coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang);
           writeFileSync(coverFullPath, coverContent);
         } else {
           coverContent = readFileSync(coverFullPath, "utf-8");
+        }
+
+        // Dual-Language Support: If the resume/job is non-English, also generate/provide the English version!
+        let cvEnglishPath = "";
+        let cvEnglishContent = "";
+        let coverEnglishPath = "";
+        let coverEnglishContent = "";
+
+        if (isNonEnglish) {
+          cvEnglishPath = `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}_en.tex`;
+          coverEnglishPath = `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}_en.tex`;
+          const cvEnFull = join(ROOT_DIR, cvEnglishPath);
+          const coverEnFull = join(ROOT_DIR, coverEnglishPath);
+
+          const isCvEnStale = !existsSync(cvEnFull) || force || (() => {
+            const content = readFileSync(cvEnFull, "utf-8");
+            if (content.split("\n").length < 100) return true;
+            if (/\\resumeItem\{(?:Automatisierung|Konzeption|Entwicklung|Implementierung|Zusammenarbeit|Vorbereitung|Mitarbeit|Durchf\u00fchrung|Anwendung|Master Thesis)/i.test(content)) return true;
+            if (/\\resumeSubheading\{[^}]*\}\{[^}]*\}\{[^}]*(?:Ingenieurin|Mitarbeiterin|Praktikant|Wissenschaftliche)/i.test(content)) return true;
+            return false;
+          })();
+
+          if (isCvEnStale) {
+            cvEnglishContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, "en");
+            writeFileSync(cvEnFull, cvEnglishContent);
+          } else {
+            cvEnglishContent = readFileSync(cvEnFull, "utf-8");
+          }
+
+          const isCoverEnStale = !existsSync(coverEnFull) || force || (() => {
+            const content = readFileSync(coverEnFull, "utf-8");
+            if (content.split("\n").length < 30) return true;
+            if (/Sehr geehrte|Mit freundlichen|hiermit bewerbe/i.test(content)) return true;
+            return false;
+          })();
+
+          if (isCoverEnStale) {
+            coverEnglishContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, "en");
+            writeFileSync(coverEnFull, coverEnglishContent);
+          } else {
+            coverEnglishContent = readFileSync(coverEnFull, "utf-8");
+          }
         }
 
         // Rewriting does not create new evidence, so it must not inflate the ATS score.
@@ -1761,11 +2001,20 @@ serve({
           coverFile: coverPath,
           cvContent,
           coverContent,
+          language: detectedLang,
+          languageName: langPack.name,
+          hasDualLanguage: isNonEnglish,
+          cvEnglishPath,
+          cvEnglishContent,
+          coverEnglishPath,
+          coverEnglishContent,
           candidate: activeProfile.name,
           analysis: tailoredAnalysis,
           fit_score: tailoredAnalysis.overallScore,
           status: "drafted",
-          message: `Tailored CV & Cover Letter drafted for ${company} (${tailoredAnalysis.overallScore}% ATS Match)`
+          message: isNonEnglish
+            ? `Tailored CV & Cover Letter drafted in ${langPack.name} (plus English edition) for ${company}`
+            : `Tailored CV & Cover Letter drafted for ${company} (${tailoredAnalysis.overallScore}% ATS Match)`
         }), {
           headers: { "Content-Type": "application/json" }
         });
@@ -1850,7 +2099,13 @@ serve({
           return new Response(JSON.stringify({ success: false, error: "Job ID not found" }), { status: 404 });
         }
 
-        if (stored.full_jd && stored.full_jd.length > 200) {
+        const isTruncatedSnippet = !stored.full_jd ||
+          stored.full_jd.length < 500 ||
+          stored.full_jd.endsWith("...") ||
+          stored.full_jd.endsWith("…") ||
+          (stored.portal === "reed" && stored.full_jd.length < 800);
+
+        if (stored.full_jd && stored.full_jd.length >= 500 && !isTruncatedSnippet && !body.force) {
           const activeProfile = profilesManager.getActiveProfile();
           const analysis = analyzeApplication(activeProfile, {
             company: stored.company || "",

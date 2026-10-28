@@ -31,4 +31,19 @@ describe("job source normalization", () => {
     expect(adzuna.salary).toContain("80,000");
     expect(arbeitnow.location).toContain("Remote");
   });
+
+  test("detectAdzunaCountry routes to the correct international Adzuna endpoint", () => {
+    const { detectAdzunaCountry } = require("../job_sources");
+    expect(detectAdzunaCountry("Berlin, Germany")).toBe("de");
+    expect(detectAdzunaCountry("Munich")).toBe("de");
+    expect(detectAdzunaCountry("Bangalore, India")).toBe("in");
+    expect(detectAdzunaCountry("Hyderabad")).toBe("in");
+    expect(detectAdzunaCountry("New York, USA")).toBe("us");
+    expect(detectAdzunaCountry("Austin, Texas")).toBe("us");
+    expect(detectAdzunaCountry("Paris, France")).toBe("fr");
+    expect(detectAdzunaCountry("Toronto, Canada")).toBe("ca");
+    expect(detectAdzunaCountry("Sydney, Australia")).toBe("au");
+    expect(detectAdzunaCountry("Amsterdam, Netherlands")).toBe("nl");
+    expect(detectAdzunaCountry("London, United Kingdom")).toBe("gb");
+  });
 });
