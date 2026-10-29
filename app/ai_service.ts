@@ -16,7 +16,7 @@ export interface DetectedCountryAndLanguage extends CandidateCountryInfo {
 }
 
 export interface AIConfig {
-  provider: "ollama" | "anthropic" | "openai" | "gemini" | "builtin";
+  provider: "ollama" | "anthropic" | "openai" | "gemini" | "openrouter" | "nvidia" | "builtin";
   ollamaHost: string;
   ollamaModel: string;
   anthropicApiKey?: string;
@@ -24,6 +24,12 @@ export interface AIConfig {
   openaiApiKey?: string;
   openaiModel?: string;
   geminiApiKey?: string;
+  geminiModel?: string;
+  openrouterApiKey?: string;
+  openrouterModel?: string;
+  openrouterBaseUrl?: string;
+  nvidiaApiKey?: string;
+  nvidiaModel?: string;
 }
 
 export interface ScenarioContext {
@@ -80,7 +86,11 @@ export class AIService {
       ollamaHost: "http://localhost:11434",
       ollamaModel: "qwen2.5-coder:3b",
       anthropicModel: "claude-haiku-4-5-20251001",
-      openaiModel: "gpt-4o"
+      openaiModel: "gpt-4o-mini",
+      geminiModel: "gemini-2.0-flash",
+      openrouterModel: "google/gemini-2.0-flash-001",
+      openrouterBaseUrl: "https://openrouter.ai/api/v1",
+      nvidiaModel: "meta/llama-3.3-70b-instruct"
     };
 
     let cfg: AIConfig = defaultConfig;
@@ -110,6 +120,14 @@ export class AIService {
             cfg.geminiApiKey = seed.geminiApiKey;
             updated = true;
           }
+          if (!cfg.openrouterApiKey && seed.openrouterApiKey) {
+            cfg.openrouterApiKey = seed.openrouterApiKey;
+            updated = true;
+          }
+          if (!cfg.nvidiaApiKey && seed.nvidiaApiKey) {
+            cfg.nvidiaApiKey = seed.nvidiaApiKey;
+            updated = true;
+          }
           if (updated) {
             mkdirSync(dirname(CONFIG_FILE), { recursive: true });
             writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf-8");
@@ -117,6 +135,13 @@ export class AIService {
         } catch {}
       }
     }
+
+    // Check environment variables if keys not yet set
+    if (!cfg.anthropicApiKey && process.env.ANTHROPIC_API_KEY) cfg.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    if (!cfg.openaiApiKey && process.env.OPENAI_API_KEY) cfg.openaiApiKey = process.env.OPENAI_API_KEY;
+    if (!cfg.geminiApiKey && (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)) cfg.geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!cfg.openrouterApiKey && process.env.OPENROUTER_API_KEY) cfg.openrouterApiKey = process.env.OPENROUTER_API_KEY;
+    if (!cfg.nvidiaApiKey && (process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY)) cfg.nvidiaApiKey = process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY;
 
     return cfg;
   }
@@ -132,6 +157,12 @@ export class AIService {
     }
     if (clean.geminiApiKey !== undefined && !clean.geminiApiKey.trim()) {
       delete clean.geminiApiKey;
+    }
+    if (clean.openrouterApiKey !== undefined && !clean.openrouterApiKey.trim()) {
+      delete clean.openrouterApiKey;
+    }
+    if (clean.nvidiaApiKey !== undefined && !clean.nvidiaApiKey.trim()) {
+      delete clean.nvidiaApiKey;
     }
 
     this.config = { ...this.config, ...clean };
@@ -157,12 +188,20 @@ export class AIService {
     return this.config;
   }
 
-  public getPublicConfig(): AIConfig & { hasAnthropicKey: boolean; hasOpenAiKey: boolean; hasGeminiKey: boolean } {
+  public getPublicConfig(): AIConfig & {
+    hasAnthropicKey: boolean;
+    hasOpenAiKey: boolean;
+    hasGeminiKey: boolean;
+    hasOpenRouterKey: boolean;
+    hasNvidiaKey: boolean;
+  } {
     return {
       ...this.config,
       hasAnthropicKey: Boolean(this.config.anthropicApiKey),
       hasOpenAiKey: Boolean(this.config.openaiApiKey),
-      hasGeminiKey: Boolean(this.config.geminiApiKey)
+      hasGeminiKey: Boolean(this.config.geminiApiKey),
+      hasOpenRouterKey: Boolean(this.config.openrouterApiKey),
+      hasNvidiaKey: Boolean(this.config.nvidiaApiKey)
     };
   }
 
@@ -177,10 +216,20 @@ export class AIService {
     }
   }
 
-  // Live dynamic model discovery from Cloud Providers (OpenAI & Anthropic)
-  public async fetchCloudModels(provider: "openai" | "anthropic", apiKey?: string): Promise<string[]> {
-    const key = apiKey || (provider === "openai" ? this.config.openaiApiKey : this.config.anthropicApiKey);
-    if (!key) return [];
+  // Live dynamic model discovery from Cloud Providers
+  public async fetchCloudModels(
+    provider: "openai" | "anthropic" | "gemini" | "openrouter" | "nvidia",
+    apiKey?: string,
+    baseUrl?: string
+  ): Promise<string[]> {
+    const key = apiKey || (
+      provider === "openai" ? this.config.openaiApiKey :
+      provider === "anthropic" ? this.config.anthropicApiKey :
+      provider === "gemini" ? this.config.geminiApiKey :
+      provider === "openrouter" ? this.config.openrouterApiKey :
+      this.config.nvidiaApiKey
+    );
+    if (!key && provider !== "nvidia") return [];
 
     if (provider === "openai") {
       try {
@@ -192,20 +241,20 @@ export class AIService {
           const data: any = await res.json();
           const list = (data.data || [])
             .map((m: any) => m.id)
-            .filter((id: string) => id.includes("gpt-") || id.includes("o1-") || id.includes("chatgpt"));
+            .filter((id: string) => id.includes("gpt-") || id.includes("o1-") || id.includes("o3-") || id.includes("chatgpt"));
           return list.sort();
         }
       } catch (err) {
         console.warn("Error fetching OpenAI live models:", err);
       }
-      return ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "o1-mini", "o1-preview"];
+      return ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "o3-mini", "o1-mini"];
     }
 
     if (provider === "anthropic") {
       try {
         const res = await fetch("https://api.anthropic.com/v1/models", {
           headers: {
-            "x-api-key": key,
+            "x-api-key": key || "",
             "anthropic-version": "2023-06-01"
           },
           signal: AbortSignal.timeout(4000)
@@ -230,11 +279,90 @@ export class AIService {
       ];
     }
 
+    if (provider === "gemini") {
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`, {
+          signal: AbortSignal.timeout(6000),
+          headers: { "x-goog-api-key": key || "" }
+        });
+        if (res.ok) {
+          const data: any = await res.json();
+          const list = (data.models || [])
+            .filter((m: any) => {
+              const methods = Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+              return methods.includes("generateContent") || methods.includes("streamGenerateContent");
+            })
+            .map((m: any) => (m.name || "").replace(/^models\//, ""))
+            .filter(Boolean);
+          if (list.length > 0) return list.sort();
+        }
+      } catch (err) {
+        console.warn("Error fetching Gemini live models:", err);
+      }
+      return ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+    }
+
+    if (provider === "openrouter") {
+      try {
+        const rootUrl = (baseUrl || this.config.openrouterBaseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+        const res = await fetch(`${rootUrl}/models`, {
+          headers: {
+            "Authorization": `Bearer ${key}`,
+            "HTTP-Referer": "https://aijobsearch.app",
+            "X-Title": "AI Job Search Studio"
+          },
+          signal: AbortSignal.timeout(6000)
+        });
+        if (res.ok) {
+          const data: any = await res.json();
+          const list = (data.data || []).map((m: any) => m.id).filter(Boolean);
+          if (list.length > 0) return list.sort();
+        }
+      } catch (err) {
+        console.warn("Error fetching OpenRouter live models:", err);
+      }
+      return [
+        "google/gemini-2.0-flash-001",
+        "anthropic/claude-3.5-haiku",
+        "openai/gpt-4o-mini",
+        "meta-llama/llama-3.3-70b-instruct",
+        "deepseek/deepseek-chat",
+        "openrouter/free"
+      ];
+    }
+
+    if (provider === "nvidia") {
+      try {
+        const res = await fetch("https://integrate.api.nvidia.com/v1/models", {
+          headers: key ? { "Authorization": `Bearer ${key}` } : {},
+          signal: AbortSignal.timeout(6000)
+        });
+        if (res.ok) {
+          const data: any = await res.json();
+          const list = (data.data || []).map((m: any) => m.id).filter(Boolean);
+          if (list.length > 0) return list.sort();
+        }
+      } catch (err) {
+        console.warn("Error fetching NVIDIA live models:", err);
+      }
+      return [
+        "meta/llama-3.3-70b-instruct",
+        "mistralai/mixtral-8x22b-instruct-v0.1",
+        "nvidia/nemotron-4-340b-instruct",
+        "deepseek-ai/deepseek-r1",
+        "openai/gpt-oss-120b"
+      ];
+    }
+
     return [];
   }
 
   // Automatic Best & Cheap Model Recommendation
-  public async getRecommendedModel(provider: "ollama" | "anthropic" | "openai" | "builtin", apiKey?: string): Promise<{
+  public async getRecommendedModel(
+    provider: "ollama" | "anthropic" | "openai" | "gemini" | "openrouter" | "nvidia" | "builtin",
+    apiKey?: string,
+    baseUrl?: string
+  ): Promise<{
     recommendedModel: string;
     tier: "cheap_and_best" | "flagship";
     reason: string;
@@ -265,7 +393,7 @@ export class AIService {
       return {
         recommendedModel: "llama3.2:3b",
         tier: "cheap_and_best",
-        reason: "Recommended lightweight local model (2.0GB). Run \`ollama pull llama3.2\` to download."
+        reason: "Recommended lightweight local model (2.0GB). Run `ollama pull llama3.2` to download."
       };
     }
 
@@ -297,6 +425,44 @@ export class AIService {
       };
     }
 
+    if (provider === "gemini") {
+      const live = await this.fetchCloudModels("gemini", apiKey);
+      const preferred = live.find(m => m.includes("2.0-flash") || m.includes("2.5-flash"))
+        || live.find(m => m.includes("1.5-flash"))
+        || "gemini-2.0-flash";
+      return {
+        recommendedModel: preferred,
+        tier: "cheap_and_best",
+        reason: "Gemini 2.0 Flash is Google's next-gen high-speed model with sub-second latency and strong multimodal reasoning."
+      };
+    }
+
+    if (provider === "openrouter") {
+      const live = await this.fetchCloudModels("openrouter", apiKey, baseUrl);
+      const preferred = live.find(m => m.includes("gemini-2.0-flash") || m.includes("gemini-2.5-flash"))
+        || live.find(m => m.includes("3.5-haiku") || m.includes("haiku"))
+        || live.find(m => m.includes("gpt-4o-mini"))
+        || "google/gemini-2.0-flash-001";
+      return {
+        recommendedModel: preferred,
+        tier: "cheap_and_best",
+        reason: "Gemini 2.0 Flash via OpenRouter delivers ultra-fast responses (~$0.10/M tokens) with multi-cloud redundancy."
+      };
+    }
+
+    if (provider === "nvidia") {
+      const live = await this.fetchCloudModels("nvidia", apiKey);
+      const preferred = live.find(m => m.includes("llama-3.3-70b"))
+        || live.find(m => m.includes("nemotron-70b"))
+        || live.find(m => m.includes("nemotron-51b") || m.includes("nemotron"))
+        || "meta/llama-3.3-70b-instruct";
+      return {
+        recommendedModel: preferred,
+        tier: "cheap_and_best",
+        reason: "Meta Llama and Nemotron on NVIDIA NIM enterprise acceleration deliver frontier intelligence with zero GPU setup."
+      };
+    }
+
     return {
       recommendedModel: "builtin",
       tier: "cheap_and_best",
@@ -306,9 +472,10 @@ export class AIService {
 
   // Live query for verified available models on the provider account
   public async getAvailableModelsForProvider(
-    provider: "ollama" | "anthropic" | "openai" | "builtin",
+    provider: "ollama" | "anthropic" | "openai" | "gemini" | "openrouter" | "nvidia" | "builtin",
     apiKey?: string,
-    host?: string
+    host?: string,
+    baseUrl?: string
   ): Promise<ProviderModelsResult> {
     if (provider === "builtin") {
       return {
@@ -377,8 +544,8 @@ export class AIService {
     }
 
     if (provider === "anthropic") {
-      const key = (apiKey && apiKey.trim()) || this.config.anthropicApiKey;
-      if (!key || !key.trim()) {
+      const key = apiKey !== undefined ? apiKey.trim() : this.config.anthropicApiKey;
+      if (!key) {
         return {
           success: false,
           provider: "anthropic",
@@ -466,8 +633,8 @@ export class AIService {
     }
 
     if (provider === "openai") {
-      const key = (apiKey && apiKey.trim()) || this.config.openaiApiKey;
-      if (!key || !key.trim()) {
+      const key = apiKey !== undefined ? apiKey.trim() : this.config.openaiApiKey;
+      if (!key) {
         return {
           success: false,
           provider: "openai",
@@ -575,6 +742,343 @@ export class AIService {
       }
     }
 
+    if (provider === "gemini") {
+      const key = apiKey !== undefined ? apiKey.trim() : this.config.geminiApiKey;
+      if (!key) {
+        return {
+          success: false,
+          provider: "gemini",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: "Google Gemini API key is not entered yet. Enter your API key above to load available models."
+        };
+      }
+
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key.trim()}`, {
+          headers: { "x-goog-api-key": key.trim() },
+          signal: AbortSignal.timeout(8000)
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          console.warn("Gemini models fetch error:", res.status, errBody);
+          return {
+            success: false,
+            provider: "gemini",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: (res.status === 400 || res.status === 401 || res.status === 403)
+              ? "Authentication failed: Invalid Google Gemini API key."
+              : `Gemini API returned error ${res.status}: ${errBody.slice(0, 100)}`
+          };
+        }
+
+        const data: any = await res.json();
+        const rawList = (data.models || [])
+          .filter((m: any) => {
+            const methods = Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+            return methods.includes("generateContent") || methods.includes("streamGenerateContent");
+          })
+          .map((m: any) => ({
+            id: (m.name || "").replace(/^models\//, ""),
+            displayName: m.displayName || m.name
+          }))
+          .filter((m: any) => Boolean(m.id));
+
+        if (rawList.length === 0) {
+          return {
+            success: false,
+            provider: "gemini",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: "No compatible generation models found for this Gemini API key."
+          };
+        }
+
+        const recModel = rawList.find((m: any) => m.id.includes("2.0-flash") || m.id.includes("2.5-flash"))?.id
+          || rawList.find((m: any) => m.id.includes("1.5-flash"))?.id
+          || rawList[0].id;
+
+        const models: ModelOption[] = rawList.map((m: any) => {
+          const isRec = m.id === recModel;
+          let badge = "";
+          let tier: "cheap_and_best" | "flagship" | "standard" = "standard";
+          if (isRec) {
+            badge = "✨ Recommended · Fast & Lowest Cost";
+            tier = "cheap_and_best";
+          } else if (m.id.includes("pro")) {
+            badge = "Flagship Reasoning";
+            tier = "flagship";
+          } else if (m.id.includes("flash")) {
+            badge = "High Speed";
+            tier = "cheap_and_best";
+          }
+          return {
+            id: m.id,
+            name: `${m.displayName || m.id}${badge ? " — " + badge : ""}`,
+            recommended: isRec,
+            tier,
+            badge,
+            reason: isRec ? "Sub-second latency and great precision at minimal token cost." : undefined
+          };
+        });
+
+        return {
+          success: true,
+          provider: "gemini",
+          models,
+          recommendedModel: recModel,
+          reason: `Verified ${models.length} active models on Google AI. '${recModel}' is recommended.`
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          provider: "gemini",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: `Network error connecting to Google Gemini: ${err.message}`
+        };
+      }
+    }
+
+    if (provider === "openrouter") {
+      const key = apiKey !== undefined ? apiKey.trim() : this.config.openrouterApiKey;
+      if (!key) {
+        return {
+          success: false,
+          provider: "openrouter",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: "OpenRouter API key is not entered yet. Enter your API key above to load available models."
+        };
+      }
+
+      const rootUrl = (baseUrl || this.config.openrouterBaseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+      try {
+        const res = await fetch(`${rootUrl}/models`, {
+          headers: {
+            "Authorization": `Bearer ${key.trim()}`,
+            "HTTP-Referer": "https://aijobsearch.app",
+            "X-Title": "AI Job Search Studio"
+          },
+          signal: AbortSignal.timeout(8000)
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          console.warn("OpenRouter models fetch error:", res.status, errBody);
+          return {
+            success: false,
+            provider: "openrouter",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: res.status === 401
+              ? "Authentication failed: Invalid OpenRouter API key."
+              : `OpenRouter API returned error ${res.status}: ${errBody.slice(0, 100)}`
+          };
+        }
+
+        const data: any = await res.json();
+        const rawList: any[] = data.data || [];
+        if (rawList.length === 0) {
+          return {
+            success: false,
+            provider: "openrouter",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: "No models returned by OpenRouter API."
+          };
+        }
+
+        // Highlight top curated models
+        const priorityModels = [
+          "google/gemini-2.0-flash-001",
+          "google/gemini-2.5-flash",
+          "anthropic/claude-3.5-haiku",
+          "anthropic/claude-3.7-sonnet",
+          "openai/gpt-4o-mini",
+          "meta-llama/llama-3.3-70b-instruct",
+          "deepseek/deepseek-chat",
+          "deepseek/deepseek-r1",
+          "openrouter/free"
+        ];
+
+        // Sort priority models first, then alphabetical
+        rawList.sort((a: any, b: any) => {
+          const idxA = priorityModels.findIndex(p => a.id === p || a.id.startsWith(p));
+          const idxB = priorityModels.findIndex(p => b.id === p || b.id.startsWith(p));
+          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+          if (idxA !== -1) return -1;
+          if (idxB !== -1) return 1;
+          return (a.id || "").localeCompare(b.id || "");
+        });
+
+        const recModel = rawList.find((m: any) => m.id === "google/gemini-2.0-flash-001" || m.id.includes("gemini-2.0-flash"))?.id
+          || rawList.find((m: any) => m.id.includes("3.5-haiku"))?.id
+          || rawList.find((m: any) => m.id.includes("gpt-4o-mini"))?.id
+          || rawList[0]?.id;
+
+        const models: ModelOption[] = rawList.map((m: any) => {
+          const isRec = m.id === recModel;
+          let badge = "";
+          let tier: "cheap_and_best" | "flagship" | "standard" = "standard";
+          if (isRec) {
+            badge = "✨ Recommended · Fast & Lowest Cost";
+            tier = "cheap_and_best";
+          } else if (m.id.includes("sonnet") || m.id.includes("gpt-4o") || m.id.includes("opus")) {
+            badge = "Flagship Quality";
+            tier = "flagship";
+          } else if (m.id.includes("free") || m.id.includes("haiku") || m.id.includes("mini") || m.id.includes("flash")) {
+            badge = "Economical";
+            tier = "cheap_and_best";
+          }
+          return {
+            id: m.id,
+            name: `${m.name || m.id}${badge ? " — " + badge : ""}`,
+            recommended: isRec,
+            tier,
+            badge,
+            reason: isRec ? "Ultra-fast response with high accuracy and minimal token pricing." : undefined
+          };
+        });
+
+        return {
+          success: true,
+          provider: "openrouter",
+          models,
+          recommendedModel: recModel,
+          reason: `Verified ${models.length} active models via OpenRouter. '${recModel}' is recommended.`
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          provider: "openrouter",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: `Network error connecting to OpenRouter: ${err.message}`
+        };
+      }
+    }
+
+    if (provider === "nvidia") {
+      const key = apiKey !== undefined ? apiKey.trim() : this.config.nvidiaApiKey;
+      if (!key) {
+        return {
+          success: false,
+          provider: "nvidia",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: "NVIDIA Build API key is not entered yet. Enter your API key above to load available models."
+        };
+      }
+
+      try {
+        const res = await fetch("https://integrate.api.nvidia.com/v1/models", {
+          headers: { "Authorization": `Bearer ${key.trim()}` },
+          signal: AbortSignal.timeout(8000)
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          console.warn("NVIDIA models fetch error:", res.status, errBody);
+          return {
+            success: false,
+            provider: "nvidia",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: res.status === 401
+              ? "Authentication failed: Invalid NVIDIA Build API key."
+              : `NVIDIA API returned error ${res.status}: ${errBody.slice(0, 100)}`
+          };
+        }
+
+        const data: any = await res.json();
+        const rawList: any[] = data.data || [];
+        if (rawList.length === 0) {
+          return {
+            success: false,
+            provider: "nvidia",
+            models: [],
+            recommendedModel: "",
+            reason: "",
+            error: "No models returned by NVIDIA NIM API."
+          };
+        }
+
+        const priorityModels = [
+          "meta/llama-3.3-70b-instruct",
+          "mistralai/mixtral-8x22b-instruct-v0.1",
+          "nvidia/nemotron-4-340b-instruct",
+          "deepseek-ai/deepseek-r1",
+          "openai/gpt-oss-120b"
+        ];
+
+        rawList.sort((a: any, b: any) => {
+          const idxA = priorityModels.findIndex(p => a.id === p || a.id.startsWith(p));
+          const idxB = priorityModels.findIndex(p => b.id === p || b.id.startsWith(p));
+          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+          if (idxA !== -1) return -1;
+          if (idxB !== -1) return 1;
+          return (a.id || "").localeCompare(b.id || "");
+        });
+
+        const recModel = rawList.find((m: any) => m.id === "meta/llama-3.3-70b-instruct" || m.id.includes("llama-3.3-70b"))?.id
+          || rawList[0]?.id;
+
+        const models: ModelOption[] = rawList.map((m: any) => {
+          const isRec = m.id === recModel;
+          let badge = "";
+          let tier: "cheap_and_best" | "flagship" | "standard" = "standard";
+          if (isRec) {
+            badge = "✨ Recommended · NIM Accelerated";
+            tier = "cheap_and_best";
+          } else if (m.id.includes("340b") || m.id.includes("r1")) {
+            badge = "Deep Reasoning";
+            tier = "flagship";
+          } else {
+            badge = "NIM Optimized";
+            tier = "standard";
+          }
+          return {
+            id: m.id,
+            name: `${m.id}${badge ? " — " + badge : ""}`,
+            recommended: isRec,
+            tier,
+            badge,
+            reason: isRec ? "Enterprise Llama 3.3 70B inference accelerated by NVIDIA NIM hardware." : undefined
+          };
+        });
+
+        return {
+          success: true,
+          provider: "nvidia",
+          models,
+          recommendedModel: recModel,
+          reason: `Verified ${models.length} active models on NVIDIA Build. '${recModel}' is recommended.`
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          provider: "nvidia",
+          models: [],
+          recommendedModel: "",
+          reason: "",
+          error: `Network error connecting to NVIDIA Build: ${err.message}`
+        };
+      }
+    }
+
     return {
       success: false,
       provider,
@@ -604,12 +1108,27 @@ export class AIService {
 
     if (this.config.provider === "anthropic") {
       if (!this.config.anthropicApiKey) return { status: "offline", message: "Anthropic API Key not configured" };
-      return { status: "connected", message: "Anthropic Claude API ready" };
+      return { status: "connected", message: `Anthropic Claude API ready (${this.config.anthropicModel || "claude-haiku-4-5-20251001"})` };
     }
 
     if (this.config.provider === "openai") {
       if (!this.config.openaiApiKey) return { status: "offline", message: "OpenAI API Key not configured" };
-      return { status: "connected", message: "OpenAI API ready" };
+      return { status: "connected", message: `OpenAI API ready (${this.config.openaiModel || "gpt-4o-mini"})` };
+    }
+
+    if (this.config.provider === "gemini") {
+      if (!this.config.geminiApiKey) return { status: "offline", message: "Google Gemini API Key not configured" };
+      return { status: "connected", message: `Google Gemini API ready (${this.config.geminiModel || "gemini-2.0-flash"})` };
+    }
+
+    if (this.config.provider === "openrouter") {
+      if (!this.config.openrouterApiKey) return { status: "offline", message: "OpenRouter API Key not configured" };
+      return { status: "connected", message: `OpenRouter API ready (${this.config.openrouterModel || "google/gemini-2.0-flash-001"})` };
+    }
+
+    if (this.config.provider === "nvidia") {
+      if (!this.config.nvidiaApiKey) return { status: "offline", message: "NVIDIA Build API Key not configured" };
+      return { status: "connected", message: `NVIDIA NIM API ready (${this.config.nvidiaModel || "meta/llama-3.3-70b-instruct"})` };
     }
 
     return { status: "connected", message: "Ready" };
@@ -730,6 +1249,158 @@ export class AIService {
           break;
         } catch (e) {
           console.warn(`OpenAI call failed with ${modelToTry}:`, e);
+        }
+      }
+    }
+
+    if (this.config.provider === "gemini" && this.config.geminiApiKey) {
+      const candidates = [
+        this.config.geminiModel,
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-2.5-flash"
+      ].filter(Boolean) as string[];
+      const uniqueModels = [...new Set(candidates)];
+
+      for (const modelToTry of uniqueModels) {
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelToTry}:generateContent?key=${this.config.geminiApiKey.trim()}`;
+          const res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": this.config.geminiApiKey.trim()
+            },
+            body: JSON.stringify({
+              ...(systemPrompt ? { system_instruction: { parts: [{ text: systemPrompt }] } } : {}),
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 4096
+              }
+            }),
+            signal: AbortSignal.timeout(30000)
+          });
+          if (res.ok) {
+            const data: any = await res.json();
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+            if (text) {
+              if (modelToTry !== this.config.geminiModel) {
+                this.config.geminiModel = modelToTry;
+                this.saveConfig({ geminiModel: modelToTry });
+              }
+              return text;
+            }
+          }
+          const errBody = await res.text();
+          console.warn(`Gemini model ${modelToTry} returned ${res.status}:`, errBody);
+          if (res.status === 404 || errBody.includes("not found")) continue;
+          break;
+        } catch (e) {
+          console.warn(`Gemini call failed with ${modelToTry}:`, e);
+        }
+      }
+    }
+
+    if (this.config.provider === "openrouter" && this.config.openrouterApiKey) {
+      const candidates = [
+        this.config.openrouterModel,
+        "google/gemini-2.0-flash-001",
+        "anthropic/claude-3.5-haiku",
+        "openai/gpt-4o-mini",
+        "meta-llama/llama-3.3-70b-instruct"
+      ].filter(Boolean) as string[];
+      const uniqueModels = [...new Set(candidates)];
+      const baseUrl = (this.config.openrouterBaseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+
+      for (const modelToTry of uniqueModels) {
+        try {
+          const res = await fetch(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${this.config.openrouterApiKey.trim()}`,
+              "HTTP-Referer": "https://aijobsearch.app",
+              "X-Title": "AI Job Search Studio"
+            },
+            body: JSON.stringify({
+              model: modelToTry,
+              messages: [
+                ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
+                { role: "user", content: prompt }
+              ],
+              temperature: 0.7,
+              max_tokens: 4096
+            }),
+            signal: AbortSignal.timeout(30000)
+          });
+          if (res.ok) {
+            const data: any = await res.json();
+            const text = data.choices?.[0]?.message?.content?.trim() || "";
+            if (text) {
+              if (modelToTry !== this.config.openrouterModel) {
+                this.config.openrouterModel = modelToTry;
+                this.saveConfig({ openrouterModel: modelToTry });
+              }
+              return text;
+            }
+          }
+          const errBody = await res.text();
+          console.warn(`OpenRouter model ${modelToTry} returned ${res.status}:`, errBody);
+          if (res.status === 404 || errBody.includes("not_found") || errBody.includes("does not exist")) continue;
+          break;
+        } catch (e) {
+          console.warn(`OpenRouter call failed with ${modelToTry}:`, e);
+        }
+      }
+    }
+
+    if (this.config.provider === "nvidia" && this.config.nvidiaApiKey) {
+      const candidates = [
+        this.config.nvidiaModel,
+        "meta/llama-3.3-70b-instruct",
+        "mistralai/mixtral-8x22b-instruct-v0.1",
+        "nvidia/nemotron-4-340b-instruct"
+      ].filter(Boolean) as string[];
+      const uniqueModels = [...new Set(candidates)];
+
+      for (const modelToTry of uniqueModels) {
+        try {
+          const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${this.config.nvidiaApiKey.trim()}`
+            },
+            body: JSON.stringify({
+              model: modelToTry,
+              messages: [
+                ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
+                { role: "user", content: prompt }
+              ],
+              temperature: 0.7,
+              max_tokens: 4096
+            }),
+            signal: AbortSignal.timeout(30000)
+          });
+          if (res.ok) {
+            const data: any = await res.json();
+            const text = data.choices?.[0]?.message?.content?.trim() || "";
+            if (text) {
+              if (modelToTry !== this.config.nvidiaModel) {
+                this.config.nvidiaModel = modelToTry;
+                this.saveConfig({ nvidiaModel: modelToTry });
+              }
+              return text;
+            }
+          }
+          const errBody = await res.text();
+          console.warn(`NVIDIA model ${modelToTry} returned ${res.status}:`, errBody);
+          if (res.status === 404 || errBody.includes("not found")) continue;
+          break;
+        } catch (e) {
+          console.warn(`NVIDIA call failed with ${modelToTry}:`, e);
         }
       }
     }
@@ -1833,7 +2504,7 @@ ${certsTeX}
 `;
   }
 
-  // Generate Tailored Cover Letter LaTeX with active profile
+  // Generate Tailored Cover Letter LaTeX with active profile, heart, genuine curiosity, and fit
   public async generateTailoredCoverLetter(
     profile: CandidateProfile,
     job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string },
@@ -1842,92 +2513,466 @@ ${certsTeX}
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
     const analysis = analyzeApplication(profile, jobInput);
     const resolvedLang = targetLanguage || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
-    return renderGroundedCoverLetter(profile, jobInput, analysis, resolvedLang);
 
-    /* Legacy generator retained below for migration reference. */
-    const dateStr = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-    const cleanRole = cleanCandidateHeadline(job.role, profile.headline);
-    const safeCompany = (job.company || "Hiring Team").replace(/&/g, "\\&");
-    const safeRole = cleanRole.replace(/&/g, "\\&");
-    const safeLocation = (job.location || "United Kingdom").replace(/&/g, "\\&");
+    // If an AI provider is active, invoke LLM for a bespoke, heartfelt, curiosity-driven cover letter
+    if (this.config.provider !== "builtin") {
+      try {
+        const langName = LANGUAGE_PACKS[resolvedLang]?.name || "English";
+        const isGerman = resolvedLang === "de";
+
+        const systemPrompt = `You are an experienced human engineer writing a real, authentic cover letter directly to an engineering hiring manager.
+Your letter must read like it was written by a thoughtful, experienced human peer, with ABSOLUTELY ZERO AI FOOTPRINTS.
+
+MANDATORY HUMANIZER RULES (STRICTLY ENFORCED):
+1. ABSOLUTE BAN ON AI TROPES & RHETORICAL FORMULAS:
+   - ABSOLUTELY NO EM-DASHES (— or --). Zero tolerance. Never use em-dashes to connect clauses or add parenthetical thoughts. Use a period, a comma, or separate sentences.
+   - ABSOLUTELY NO Not-X-but-Y contrast formulas: Never write "not as X but as Y", "not merely X but Y", "rather than X, I Y", "instead of X, Y". State the positive engineering practice directly and plainly.
+   - ABSOLUTELY NO "whether that means X, Y, or Z" or "whether X, Y, or Z" constructs.
+   - ABSOLUTELY NO forced triads (lists of 3 items in every paragraph).
+   - ABSOLUTELY NO grandstanding or sententious openings: Never write "I approach infrastructure/engineering as an engineer who understands...", "As an engineer who values...", "I believe infrastructure is about...".
+   - ABSOLUTELY NO AI marketing clichés or corporate filler:
+     * "proven track record", "mission-critical", "seamlessly executed", "pivotal role"
+     * "operate without heroics", "boxes to tick", "listen carefully to what they actually need before reaching for new tools"
+     * "systems serve the people", "technical craftsmanship with active empathy", "tangible value from day one", "hit the ground running"
+     * "spearheaded", "testament to", "foster", "catalyst", "beacon", "tapestry", "delve", "deep dive", "passionate", "thrilled", "delighted"
+   - ABSOLUTELY NO shallow "-ing" riders (e.g. "reducing latency while ensuring stability and driving growth"). Use direct active past-tense verbs: "I built...", "I upgraded...", "I ran...".
+
+2. HOW TO WRITE A REAL HUMAN COVER LETTER:
+   - Paragraph 1 (Direct Opening): State the role and why you are applying. Connect your background to what the company does without hyperbolic praise.
+     Example: "I am writing to apply for the DevOps Engineer position at Anson McCade. My background centers on AWS infrastructure operations and CI/CD reliability, and your focus on cloud systems supporting UK security missions matches the work I do day-to-day."
+   - Paragraph 2 (Grounded Career Evidence): Specific, concrete accomplishments with real tools, numbers, and facts from the candidate profile. Use active-voice verbs ("I upgraded", "I automated", "I wrote", "I configured").
+   - Paragraph 3 (Teamwork & Practical Engineering): Focus on practical day-to-day engineering habits: clear runbooks, maintainable configurations, collaborating with software teams to reduce friction, and handling security (IAM, secrets, blast radius) proactively. DO NOT philosophize or lecture about human nature or "serving people".
+     Example: "In my daily work, I write thorough runbooks and keep Terraform modules modular so the wider team can operate them easily. I work alongside application teams to automate repetitive deployment steps and troubleshoot pipeline failures early. For security, I ensure IAM roles follow least privilege, secrets are encrypted in AWS Secrets Manager, and infrastructure changes are tested in staging before rollout."
+   - Paragraph 4 (Logistics & Simple Closing): State visa requirement or right to work plainly.
+     Example: "${profile.visaSponsorshipRequired ? `I am based in ${profile.location || "the UK"} and require Skilled Worker visa sponsorship.` : `I am based in ${profile.location || "the UK"} with unrestricted right to work.`} I would welcome the opportunity to discuss your current infrastructure roadmap and where you need the most support. Thank you for your time."
+
+3. FORMAT & LATEX RULES:
+   - Output must be valid, clean LaTeX without stray spacing commands.
+   - DO NOT use \\vspace{12pt} or arbitrary point measurements. Use standard blank lines between sections.
+   - Use \\par between body paragraphs.
+   - Return raw LaTeX starting with \\documentclass and ending with \\end{document}.
+   - Do NOT wrap in markdown \`\`\`latex codeblocks.`;
+
+        const userPrompt = `Candidate Profile:
+Name: ${profile.name}
+Headline: ${profile.headline}
+Location: ${profile.location}
+Email: ${profile.email} | Phone: ${profile.phone}
+Work Experience Summary:
+${(profile.experience || []).slice(0, 3).map(e => `- ${e.role} at ${e.company} (${e.startDate || ""} - ${e.endDate || ""}): ${(e.bullets || []).slice(0, 2).join("; ")}`).join("\n")}
+Top Skills: ${Object.values(profile.skills || {}).flatMap(s => Array.isArray(s) ? s : []).slice(0, 10).join(", ")}
+Source Resume Excerpt:
+${(profile.sourceResume?.text || "").slice(0, 1200)}
+
+Target Job:
+Company: ${job.company}
+Role: ${job.role}
+Location: ${job.location}
+Full Job Description:
+${(job.fullJd || "").slice(0, 2500)}
+
+Key Matched Keywords: ${(analysis.matchedKeywords || []).join(", ")}
+Target Competencies: ${(analysis.gapKeywords || []).slice(0, 4).join(", ")}
+
+Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} that makes the hiring manager excited to interview this candidate.`;
+
+        const aiResponse = await this.generateText(userPrompt, systemPrompt);
+        if (aiResponse && aiResponse.includes("\\begin{document}")) {
+          let cleaned = aiResponse.replace(/^```latex\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
+          cleaned = this.humanizeText(cleaned);
+          return cleaned;
+        } else if (aiResponse && aiResponse.trim().length > 150) {
+          const humanized = this.humanizeText(aiResponse.trim());
+          return this.wrapParagraphsInCoverLatex(profile, jobInput, humanized, resolvedLang);
+        }
+      } catch (e) {
+        console.warn("AI generation of cover letter failed, using deterministic engine:", e);
+      }
+    }
+
+    // High-touch deterministic generator with authentic heart, curiosity, and fit
+    return renderGroundedCoverLetter(profile, jobInput, analysis, resolvedLang);
+  }
+
+  // Native Humanizer: Strip AI rhetoric, em-dashes, Not-X-but-Y formulas, sententious preaching, and stray spacing tokens
+  public humanizeText(
+    text: string,
+    context?: { company?: string; role?: string; candidateName?: string }
+  ): string {
+    let s = text;
+
+    // 0. Fill in placeholders if context is available
+    if (context?.company) {
+      s = s.replace(/\[(?:Organisation|Organization|Company(?:\s+Name)?|Employer)\]/gi, context.company);
+    }
+    if (context?.candidateName) {
+      s = s.replace(/\[(?:Candidate(?:\s+Name)?|Your(?:\s+Name)?)\]/gi, context.candidateName);
+    }
+    s = s.replace(/\[(?:Recruiter(?:\s+Name)?|Hiring\s+Manager(?:\s+Name)?)\]/gi, "[Hiring Team / Recruiter]");
+
+    // 1. Hard ban on em-dashes (— and --)
+    s = s.replace(/\s*—\s*whether that means\s+/gi, ". For example, ");
+    s = s.replace(/\s*—\s*([^\n—]+)\s*—\s*/g, ", $1, ");
+    s = s.replace(/\s*—\s*/g, ", ");
+    s = s.replace(/([a-zA-Z0-9])\s*--\s*([a-zA-Z0-9])/g, "$1, $2");
+
+    // 2. Eliminate Not-X-but-Y formulas
+    s = s.replace(/What sets me apart:\s*I don't just ([^;]+);\s*I ([^.]+)/gi, "In my work, I $2");
+    s = s.replace(/I don't just ([^;]+);\s*I ([^.]+)/gi, "I $2");
+    s = s.replace(/What sets me apart:\s*/gi, "My technical focus: ");
+    s = s.replace(/I treat security and compliance not as boxes to tick but as built-in expectations/gi,
+      "For security and compliance, I enforce least-privilege IAM policies, manage secrets with AWS Secrets Manager, and verify blast radius before releasing changes");
+    s = s.replace(/not as boxes to tick but as built-in expectations/gi, "as core operational requirements");
+    s = s.replace(/not as ([^.]+?) but as ([^.]+?)(?=—|,|\.|\n)/gi, "as $2");
+    s = s.replace(/not merely ([^,]+),? but ([^.]+)\./gi, "$2.");
+    s = s.replace(/Rather than ([^,]+),? I ([^.]+)\./gi, "I $2.");
+
+    // 3. Remove sententious / grandstanding / puffed AI openings & phrases
+    s = s.replace(/I approach (?:infrastructure|platform|software|engineering) work as an engineer who understands that systems serve the people using them\.?/gi,
+      "In my day-to-day engineering, I focus on building reliable systems that are straightforward for teams to maintain.");
+    s = s.replace(/I approach [a-z\s]+ as an engineer who understands that [^.]+\./gi,
+      "In my daily work, I focus on system reliability, clear documentation, and practical automation.");
+    s = s.replace(/I'm genuinely excited about this ([^.]+?) role at ([^.]+?)\./gi,
+      "I saw the $1 opening at $2 and wanted to reach out directly.");
+    s = s.replace(/I am genuinely excited about this ([^.]+?) role at ([^.]+?)\./gi,
+      "I saw the $1 opening at $2 and wanted to reach out directly.");
+    s = s.replace(/aligns perfectly with my career trajectory:?/gi,
+      "matches what I do day-to-day:");
+    s = s.replace(/scaling microservices at scale/gi, "scaling microservices reliably");
+    s = s.replace(/exactly the strategic thinking [^.\n]+ demand[s]?\.?/gi,
+      "ensuring infrastructure remains secure, maintainable, and predictable.");
+    s = s.replace(/I'm ready to bring that same rigor to your team\.?\s*Can we chat\??/gi,
+      "I have submitted my application, and would welcome a brief conversation if you have time this week.");
+    s = s.replace(/\bCan we chat\??/gi, "Would you be open to a brief conversation this week?");
+    s = s.replace(/what stands out to me is the technical ambition behind your product/gi,
+      "your team's focus on building dependable cloud infrastructure matches what I do day-to-day");
+
+    // 4. Eliminate stock AI clichés
+    s = s.replace(/\boperate without heroics\b/gi, "operate predictably and reliably");
+    s = s.replace(/\bboxes to tick\b/gi, "routine checklists");
+    s = s.replace(/\blisten carefully to what they actually need before reaching for new tools\b/gi,
+      "work closely with software teams to understand their requirements before introducing new tooling");
+    s = s.replace(/\bproven track record of\b/gi, "track record of");
+    s = s.replace(/\bproven track record\b/gi, "track record");
+    s = s.replace(/\bproven ability to\b/gi, "experience in");
+    s = s.replace(/\bproven hands-on experience\b/gi, "hands-on experience");
+    s = s.replace(/\bdeep practical competence\b/gi, "production experience");
+    s = s.replace(/\bmission-critical\b/gi, "production");
+    s = s.replace(/\bseamlessly executed\b/gi, "executed reliably");
+    s = s.replace(/\bseamlessly\b/gi, "reliably");
+    s = s.replace(/\bseamless\b/gi, "smooth");
+    s = s.replace(/\btechnical craftsmanship with active empathy\b/gi, "clean engineering and close collaboration");
+    s = s.replace(/\bsuperficial patches\b/gi, "temporary fixes");
+    s = s.replace(/\btestament to\b/gi, "reflection of");
+
+    // 5. Clean up stray spacing and measurement artifacts (e.g. \vspace{12pt} or lone "12pt")
+    s = s.replace(/\\vspace\{\s*\d+(?:pt|px)\s*\}/gi, "");
+    s = s.replace(/^\s*\d+(?:pt|px)\s*$/gm, "");
+
+    return s;
+  }
+
+  private wrapParagraphsInCoverLatex(
+    profile: CandidateProfile,
+    job: JobInput,
+    bodyText: string,
+    lang: SupportedLanguage
+  ): string {
+    const pack = LANGUAGE_PACKS[lang] || LANGUAGE_PACKS.en;
+    const roleClean = job.role || "Specialist";
+    const companyClean = (job.company || "Hiring Team").replace(/&/g, "\\&");
     const safeName = (profile.name || "Candidate").replace(/&/g, "\\&");
-    const safeHeadline = (profile.headline || "Platform & DevOps Engineer").replace(/&/g, "\\&");
+    const safeLocation = (profile.location || "").replace(/&/g, "\\&");
     const safeEmail = (profile.email || "").replace(/&/g, "\\&");
     const safePhone = (profile.phone || "").replace(/&/g, "\\&");
-    const safeCandidateLoc = (profile.location || "United Kingdom").replace(/&/g, "\\&");
 
-    return `%-------------------------
-% Tailored Cover Letter for ${safeCompany}
-% Role: ${safeRole}
-% Candidate: ${safeName}
-%------------------------
+    const locale = lang === "de" ? "de-DE" : (lang === "es" ? "es-ES" : (lang === "fr" ? "fr-FR" : (lang === "it" ? "it-IT" : (lang === "nl" ? "nl-NL" : "en-GB"))));
+    const date = new Date().toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" });
 
-\\documentclass[letterpaper,11pt]{article}
+    const formattedBody = bodyText
+      .split(/\n\s*\n/)
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => p.replace(/&/g, "\\&").replace(/%/g, "\\%").replace(/#/g, "\\#").replace(/\$/g, "\\$"))
+      .join("\n\n\\par\n\n");
 
-\\usepackage{latexsym}
-\\usepackage[empty]{fullpage}
-\\usepackage{titlesec}
-\\usepackage[usenames,dvipsnames]{color}
-\\usepackage{enumitem}
-\\usepackage[hidelinks]{hyperref}
-\\usepackage{fancyhdr}
-\\usepackage[english]{babel}
-\\input{glyphtounicode}
+    return String.raw`\documentclass[11pt,a4paper]{article}
+\usepackage[margin=25mm]{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+\begin{document}
+\textbf{\Large ${safeName}}\\
+${safeLocation} $|$ ${safeEmail} $|$ ${safePhone}
 
-\\pagestyle{fancy}
-\\fancyhf{}
-\\renewcommand{\\headrulewidth}{0pt}
-\\renewcommand{\\footrulewidth}{0pt}
+${date}
 
-\\addtolength{\\oddsidemargin}{-0.5in}
-\\addtolength{\\evensidemargin}{-0.5in}
-\\addtolength{\\textwidth}{1.0in}
-\\addtolength{\\topmargin}{-.5in}
-\\addtolength{\\textheight}{1.0in}
+\textbf{Hiring Team}\\
+${companyClean}\\
+${(job.location || "").replace(/&/g, "\\&")}
 
-\\raggedbottom
-\\raggedright
-\\pdfgentounicode=1
+\vspace{1em}
+\textbf{Application for ${roleClean.replace(/&/g, "\\&")}}
 
-\\begin{document}
+\vspace{0.5em}
+${pack.dearHiringManager}
 
-\\begin{center}
-    \\textbf{\\Huge \\scshape ${safeName}} \\\\ \\vspace{3pt}
-    \\textbf{\\large ${safeHeadline}} \\\\ \\vspace{3pt}
-    \\small ${safeCandidateLoc} $|$ ${safePhone} $|$ 
-    \\href{mailto:${safeEmail}}{\\underline{${safeEmail}}}
-\\end{center}
+${formattedBody}
 
-\\vspace{12pt}
-${dateStr}
+${pack.yoursSincerely}
 
-\\vspace{6pt}
-\\textbf{Hiring Team} \\\\
-${safeCompany} \\\\
-${safeLocation}
-
-\\vspace{10pt}
-\\textbf{Application for ${safeRole}}
-
-\\vspace{8pt}
-Dear Hiring Team at ${safeCompany},
-
-\\vspace{4pt}
-I am writing to express my interest in the ${safeRole} position at ${safeCompany}. With a background in cloud architecture, production Kubernetes operations, and automated CI/CD workflows, I focus on delivering scalable, reliable platforms that empower product teams to ship with confidence.
-
-In my current work, I scale and support high-availability Kubernetes infrastructure handling high-throughput platform workloads. Key contributions include executing in-place production EKS upgrades across multi-cluster environments with zero downtime, implementing GitOps pipelines using ArgoCD and GitHub Actions, and designing Infrastructure-as-Code automation to manage cloud resources with least-privilege security controls.
-
-The engineering goals at ${safeCompany} align directly with my technical focus. I bring hands-on experience in cloud infrastructure, container orchestration, and automated observability, coupled with a pragmatic engineering mindset focused on stability, developer velocity, and clear documentation.
-
-I welcome the opportunity to discuss how my experience and approach can support your engineering initiatives. Thank you for your time and consideration.
-
-\\vspace{14pt}
-Sincerely, \\\\
-\\vspace{6pt}
-\\textbf{${safeName}} \\\\
-\\small ${safeHeadline}
-\\end{document}
+${safeName}
+\end{document}
 `;
+  }
+
+  // In-Posting Job AI Assistant: Answer questions about a specific role with full JD & Profile context
+  public async generateJobChatResponse(
+    profile: CandidateProfile,
+    job: JobInput & { id?: string; salary?: string; portal?: string; analysis?: any; sponsorship_status?: string; sponsor_verified?: boolean; full_jd?: string; title?: string },
+    userMessage: string,
+    history: Array<{ role: "user" | "assistant"; content: string }> = []
+  ): Promise<string> {
+    const normalizedJob: JobInput & any = {
+      ...job,
+      role: (job as any).role || (job as any).title || "this role",
+      company: job.company || "the company",
+      location: job.location || "the specified location",
+      fullJd: (job as any).fullJd || (job as any).full_jd || (job as any).description || ""
+    };
+    const analysis = job.analysis || analyzeApplication(profile, normalizedJob);
+    const company = normalizedJob.company;
+    const role = normalizedJob.role;
+
+    // If an AI provider is active, invoke LLM
+    if (this.config.provider !== "builtin") {
+      try {
+        const systemPrompt = `You are ${profile.name}'s Personal Career Co-Pilot and Application Strategist for this specific vacancy:
+ROLE: ${role} at ${company}
+LOCATION: ${normalizedJob.location || "Unspecified"} | COMPENSATION: ${job.salary || "Competitive / Unspecified"}
+SPONSORSHIP STATUS: ${job.sponsorship_status === "offered" ? "Sponsorship Explicitly Offered" : (job.sponsor_verified ? "Licensed Sponsor Employer" : "Standard Right-to-Work")}
+
+CANDIDATE PROFILE:
+Name: ${profile.name}
+Headline: ${profile.headline}
+Location: ${profile.location} (${profile.visaSponsorshipRequired ? "Requires Skilled Worker Visa Sponsorship" : "Unrestricted Right to Work"})
+Target Salary: ≥£${(profile.minSalary || 75000).toLocaleString()}
+Core Skills: ${Object.values(profile.skills || {}).flatMap(s => Array.isArray(s) ? s : []).join(", ")}
+Work History Summary:
+${(profile.experience || []).slice(0, 4).map(e => `• ${e.role} at ${e.company} (${e.startDate || ""} - ${e.endDate || ""}): ${(e.bullets || []).join(" ")}`).join("\n")}
+Certifications: ${(profile.certifications || []).map(c => `${c.name} (${c.issuer || ""})`).join(", ")}
+Education: ${(profile.education || []).map(e => `${e.degree} from ${e.institution}`).join(", ")}
+
+ATS AUDIT FOR THIS JOB:
+Matched Skills: ${(analysis.matchedKeywords || []).join(", ") || "General alignment"}
+Target/Gap Areas: ${(analysis.gapKeywords || []).join(", ") || "None flagged"}
+
+JOB DESCRIPTION EXCERPT:
+${(normalizedJob.fullJd || "").slice(0, 3000)}
+
+CRITICAL MANDATORY HUMANIZER RULES (STRICTLY ENFORCED ACROSS ALL REPLIES):
+1. ABSOLUTE ZERO TOLERANCE FOR AI TROPES:
+   - ZERO EM-DASHES (— or --). Never use em-dashes anywhere in your answer. Use commas, periods, or separate sentences.
+   - ZERO Not-X-but-Y contrast formulas: Never write "I don't just deploy; I architect...", "not merely X but Y", "not as X but as Y", "Rather than X, I Y". State what you do directly and plainly.
+   - ZERO AI sales puffery, hype, or staged openers:
+     * NEVER write: "I'm genuinely excited about...", "aligns perfectly with my career trajectory", "what sets me apart", "strategic thinking national security systems demand", "ready to bring that same rigor", "Can we chat?", "proven track record", "mission-critical", "seamlessly executed", "pivotal role", "fast-paced environment", "spearheaded", "testament to", "foster", "catalyst", "beacon", "tapestry", "delve".
+   - NO UNRESOLVED PLACEHOLDERS for known data: Always use the actual company name "${company}" instead of "[Organisation]" or "[Company]". Use candidate name "${profile.name}". For recruiters, write "Hi [Hiring Team / Recruiter],".
+2. TONE & VOICE:
+   - Calm, conversational professional, direct, humble-yet-competent senior UK engineer speaking peer-to-peer.
+   - If drafting an outreach note, keep it under 80 words:
+     * Acknowledge the opening at ${company} directly.
+     * Cite 1-2 real facts from candidate's profile (e.g. Flutter EKS cluster upgrades 1.26 to 1.31, Terraform automation).
+     * Polite closing: "I have submitted my application through the portal, and would welcome a brief conversation if you have time this week."
+   - If answering interview questions or screening questions, answer directly with practical engineering details (tools, outcomes, numbers from profile) without preaching or lecturing.
+3. FORMATTING:
+   - Clean GitHub-flavored Markdown with crisp headings and bullet points so it is instantly ready to copy and paste.`;
+
+        let conversationContext = "";
+        if (history.length) {
+          conversationContext = history.slice(-6).map(h => `${h.role === "user" ? "Candidate" : "Copilot"}: ${h.content}`).join("\n\n") + "\n\n";
+        }
+        const fullPrompt = `${conversationContext}Candidate's Question:\n${userMessage}`;
+
+        const reply = await this.generateText(fullPrompt, systemPrompt);
+        if (reply && reply.trim()) {
+          return this.humanizeText(reply.trim(), { company, role, candidateName: profile.name });
+        }
+      } catch (e) {
+        console.warn("AI generation for job chat failed, using deterministic copilot:", e);
+      }
+    }
+
+    // Deterministic Smart Co-Pilot Fallback
+    const deterministicReply = this.generateDeterministicJobChatResponse(profile, normalizedJob, analysis, userMessage);
+    return this.humanizeText(deterministicReply, { company, role, candidateName: profile.name });
+  }
+
+  private generateDeterministicJobChatResponse(
+    profile: CandidateProfile,
+    job: JobInput & { id?: string; salary?: string; portal?: string; analysis?: any; sponsorship_status?: string; sponsor_verified?: boolean; title?: string; full_jd?: string },
+    analysis: any,
+    userMessage: string
+  ): string {
+    const q = userMessage.toLowerCase().trim();
+    const role = (job as any).title || job.role || "this role";
+    const company = job.company || "the company";
+    const location = job.location || "the specified location";
+    const candidateName = profile.name || "Candidate";
+    const headline = profile.headline || "Engineer";
+
+    const allProfileSkills: string[] = profile.skills
+      ? (Array.isArray(profile.skills) ? (profile.skills as any) : Object.values(profile.skills).flat())
+      : [];
+    const matched: string[] = (analysis && analysis.matchedKeywords && analysis.matchedKeywords.length)
+      ? analysis.matchedKeywords
+      : (allProfileSkills.length ? allProfileSkills : []);
+
+    // 1. Skill Gaps & How to Address Them
+    if (/gaps?\b|weakness|missing|how (?:should|to|can) i? ?address/i.test(q)) {
+      const gaps = analysis.gapKeywords && analysis.gapKeywords.length
+        ? analysis.gapKeywords
+        : ["any specialized internal proprietary tooling"];
+      return `### How to Confidently Address Skill Gaps in an Interview
+
+**Identified Potential Gap Keywords from Job Description:**
+${gaps.map((g: string) => `• **${g}**`).join("\n")}
+
+**Your Recommended Talking Point in the Interview:**
+> *"While my primary production background has centered heavily on ${matched.slice(0, 3).join(", ") || "my core stack"}, I have consistently demonstrated a rapid learning curve when adopting adjacent technologies. In my experience, the core principles of reliability, observability, and modular design remain constant across different toolsets. Whenever I encounter a new system like ${gaps[0]}, I read the documentation, build a proof-of-concept, and rapidly bring myself up to speed. I see this role as a great opportunity to apply my foundational strength while actively expanding into these areas."*
+
+*(💡 Click **Copy Response** to review and practice this answer before your call!)*`;
+    }
+
+    // 2. Screening Questionnaire Answers (Visa, Notice, Salary, Remote/Hybrid)
+    if (/screening|questionnaire|visa\b|notice period|hybrid willingness/i.test(q)) {
+      const visaAns = profile.visaSponsorshipRequired
+        ? "Yes, I require Skilled Worker visa sponsorship to work in the UK. I am fully eligible and hold the required qualifications."
+        : "No, I hold unrestricted right to work and do not require visa sponsorship.";
+      const salaryAns = job.salary
+        ? `The advertised compensation is ${job.salary}. My target expectation is in line with this range (benchmarked around £${(profile.minSalary || 75000).toLocaleString()}+ depending on total compensation and responsibilities).`
+        : `My expectation is based on market rates for a ${headline} with my track record, around £${(profile.minSalary || 75000).toLocaleString()} (open to discussion based on equity, benefits, and team scope).`;
+
+      return `### Ready-to-Paste Screening Questionnaire Answers for ${company}
+
+**1. Right to Work & Visa Sponsorship:**
+> "${visaAns}"
+
+**2. Notice Period & Availability:**
+> "My notice period is 1 month (negotiable for the right opportunity). I can begin immediately upon completing required onboarding."
+
+**3. Salary Expectations:**
+> "${salaryAns}"
+
+**4. Location & Hybrid Working (${location}):**
+> "I am comfortable with the location in ${location} and enthusiastic about collaborating with the team in accordance with your hybrid or on-site policy."
+
+**5. Why are you the right fit for this role?**
+> "I bring hands-on experience as a ${headline}, with production experience in ${matched.slice(0, 3).join(", ") || "core technical delivery"}. I focus on root-cause problem solving, maintainable infrastructure, and empowering teams to move with speed and stability."
+
+*(💡 Click **Copy Response** to copy these answers into your application portal!)*`;
+    }
+
+    // 3. Recruiter / Hiring Manager Direct Outreach (LinkedIn InMail / Email)
+    if (/outreach|linkedin|inmail|recruiter|hiring manager/i.test(q)) {
+      const topSkill = matched.length ? matched.slice(0, 2).join(" and ") : "modern cloud systems";
+      return `### Tailored Recruiter & Hiring Manager Outreach Note (Under 75 words)
+
+**Subject:** Application for ${role} – ${candidateName}
+
+Hi [Hiring Team / Recruiter],
+
+I saw ${company} is hiring for a **${role}** in ${location} and wanted to reach out directly.
+
+As a **${headline}** with hands-on experience in **${topSkill}**, I focus on building resilient, automated cloud infrastructure that unblocks product teams.
+
+I have submitted my application through the portal, and would welcome a brief conversation if you have time this week to discuss your infrastructure priorities.
+
+Best regards,  
+**${candidateName}**  
+${profile.email} | ${profile.phone}
+
+*(💡 Click **Copy Response** to paste this directly into LinkedIn InMail or Email!)*`;
+    }
+
+    // 4. Salary & Compensation Negotiation Strategy
+    if (/salary negotiation|compensation strategy|negotiat/i.test(q)) {
+      return `### Salary & Compensation Strategy for ${role} at ${company}
+
+- **Advertised Compensation:** ${job.salary || "Not explicitly stated (market rate)"}
+- **Candidate Benchmark:** £${(profile.minSalary || 75000).toLocaleString()} base
+- **Location Context:** ${location}
+
+**Strategic Negotiation Script:**
+> *"Thank you for bringing up compensation. Based on current industry benchmarks for a ${headline} delivering hands-on results with ${matched.slice(0, 2).join(" and ") || "these technologies"}, and the scope of responsibilities for ${role}, my target is in the range of £${(profile.minSalary || 75000).toLocaleString()} to £${((profile.minSalary || 75000) * 1.15).toFixed(0)}. However, my priority is finding the right long-term mutual fit with ${company}, and I am very open to looking at the entire package including bonus, pension, equity, and professional growth opportunities."*`;
+    }
+
+    // 5. Why I Want This Job / Authentic Motivation / Heart & Curiosity
+    if (/why\b|motivation|heart|curiosity|want this (?:job|role)|interest in (?:joining|working)|drawn to/i.test(q)) {
+      const topSkills = matched.length
+        ? matched.slice(0, 3).join(", ")
+        : "my core technical skills and problem-solving background";
+      return `### Why I Want This Job at ${company}
+
+**1. Direct Alignment with My Day-to-Day Work**
+My focus as a **${headline}** centers directly on **${topSkills}**. The technical priorities outlined in your job description match the exact challenges I work on: keeping production platforms stable, streamlining deployments, and eliminating operational friction for development teams.
+
+**2. Practical Scale & Architecture**
+I am interested in **${company}** because of the operational scale you operate at. As systems grow, platform engineering shifts from initial setup to long-term reliability, clear automation, and sensible guardrails. That is the kind of practical, grounded engineering work I enjoy most.
+
+**3. Collaborative Team Culture**
+I value engineering cultures where teams communicate openly, document their architectures, and share ownership. From what I have learned about ${company}, your team takes pride in solid engineering without unnecessary complexity. I want to bring my hands-on background to help your team continue shipping with confidence.
+
+*(💡 Click the **Copy Response** button on the top right to paste this directly into your interview prep notes or application questionnaire!)*`;
+    }
+
+    // 6. Top Interview Questions & STAR Model Answers
+    if (/interview|questions?|prep|model answer|star/i.test(q)) {
+      const recentExp = profile.experience && profile.experience.length ? profile.experience[0] : null;
+      const recentCompany = recentExp?.company || "my previous organization";
+      const recentWin = recentExp?.bullets && recentExp.bullets.length ? recentExp.bullets[0] : "delivered reliable platform upgrades with zero user downtime";
+      const topSkill = (analysis.matchedKeywords && analysis.matchedKeywords.length) ? analysis.matchedKeywords[0] : "distributed systems";
+
+      return `### Top Interview Questions & Tailored STAR Answers for ${role} at ${company}
+
+#### Question 1: "Why are you interested in joining ${company} specifically?"
+- **Model Answer:**  
+  "Your team's focus on building dependable cloud infrastructure for ${role} matches what I do day-to-day. As a **${headline}**, I bring hands-on experience solving operational bottlenecks and running automated Kubernetes and AWS systems, and I want to bring that calm, disciplined problem-solving approach to your engineering team."
+
+#### Question 2: "Tell me about a time you solved a complex challenge involving ${topSkill}."
+- **Situation:** At ${recentCompany}, our systems experienced operational overhead and deployment friction as workloads increased.
+- **Task:** As ${headline}, my goal was to eliminate instability and automate the workflow without interrupting active services.
+- **Action:** I investigated the root causes, introduced structured automation, and established clear operational guardrails. Specifically, I ${recentWin.toLowerCase().replace(/^\w/, c => c.toLowerCase())}.
+- **Result:** We achieved dependable deployments, drastically reduced manual toil, and gave our development team complete confidence to ship faster.
+
+#### Question 3: "How do you handle ambiguous requirements or trade-offs between speed and reliability?"
+- **Model Answer:**  
+  "I break ambiguous goals into small, testable milestones and align early with stakeholders. I balance speed with reliability by establishing automated guardrails early, so moving fast never comes at the expense of system resilience."
+
+*(💡 Click **Copy Response** to save these STAR outlines for your interview!)*`;
+    }
+
+    // 7. General Salary / Compensation Question
+    if (/salary|compensation/i.test(q)) {
+      return `### Salary & Compensation Strategy for ${role} at ${company}
+
+- **Advertised Compensation:** ${job.salary || "Not explicitly stated (market rate)"}
+- **Candidate Benchmark:** £${(profile.minSalary || 75000).toLocaleString()} base
+- **Location Context:** ${location}
+
+**Strategic Negotiation Script:**
+> *"Thank you for bringing up compensation. Based on current industry benchmarks for a ${headline} delivering hands-on results with ${(analysis.matchedKeywords || []).slice(0, 2).join(" and ") || "these technologies"}, and the scope of responsibilities for ${role}, my target is in the range of £${(profile.minSalary || 75000).toLocaleString()} to £${((profile.minSalary || 75000) * 1.15).toFixed(0)}. However, my priority is finding the right long-term mutual fit with ${company}, and I am very open to looking at the entire package including bonus, pension, equity, and professional growth opportunities."*`;
+    }
+
+    // Default: General Job & Profile Contextual Insight
+    return `### Insight for ${role} at ${company}
+
+Regarding your question about **${userMessage}**:
+
+- **Role & Team Scope:** ${role} located in ${location}.
+- **Key Technical Alignment:** You have strong verified alignment in **${(analysis.matchedKeywords || []).slice(0, 4).join(", ") || "core competencies"}**.
+- **Employer Profile:** ${company}${job.sponsor_verified ? " (Verified Licensed Sponsor)" : ""}.
+- **Recommended Angle:** Emphasize your hands-on background as a **${headline}**, highlight your focus on measurable reliability and unblocking team velocity, and express your genuine curiosity for ${company}'s immediate engineering roadmap.
+
+*(Ask me anything else: e.g. "Draft my LinkedIn message", "Give me 3 STAR interview answers", or "Why do I want this job?")*`;
   }
 }
 

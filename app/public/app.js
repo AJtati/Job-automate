@@ -116,9 +116,16 @@ const aiOllamaHost = document.getElementById("aiOllamaHost");
 const aiOllamaModelSelect = document.getElementById("aiOllamaModelSelect");
 const aiAnthropicKey = document.getElementById("aiAnthropicKey");
 const aiOpenAiKey = document.getElementById("aiOpenAiKey");
+const aiGeminiKey = document.getElementById("aiGeminiKey");
+const aiOpenrouterKey = document.getElementById("aiOpenrouterKey");
+const aiOpenrouterBaseUrl = document.getElementById("aiOpenrouterBaseUrl");
+const aiNvidiaKey = document.getElementById("aiNvidiaKey");
 const ollamaSettings = document.getElementById("ollamaSettings");
 const anthropicSettings = document.getElementById("anthropicSettings");
 const openaiSettings = document.getElementById("openaiSettings");
+const geminiSettings = document.getElementById("geminiSettings");
+const openrouterSettings = document.getElementById("openrouterSettings");
+const nvidiaSettings = document.getElementById("nvidiaSettings");
 
 const searchConfigModal = document.getElementById("searchConfigModal");
 const btnCloseSearchConfig = document.getElementById("btnCloseSearchConfig");
@@ -266,6 +273,18 @@ function setupEventListeners() {
 
   // Outreach message
   btnCopyRecruiterMsg.addEventListener("click", copyOutreachMessage);
+
+  // Open Job Chat tab
+  document.getElementById("btnOpenJobChat")?.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(t => {
+      t.classList.toggle("active", t.dataset.tab === "tab-chat");
+    });
+    currentTab = "tab-chat";
+    renderStudioTabContent();
+    setTimeout(() => {
+      document.getElementById("jobChatInput")?.focus();
+    }, 50);
+  });
 
   // Profile dropdown toggling
   btnProfileDropdown.addEventListener("click", (e) => {
@@ -505,6 +524,9 @@ function setupEventListeners() {
       ollamaSettings.style.display = val === "ollama" ? "block" : "none";
       anthropicSettings.style.display = val === "anthropic" ? "block" : "none";
       openaiSettings.style.display = val === "openai" ? "block" : "none";
+      geminiSettings.style.display = val === "gemini" ? "block" : "none";
+      openrouterSettings.style.display = val === "openrouter" ? "block" : "none";
+      nvidiaSettings.style.display = val === "nvidia" ? "block" : "none";
       if (val !== "builtin") {
         scanProviderModels(val);
       }
@@ -1193,6 +1215,12 @@ async function fetchAiConfig() {
         aiStatusText.textContent = `Claude: ${aiConfig.anthropicModel || "Active"}`;
       } else if (provider === "openai") {
         aiStatusText.textContent = `OpenAI: ${aiConfig.openaiModel || "Active"}`;
+      } else if (provider === "gemini") {
+        aiStatusText.textContent = `Gemini: ${aiConfig.geminiModel || "Active"}`;
+      } else if (provider === "openrouter") {
+        aiStatusText.textContent = `OpenRouter: ${aiConfig.openrouterModel || "Active"}`;
+      } else if (provider === "nvidia") {
+        aiStatusText.textContent = `NVIDIA: ${aiConfig.nvidiaModel || "Active"}`;
       } else if (provider === "builtin") {
         aiStatusText.textContent = "Built-in · local";
       } else {
@@ -1219,29 +1247,83 @@ async function fetchAiConfig() {
   }
 }
 
+function getProviderElementIds(provider) {
+  if (provider === "anthropic") {
+    return {
+      select: "aiAnthropicModelSelect",
+      status: "anthropicKeyStatusMsg",
+      hint: "anthropicModelHint",
+      btnUseRec: "btnUseAnthropicRecommended",
+      scanBtn: "btnScanAnthropicModels",
+      keyInput: "aiAnthropicKey",
+      modelProp: "anthropicModel"
+    };
+  }
+  if (provider === "openai") {
+    return {
+      select: "aiOpenAiModelSelect",
+      status: "openAiKeyStatusMsg",
+      hint: "openAiModelHint",
+      btnUseRec: "btnUseOpenAiRecommended",
+      scanBtn: "btnScanOpenAiModels",
+      keyInput: "aiOpenAiKey",
+      modelProp: "openaiModel"
+    };
+  }
+  if (provider === "gemini") {
+    return {
+      select: "aiGeminiModelSelect",
+      status: "geminiKeyStatusMsg",
+      hint: "geminiModelHint",
+      btnUseRec: "btnUseGeminiRecommended",
+      scanBtn: "btnScanGeminiModels",
+      keyInput: "aiGeminiKey",
+      modelProp: "geminiModel"
+    };
+  }
+  if (provider === "openrouter") {
+    return {
+      select: "aiOpenrouterModelSelect",
+      status: "openrouterKeyStatusMsg",
+      hint: "openrouterModelHint",
+      btnUseRec: "btnUseOpenrouterRecommended",
+      scanBtn: "btnScanOpenrouterModels",
+      keyInput: "aiOpenrouterKey",
+      modelProp: "openrouterModel"
+    };
+  }
+  if (provider === "nvidia") {
+    return {
+      select: "aiNvidiaModelSelect",
+      status: "nvidiaKeyStatusMsg",
+      hint: "nvidiaModelHint",
+      btnUseRec: "btnUseNvidiaRecommended",
+      scanBtn: "btnScanNvidiaModels",
+      keyInput: "aiNvidiaKey",
+      modelProp: "nvidiaModel"
+    };
+  }
+  return {
+    select: "aiOllamaModelSelect",
+    status: "ollamaStatusMsg",
+    hint: "ollamaModelHint",
+    btnUseRec: "btnUseOllamaRecommended",
+    scanBtn: "btnScanOllamaModels",
+    keyInput: "",
+    modelProp: "ollamaModel"
+  };
+}
+
 async function scanProviderModels(provider, explicitKey = "", force = false) {
   if (!provider || provider === "builtin") return;
 
-  const selectElem = document.getElementById(
-    provider === "anthropic" ? "aiAnthropicModelSelect" :
-    provider === "openai" ? "aiOpenAiModelSelect" : "aiOllamaModelSelect"
-  );
-  const statusElem = document.getElementById(
-    provider === "anthropic" ? "anthropicKeyStatusMsg" :
-    provider === "openai" ? "openAiKeyStatusMsg" : "ollamaStatusMsg"
-  );
-  const hintElem = document.getElementById(
-    provider === "anthropic" ? "anthropicModelHint" :
-    provider === "openai" ? "openAiModelHint" : "ollamaModelHint"
-  );
-  const btnUseRec = document.getElementById(
-    provider === "anthropic" ? "btnUseAnthropicRecommended" :
-    provider === "openai" ? "btnUseOpenAiRecommended" : "btnUseOllamaRecommended"
-  );
-  const scanBtn = document.getElementById(
-    provider === "anthropic" ? "btnScanAnthropicModels" :
-    provider === "openai" ? "btnScanOpenAiModels" : "btnScanOllamaModels"
-  );
+  const ids = getProviderElementIds(provider);
+  const selectElem = document.getElementById(ids.select);
+  const statusElem = document.getElementById(ids.status);
+  const hintElem = document.getElementById(ids.hint);
+  const btnUseRec = document.getElementById(ids.btnUseRec);
+  const scanBtn = document.getElementById(ids.scanBtn);
+  const keyInputElem = ids.keyInput ? document.getElementById(ids.keyInput) : null;
 
   if (!selectElem) return;
 
@@ -1264,15 +1346,13 @@ async function scanProviderModels(provider, explicitKey = "", force = false) {
 
   try {
     const host = provider === "ollama" ? (aiOllamaHost?.value.trim() || "http://localhost:11434") : undefined;
-    const apiKey = explicitKey || (
-      provider === "anthropic" ? aiAnthropicKey.value.trim() :
-      provider === "openai" ? aiOpenAiKey.value.trim() : ""
-    );
+    const baseUrl = provider === "openrouter" ? (document.getElementById("aiOpenrouterBaseUrl")?.value.trim() || "https://openrouter.ai/api/v1") : undefined;
+    const apiKey = explicitKey || (keyInputElem ? keyInputElem.value.trim() : "");
 
     const res = await fetch("/api/ai/models", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider, apiKey, host })
+      body: JSON.stringify({ provider, apiKey, host, baseUrl })
     });
 
     const data = await res.json();
@@ -1280,11 +1360,7 @@ async function scanProviderModels(provider, explicitKey = "", force = false) {
     if (data.success && Array.isArray(data.models) && data.models.length > 0) {
       providerModelsCache[provider] = data;
 
-      const currentConfigModel = aiConfig ? (
-        provider === "anthropic" ? aiConfig.anthropicModel :
-        provider === "openai" ? aiConfig.openaiModel : aiConfig.ollamaModel
-      ) : null;
-
+      const currentConfigModel = aiConfig ? aiConfig[ids.modelProp] : null;
       const previouslySelected = selectElem.value || currentConfigModel;
 
       selectElem.innerHTML = "";
@@ -1310,7 +1386,7 @@ async function scanProviderModels(provider, explicitKey = "", force = false) {
       if (statusElem) {
         statusElem.style.display = "block";
         statusElem.style.color = "var(--apple-green)";
-        statusElem.textContent = `✅ Found ${data.models.length} active models on your account.`;
+        statusElem.textContent = `✅ Found ${data.models.length} active models on ${data.provider}.`;
         setTimeout(() => {
           if (statusElem) statusElem.style.display = "none";
         }, 4000);
@@ -1341,18 +1417,10 @@ async function scanProviderModels(provider, explicitKey = "", force = false) {
 }
 
 function updateModelHintAndBadge(provider) {
-  const selectElem = document.getElementById(
-    provider === "anthropic" ? "aiAnthropicModelSelect" :
-    provider === "openai" ? "aiOpenAiModelSelect" : "aiOllamaModelSelect"
-  );
-  const hintElem = document.getElementById(
-    provider === "anthropic" ? "anthropicModelHint" :
-    provider === "openai" ? "openAiModelHint" : "ollamaModelHint"
-  );
-  const btnUseRec = document.getElementById(
-    provider === "anthropic" ? "btnUseAnthropicRecommended" :
-    provider === "openai" ? "btnUseOpenAiRecommended" : "btnUseOllamaRecommended"
-  );
+  const ids = getProviderElementIds(provider);
+  const selectElem = document.getElementById(ids.select);
+  const hintElem = document.getElementById(ids.hint);
+  const btnUseRec = document.getElementById(ids.btnUseRec);
 
   if (!selectElem) return;
 
@@ -1387,10 +1455,8 @@ function updateModelHintAndBadge(provider) {
 function useRecommendedModel(provider) {
   const cache = providerModelsCache[provider];
   if (!cache || !cache.recommendedModel) return;
-  const selectElem = document.getElementById(
-    provider === "anthropic" ? "aiAnthropicModelSelect" :
-    provider === "openai" ? "aiOpenAiModelSelect" : "aiOllamaModelSelect"
-  );
+  const ids = getProviderElementIds(provider);
+  const selectElem = document.getElementById(ids.select);
   if (selectElem) {
     selectElem.value = cache.recommendedModel;
     updateModelHintAndBadge(provider);
@@ -1406,97 +1472,100 @@ function openAiModal() {
   ollamaSettings.style.display = aiConfig.provider === "ollama" ? "block" : "none";
   anthropicSettings.style.display = aiConfig.provider === "anthropic" ? "block" : "none";
   openaiSettings.style.display = aiConfig.provider === "openai" ? "block" : "none";
+  geminiSettings.style.display = aiConfig.provider === "gemini" ? "block" : "none";
+  openrouterSettings.style.display = aiConfig.provider === "openrouter" ? "block" : "none";
+  nvidiaSettings.style.display = aiConfig.provider === "nvidia" ? "block" : "none";
 
   aiOllamaHost.value = aiConfig.ollamaHost || "http://localhost:11434";
   aiAnthropicKey.value = aiConfig.anthropicApiKey || "";
   aiOpenAiKey.value = aiConfig.openaiApiKey || "";
+  if (aiGeminiKey) aiGeminiKey.value = aiConfig.geminiApiKey || "";
+  if (aiOpenrouterKey) aiOpenrouterKey.value = aiConfig.openrouterApiKey || "";
+  if (aiOpenrouterBaseUrl) aiOpenrouterBaseUrl.value = aiConfig.openrouterBaseUrl || "https://openrouter.ai/api/v1";
+  if (aiNvidiaKey) aiNvidiaKey.value = aiConfig.nvidiaApiKey || "";
+
   aiAnthropicKey.placeholder = aiConfig.hasAnthropicKey ? "Configured · leave blank to keep" : "Anthropic API key (sk-ant-...)";
   aiOpenAiKey.placeholder = aiConfig.hasOpenAiKey ? "Configured · leave blank to keep" : "OpenAI API key (sk-...)";
+  if (aiGeminiKey) aiGeminiKey.placeholder = aiConfig.hasGeminiKey ? "Configured · leave blank to keep" : "Google Gemini API key (AIzaSy...)";
+  if (aiOpenrouterKey) aiOpenrouterKey.placeholder = aiConfig.hasOpenRouterKey ? "Configured · leave blank to keep" : "OpenRouter API key (sk-or-v1-...)";
+  if (aiNvidiaKey) aiNvidiaKey.placeholder = aiConfig.hasNvidiaKey ? "Configured · leave blank to keep" : "NVIDIA Build API key (nvapi-...)";
 
   // Bind key visibility toggle buttons once
-  const btnToggleAnthropicKey = document.getElementById("btnToggleAnthropicKey");
-  if (btnToggleAnthropicKey && !btnToggleAnthropicKey.dataset.bound) {
-    btnToggleAnthropicKey.dataset.bound = "true";
-    btnToggleAnthropicKey.addEventListener("click", () => {
-      aiAnthropicKey.type = aiAnthropicKey.type === "password" ? "text" : "password";
-      btnToggleAnthropicKey.textContent = aiAnthropicKey.type === "password" ? "👁️" : "🔒";
-    });
-  }
-  const btnToggleOpenAiKey = document.getElementById("btnToggleOpenAiKey");
-  if (btnToggleOpenAiKey && !btnToggleOpenAiKey.dataset.bound) {
-    btnToggleOpenAiKey.dataset.bound = "true";
-    btnToggleOpenAiKey.addEventListener("click", () => {
-      aiOpenAiKey.type = aiOpenAiKey.type === "password" ? "text" : "password";
-      btnToggleOpenAiKey.textContent = aiOpenAiKey.type === "password" ? "👁️" : "🔒";
-    });
-  }
+  const toggleMap = [
+    { btnId: "btnToggleAnthropicKey", input: aiAnthropicKey },
+    { btnId: "btnToggleOpenAiKey", input: aiOpenAiKey },
+    { btnId: "btnToggleGeminiKey", input: aiGeminiKey },
+    { btnId: "btnToggleOpenrouterKey", input: aiOpenrouterKey },
+    { btnId: "btnToggleNvidiaKey", input: aiNvidiaKey }
+  ];
+  toggleMap.forEach(({ btnId, input }) => {
+    const btn = document.getElementById(btnId);
+    if (btn && input && !btn.dataset.bound) {
+      btn.dataset.bound = "true";
+      btn.addEventListener("click", () => {
+        input.type = input.type === "password" ? "text" : "password";
+        btn.textContent = input.type === "password" ? "👁️" : "🔒";
+      });
+    }
+  });
 
   // Bind manual scan buttons once
-  const btnScanAnthropicModels = document.getElementById("btnScanAnthropicModels");
-  if (btnScanAnthropicModels && !btnScanAnthropicModels.dataset.bound) {
-    btnScanAnthropicModels.dataset.bound = "true";
-    btnScanAnthropicModels.addEventListener("click", () => scanProviderModels("anthropic", aiAnthropicKey.value.trim(), true));
-  }
-  const btnScanOpenAiModels = document.getElementById("btnScanOpenAiModels");
-  if (btnScanOpenAiModels && !btnScanOpenAiModels.dataset.bound) {
-    btnScanOpenAiModels.dataset.bound = "true";
-    btnScanOpenAiModels.addEventListener("click", () => scanProviderModels("openai", aiOpenAiKey.value.trim(), true));
-  }
-  const btnScanOllamaModels = document.getElementById("btnScanOllamaModels");
-  if (btnScanOllamaModels && !btnScanOllamaModels.dataset.bound) {
-    btnScanOllamaModels.dataset.bound = "true";
-    btnScanOllamaModels.addEventListener("click", () => scanProviderModels("ollama", "", true));
-  }
+  const scanMap = [
+    { btnId: "btnScanAnthropicModels", provider: "anthropic" },
+    { btnId: "btnScanOpenAiModels", provider: "openai" },
+    { btnId: "btnScanOllamaModels", provider: "ollama" },
+    { btnId: "btnScanGeminiModels", provider: "gemini" },
+    { btnId: "btnScanOpenrouterModels", provider: "openrouter" },
+    { btnId: "btnScanNvidiaModels", provider: "nvidia" }
+  ];
+  scanMap.forEach(({ btnId, provider }) => {
+    const btn = document.getElementById(btnId);
+    if (btn && !btn.dataset.bound) {
+      btn.dataset.bound = "true";
+      btn.addEventListener("click", () => {
+        const ids = getProviderElementIds(provider);
+        const kElem = ids.keyInput ? document.getElementById(ids.keyInput) : null;
+        scanProviderModels(provider, kElem?.value.trim() || "", true);
+      });
+    }
+  });
 
   // Bind 'Use Recommended' quick-select buttons once
-  const btnUseAnthropicRecommended = document.getElementById("btnUseAnthropicRecommended");
-  if (btnUseAnthropicRecommended && !btnUseAnthropicRecommended.dataset.bound) {
-    btnUseAnthropicRecommended.dataset.bound = "true";
-    btnUseAnthropicRecommended.addEventListener("click", () => useRecommendedModel("anthropic"));
-  }
-  const btnUseOpenAiRecommended = document.getElementById("btnUseOpenAiRecommended");
-  if (btnUseOpenAiRecommended && !btnUseOpenAiRecommended.dataset.bound) {
-    btnUseOpenAiRecommended.dataset.bound = "true";
-    btnUseOpenAiRecommended.addEventListener("click", () => useRecommendedModel("openai"));
-  }
-  const btnUseOllamaRecommended = document.getElementById("btnUseOllamaRecommended");
-  if (btnUseOllamaRecommended && !btnUseOllamaRecommended.dataset.bound) {
-    btnUseOllamaRecommended.dataset.bound = "true";
-    btnUseOllamaRecommended.addEventListener("click", () => useRecommendedModel("ollama"));
-  }
+  ["anthropic", "openai", "ollama", "gemini", "openrouter", "nvidia"].forEach(p => {
+    const ids = getProviderElementIds(p);
+    const btn = document.getElementById(ids.btnUseRec);
+    if (btn && !btn.dataset.bound) {
+      btn.dataset.bound = "true";
+      btn.addEventListener("click", () => useRecommendedModel(p));
+    }
+  });
 
   // Bind select dropdown changes once so user can freely choose any model
-  const anthropicModelSelect = document.getElementById("aiAnthropicModelSelect");
-  if (anthropicModelSelect && !anthropicModelSelect.dataset.bound) {
-    anthropicModelSelect.dataset.bound = "true";
-    anthropicModelSelect.addEventListener("change", () => updateModelHintAndBadge("anthropic"));
-  }
-  const openAiModelSelect = document.getElementById("aiOpenAiModelSelect");
-  if (openAiModelSelect && !openAiModelSelect.dataset.bound) {
-    openAiModelSelect.dataset.bound = "true";
-    openAiModelSelect.addEventListener("change", () => updateModelHintAndBadge("openai"));
-  }
-  const ollamaModelSelect = document.getElementById("aiOllamaModelSelect");
-  if (ollamaModelSelect && !ollamaModelSelect.dataset.bound) {
-    ollamaModelSelect.dataset.bound = "true";
-    ollamaModelSelect.addEventListener("change", () => updateModelHintAndBadge("ollama"));
-  }
+  ["anthropic", "openai", "ollama", "gemini", "openrouter", "nvidia"].forEach(p => {
+    const ids = getProviderElementIds(p);
+    const sel = document.getElementById(ids.select);
+    if (sel && !sel.dataset.bound) {
+      sel.dataset.bound = "true";
+      sel.addEventListener("change", () => updateModelHintAndBadge(p));
+    }
+  });
 
   // Bind API key blur to scan models automatically if user pastes a key
-  if (aiAnthropicKey && !aiAnthropicKey.dataset.bound) {
-    aiAnthropicKey.dataset.bound = "true";
-    aiAnthropicKey.addEventListener("blur", () => {
-      const k = aiAnthropicKey.value.trim();
-      if (k && k.length > 10) scanProviderModels("anthropic", k, true);
-    });
-  }
-  if (aiOpenAiKey && !aiOpenAiKey.dataset.bound) {
-    aiOpenAiKey.dataset.bound = "true";
-    aiOpenAiKey.addEventListener("blur", () => {
-      const k = aiOpenAiKey.value.trim();
-      if (k && k.length > 10) scanProviderModels("openai", k, true);
-    });
-  }
+  [
+    { elem: aiAnthropicKey, provider: "anthropic" },
+    { elem: aiOpenAiKey, provider: "openai" },
+    { elem: aiGeminiKey, provider: "gemini" },
+    { elem: aiOpenrouterKey, provider: "openrouter" },
+    { elem: aiNvidiaKey, provider: "nvidia" }
+  ].forEach(({ elem, provider }) => {
+    if (elem && !elem.dataset.bound) {
+      elem.dataset.bound = "true";
+      elem.addEventListener("blur", () => {
+        const k = elem.value.trim();
+        if (k && k.length > 8) scanProviderModels(provider, k, true);
+      });
+    }
+  });
 
   testAiConnection();
   aiConfigModal.style.display = "flex";
@@ -1531,16 +1600,26 @@ async function saveAiConfig() {
   const provider = document.querySelector('input[name="aiProvider"]:checked')?.value || "ollama";
   const anthropicModelSelect = document.getElementById("aiAnthropicModelSelect");
   const openAiModelSelect = document.getElementById("aiOpenAiModelSelect");
+  const geminiModelSelect = document.getElementById("aiGeminiModelSelect");
+  const openrouterModelSelect = document.getElementById("aiOpenrouterModelSelect");
+  const nvidiaModelSelect = document.getElementById("aiNvidiaModelSelect");
 
   const payload = {
     provider,
     ollamaHost: aiOllamaHost.value.trim(),
     ollamaModel: aiOllamaModelSelect.value,
     anthropicModel: anthropicModelSelect?.value || "claude-haiku-4-5-20251001",
-    openaiModel: openAiModelSelect?.value || "gpt-4o-mini"
+    openaiModel: openAiModelSelect?.value || "gpt-4o-mini",
+    geminiModel: geminiModelSelect?.value || "gemini-2.0-flash",
+    openrouterModel: openrouterModelSelect?.value || "google/gemini-2.0-flash-001",
+    openrouterBaseUrl: aiOpenrouterBaseUrl?.value.trim() || "https://openrouter.ai/api/v1",
+    nvidiaModel: nvidiaModelSelect?.value || "meta/llama-3.3-70b-instruct"
   };
   if (aiAnthropicKey.value.trim()) payload.anthropicApiKey = aiAnthropicKey.value.trim();
   if (aiOpenAiKey.value.trim()) payload.openaiApiKey = aiOpenAiKey.value.trim();
+  if (aiGeminiKey?.value.trim()) payload.geminiApiKey = aiGeminiKey.value.trim();
+  if (aiOpenrouterKey?.value.trim()) payload.openrouterApiKey = aiOpenrouterKey.value.trim();
+  if (aiNvidiaKey?.value.trim()) payload.nvidiaApiKey = aiNvidiaKey.value.trim();
 
   try {
     const res = await fetch("/api/ai/config", {
@@ -1564,7 +1643,9 @@ async function saveAiConfig() {
 
 async function handleAutoSelectBestModel() {
   const provider = document.querySelector('input[name="aiProvider"]:checked')?.value || "ollama";
-  const apiKey = provider === "openai" ? aiOpenAiKey.value.trim() : provider === "anthropic" ? aiAnthropicKey.value.trim() : "";
+  const ids = getProviderElementIds(provider);
+  const keyInputElem = ids.keyInput ? document.getElementById(ids.keyInput) : null;
+  const apiKey = keyInputElem?.value.trim() || "";
 
   showToast("Scanning live models and selecting best value recommendation...");
   await scanProviderModels(provider, apiKey, true);
@@ -1990,6 +2071,8 @@ function renderStudioTabContent() {
     renderCoverTab();
   } else if (currentTab === "tab-details") {
     renderDetailsTab();
+  } else if (currentTab === "tab-chat") {
+    renderJobChatTab();
   } else if (currentTab === "tab-answers") {
     renderAnswersTab();
   }
@@ -2229,12 +2312,13 @@ function extractCoverParagraphs(texCode) {
     .replace(/\\\\/g, "\n")
     .replace(/\\(?:textbf|textit|emph|Large|large|small)\s*\{([^{}]*)\}/g, "$1")
     .replace(/\\href\{[^}]*\}\{([^}]*)\}/g, "$1")
+    .replace(/\\(?:vspace|hspace|setlength|rule|fontsize)\*?(?:\[[^\]]*\])?\{[^}]*\}(?:\{[^}]*\})?/g, "")
     .replace(/\\([&%$#_{}])/g, "$1")
-    .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?/g, "")
+    .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^{}]*\})?/g, "")
     .replace(/[{}]/g, "")
     .split(/\n\s*\n/)
     .map(paragraph => paragraph.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
+    .filter(paragraph => paragraph.length > 0 && !/^\d+(?:pt|mm|cm|in|em|ex)$/i.test(paragraph));
 }
 
 async function renderCoverTab() {
@@ -2262,6 +2346,7 @@ async function renderCoverTab() {
         <button class="btn-secondary" id="btnOpenPreviewCover" title="Open PDF with the system viewer">Open</button>
         <button class="btn-secondary" id="btnRevealCover" title="Show PDF in its folder">Show in folder</button>
         <button class="btn-secondary" id="btnToggleCoverMode">${currentCoverViewMode === "visual" ? "📝 Raw LaTeX" : "📄 Visual View"}</button>
+        <button class="btn-secondary" id="btnCopyCoverText" title="Copy clean plain text to clipboard">📋 Copy Plain Text</button>
         <button class="btn-secondary" id="btnCopyCover">📋 Copy LaTeX</button>
       </div>
     </div>
@@ -2306,6 +2391,14 @@ async function renderCoverTab() {
     return;
   }
 
+  const coverParagraphs = extractCoverParagraphs(texCode);
+
+  document.getElementById("btnCopyCoverText")?.addEventListener("click", () => {
+    const textToCopy = coverParagraphs.length ? coverParagraphs.join("\n\n") : texCode;
+    navigator.clipboard.writeText(textToCopy);
+    showToast("Plain text cover letter copied!");
+  });
+
   document.getElementById("btnCopyCover")?.addEventListener("click", () => {
     navigator.clipboard.writeText(texCode);
     showToast("Cover Letter code copied!");
@@ -2326,7 +2419,6 @@ async function renderCoverTab() {
   // Visual View
   const todayStr = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   const cleanRole = cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
-  const coverParagraphs = extractCoverParagraphs(texCode);
 
   document.getElementById("coverContainer").innerHTML = `
     <div class="doc-preview-container" style="padding: 45px 55px; line-height: 1.7; font-size: 13.5px; color: #1f2937;">
@@ -2662,6 +2754,294 @@ function renderAnswersTab() {
   `;
 }
 
+// Storage for per-job chat histories
+const jobChatHistories = new Map();
+
+function formatMarkdownToHtml(markdown) {
+  if (!markdown) return "";
+  let html = escapeHtml(markdown);
+
+  // Code blocks: ```...```
+  html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+    return `<pre><code>${code.trim()}</code></pre>`;
+  });
+
+  // Inline code: `...`
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+  // Headings
+  html = html.replace(/^#### (.*?)$/gm, "<h4>$1</h4>");
+  html = html.replace(/^### (.*?)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^## (.*?)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^# (.*?)$/gm, "<h3>$1</h3>");
+
+  // Blockquotes
+  html = html.replace(/^&gt; (.*?)$/gm, "<blockquote>$1</blockquote>");
+
+  // Bold & Italics
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+
+  // Bullet items: - ... or • ... or * ...
+  html = html.replace(/^[•\-\*] (.*?)$/gm, "<li>$1</li>");
+  html = html.replace(/(<li>.*?<\/li>\s*)+/g, "<ul>$&</ul>");
+
+  // Paragraphs
+  const blocks = html.split(/\n\s*\n/);
+  html = blocks.map(b => {
+    const trimmed = b.trim();
+    if (!trimmed) return "";
+    if (trimmed.startsWith("<h3") || trimmed.startsWith("<h4") || trimmed.startsWith("<ul") || trimmed.startsWith("<ol") || trimmed.startsWith("<pre") || trimmed.startsWith("<blockquote")) {
+      return trimmed;
+    }
+    return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
+  }).join("\n");
+
+  return html;
+}
+
+function renderJobChatTab() {
+  if (!selectedJob) return;
+
+  const jobId = selectedJob.id || `${selectedJob.company}_${selectedJob.title}`;
+  if (!jobChatHistories.has(jobId)) {
+    jobChatHistories.set(jobId, []);
+  }
+  const history = jobChatHistories.get(jobId);
+
+  const fitScore = Number(selectedJob.analysis?.overallScore ?? selectedJob.fit_score ?? 0);
+  const company = selectedJob.company || "Company";
+  const role = selectedJob.title || selectedJob.role || "Role";
+
+  studioContent.innerHTML = `
+    <div class="job-chat-wrapper">
+      <!-- Header with context & clear option -->
+      <div class="job-chat-header">
+        <div class="job-chat-header-title">
+          <div>
+            <h3>
+              <span>🤖 Job AI Assistant</span>
+              <span class="meta-pill" style="font-size: 11px; padding: 2px 8px; background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.35); color: #38bdf8;">
+                ${escapeHtml(company)} · ${escapeHtml(role)}
+              </span>
+            </h3>
+            <div class="job-chat-header-sub" style="margin-top: 3px;">
+              Grounded in candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b> and full job description · <b>${fitScore}% Match</b>
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-secondary" id="btnClearJobChat" style="font-size: 11px; padding: 4px 10px;" title="Reset chat for this role">🔄 New Chat</button>
+        </div>
+      </div>
+
+      <!-- Quick Prompt Chips -->
+      <div class="job-chat-chips-container">
+        <span class="job-chat-chip-label">Quick Prompts:</span>
+        <button class="job-chat-chip" data-prompt="Why do I want this job? Explain my authentic motivation, heart, and curiosity for this company's scale.">💡 Why I Want This Job (Heart & Motivation)</button>
+        <button class="job-chat-chip" data-prompt="What are the top 3 interview questions likely to be asked for this position, and how should I answer them using the STAR method based on my experience?">🎯 Top Interview Questions & STAR Answers</button>
+        <button class="job-chat-chip" data-prompt="Draft a personalized LinkedIn outreach note (under 75 words) to the hiring manager for this role.">✉️ Recruiter LinkedIn Outreach Note</button>
+        <button class="job-chat-chip" data-prompt="Prepare my ready-to-paste answers for screening questions: right to work/visa, notice period, salary expectation, and hybrid willingness.">❓ Answers to Screening Questions</button>
+        <button class="job-chat-chip" data-prompt="What are the potential skill gaps between my CV and this JD, and how can I confidently address them in the interview?">🔍 Address Skill Gaps with Confidence</button>
+        <button class="job-chat-chip" data-prompt="What is a strong salary and compensation negotiation strategy for this role based on market rates and my target?">💰 Salary & Negotiation Strategy</button>
+      </div>
+
+      <!-- Messages Stream -->
+      <div class="job-chat-messages" id="jobChatMessages">
+        ${history.length === 0 ? `
+          <div class="chat-msg chat-msg-assistant">
+            <div class="chat-msg-header">
+              <span class="chat-copilot-tag">🤖 Job AI Assistant · Ready</span>
+              <span style="font-size: 11px; color: var(--text-tertiary);">Role Context Active</span>
+            </div>
+            <div class="chat-msg-content">
+              <p>Hello! I am your dedicated <b>Job Application & Interview Co-Pilot</b> for <b>${escapeHtml(role)}</b> at <b>${escapeHtml(company)}</b>.</p>
+              <p>I have analyzed the complete job description against candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b>'s profile. Ask me anything about this role—I can help you:</p>
+              <ul>
+                <li>Draft heartfelt answers explaining <b>why you want this job</b> and why you are the best fit</li>
+                <li>Anticipate <b>interview questions</b> with STAR model answers tailored to your real projects</li>
+                <li>Write punchy <b>LinkedIn recruiter messages</b> ready to copy and send</li>
+                <li>Tackle tough <b>application questionnaire</b> fields (visa, notice, compensation)</li>
+              </ul>
+              <p><i>Click any of the quick prompts above or type your question below. Every response includes a <b>1-click "📋 Copy Response"</b> button so you can paste it anywhere!</i></p>
+            </div>
+          </div>
+        ` : history.map((msg, idx) => {
+          if (msg.role === "user") {
+            return `
+              <div class="chat-msg chat-msg-user">
+                <div>${escapeHtml(msg.content)}</div>
+              </div>
+            `;
+          } else {
+            return `
+              <div class="chat-msg chat-msg-assistant">
+                <div class="chat-msg-header">
+                  <span class="chat-copilot-tag">🤖 Job Copilot</span>
+                  <button class="chat-copy-btn" data-chat-idx="${idx}">📋 Copy Response</button>
+                </div>
+                <div class="chat-msg-content">
+                  ${formatMarkdownToHtml(msg.content)}
+                </div>
+              </div>
+            `;
+          }
+        }).join("")}
+      </div>
+
+      <!-- Input Bar -->
+      <div class="job-chat-input-bar">
+        <textarea id="jobChatInput" class="job-chat-textarea" placeholder="Ask anything about this role (e.g. 'How should I explain my Docker experience for this role?', 'Make the outreach note more casual')..."></textarea>
+        <button id="btnSendJobChat" class="job-chat-send-btn">
+          <span>➤ Send</span>
+        </button>
+      </div>
+    </div>
+  `;
+
+  // Attach event listeners
+  const messagesCont = document.getElementById("jobChatMessages");
+  if (messagesCont) {
+    messagesCont.scrollTop = messagesCont.scrollHeight;
+  }
+
+  // Hook up copy buttons
+  document.querySelectorAll(".chat-copy-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.getAttribute("data-chat-idx") || "-1", 10);
+      if (idx >= 0 && history[idx]) {
+        navigator.clipboard.writeText(history[idx].content);
+        btn.textContent = "✓ Copied!";
+        btn.classList.add("copied");
+        showToast("✨ Response copied to clipboard!");
+        setTimeout(() => {
+          btn.textContent = "📋 Copy Response";
+          btn.classList.remove("copied");
+        }, 2000);
+      }
+    });
+  });
+
+  // Hook up chip buttons
+  document.querySelectorAll(".job-chat-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const promptText = chip.getAttribute("data-prompt");
+      if (promptText) {
+        sendJobChatMessage(promptText);
+      }
+    });
+  });
+
+  // Hook up Clear Chat
+  document.getElementById("btnClearJobChat")?.addEventListener("click", () => {
+    jobChatHistories.set(jobId, []);
+    renderJobChatTab();
+    showToast("Chat history cleared for this job.");
+  });
+
+  // Hook up Send
+  const chatInput = document.getElementById("jobChatInput");
+  const sendBtn = document.getElementById("btnSendJobChat");
+
+  sendBtn?.addEventListener("click", () => {
+    const text = chatInput?.value?.trim();
+    if (text) {
+      sendJobChatMessage(text);
+    }
+  });
+
+  chatInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const text = chatInput.value?.trim();
+      if (text) {
+        sendJobChatMessage(text);
+      }
+    }
+  });
+}
+
+async function sendJobChatMessage(text) {
+  if (!selectedJob || !text.trim()) return;
+
+  const jobId = selectedJob.id || `${selectedJob.company}_${selectedJob.title}`;
+  if (!jobChatHistories.has(jobId)) {
+    jobChatHistories.set(jobId, []);
+  }
+  const history = jobChatHistories.get(jobId);
+
+  // Add user message to history
+  history.push({ role: "user", content: text.trim(), time: Date.now() });
+
+  // Clear input and re-render with loading state
+  renderJobChatTab();
+
+  const messagesCont = document.getElementById("jobChatMessages");
+  const sendBtn = document.getElementById("btnSendJobChat");
+  const chatInput = document.getElementById("jobChatInput");
+
+  if (sendBtn) sendBtn.disabled = true;
+  if (chatInput) chatInput.disabled = true;
+
+  // Append temporary loading bubble
+  const loadingDiv = document.createElement("div");
+  loadingDiv.className = "chat-msg chat-msg-assistant";
+  loadingDiv.id = "chatLoadingBubble";
+  loadingDiv.innerHTML = `
+    <div class="chat-msg-header">
+      <span class="chat-copilot-tag">🤖 Job Copilot</span>
+      <span style="font-size: 11px; color: var(--text-tertiary);">Thinking...</span>
+    </div>
+    <div class="chat-msg-content">
+      <div class="chat-loading-dots">
+        <span class="chat-loading-dot"></span>
+        <span class="chat-loading-dot"></span>
+        <span class="chat-loading-dot"></span>
+      </div>
+    </div>
+  `;
+  messagesCont?.appendChild(loadingDiv);
+  if (messagesCont) messagesCont.scrollTop = messagesCont.scrollHeight;
+
+  try {
+    const res = await fetch("/api/job-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jobId: selectedJob.id,
+        message: text.trim(),
+        history: history.slice(0, -1),
+        job: {
+          company: selectedJob.company,
+          title: selectedJob.title,
+          location: selectedJob.location,
+          salary: selectedJob.salary,
+          full_jd: selectedJob.full_jd || selectedJob.summary || "",
+          key_skills: selectedJob.key_skills || [],
+          sponsorship_status: selectedJob.sponsorship_status,
+          sponsor_verified: selectedJob.sponsor_verified,
+          analysis: selectedJob.analysis
+        }
+      })
+    });
+
+    const data = await res.json();
+    if (data.success && data.reply) {
+      history.push({ role: "assistant", content: data.reply, time: Date.now() });
+    } else {
+      history.push({ role: "assistant", content: `⚠️ ${data.error || "Could not generate a response. Please try again."}`, time: Date.now() });
+    }
+  } catch (err) {
+    console.error("Job chat error:", err);
+    history.push({ role: "assistant", content: "⚠️ Connection error occurred while communicating with the assistant.", time: Date.now() });
+  } finally {
+    renderJobChatTab();
+    setTimeout(() => {
+      document.getElementById("jobChatInput")?.focus();
+    }, 50);
+  }
+}
+
 async function tailorCurrentJob() {
   if (!selectedJob) return;
 
@@ -2918,10 +3298,10 @@ async function markCurrentJobApplied() {
 function copyOutreachMessage() {
   if (!selectedJob) return;
   const name = activeProfile?.name || "Candidate";
-  const headline = activeProfile?.headline || "Software Engineer";
-  const loc = activeProfile?.location || "UK";
+  const headline = activeProfile?.headline || "Platform Engineer";
+  const loc = activeProfile?.location || "the UK";
 
-  const msg = `Hi there,\n\nI noticed ${selectedJob.company} is hiring for a ${selectedJob.title} in ${selectedJob.location}. I'm a ${headline} based in ${loc}.\n\nI'd love to connect and discuss how my background can support your engineering team!\n\nBest regards,\n${name}`;
+  const msg = `Hi [Hiring Team / Recruiter],\n\nI saw ${selectedJob.company} is hiring for a ${selectedJob.title} in ${selectedJob.location} and wanted to reach out directly. I am a ${headline} based in ${loc}.\n\nI have submitted my application through the portal, and would welcome a brief conversation if you have time this week.\n\nBest regards,\n${name}`;
   navigator.clipboard.writeText(msg);
   showToast("Outreach message copied!");
 }

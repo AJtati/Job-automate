@@ -1695,11 +1695,11 @@ serve({
     if (url.pathname === "/api/ai/recommend" && req.method === "POST") {
       try {
         const body = await req.json();
-        const { provider = "ollama", apiKey } = body;
-        const recommendation = await aiService.getRecommendedModel(provider, apiKey);
+        const { provider = "ollama", apiKey, baseUrl } = body;
+        const recommendation = await aiService.getRecommendedModel(provider, apiKey, baseUrl);
         let cloudModels: string[] = [];
-        if (provider === "openai" || provider === "anthropic") {
-          cloudModels = await aiService.fetchCloudModels(provider, apiKey);
+        if (provider === "openai" || provider === "anthropic" || provider === "gemini" || provider === "openrouter" || provider === "nvidia") {
+          cloudModels = await aiService.fetchCloudModels(provider, apiKey, baseUrl);
         }
         return new Response(JSON.stringify({ success: true, ...recommendation, cloudModels }), {
           headers: { "Content-Type": "application/json" }
@@ -1713,8 +1713,8 @@ serve({
     if (url.pathname === "/api/ai/models" && req.method === "POST") {
       try {
         const body = await req.json();
-        const { provider = "anthropic", apiKey, host } = body;
-        const result = await aiService.getAvailableModelsForProvider(provider, apiKey, host);
+        const { provider = "anthropic", apiKey, host, baseUrl } = body;
+        const result = await aiService.getAvailableModelsForProvider(provider, apiKey, host, baseUrl);
         return new Response(JSON.stringify(result), {
           headers: { "Content-Type": "application/json" }
         });
@@ -1846,6 +1846,43 @@ serve({
       }
     }
 
+    // API: POST /api/job-chat (In-Posting AI Assistant Chat & Copilot)
+    if (url.pathname === "/api/job-chat" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { jobId, message, history, profileId, job: incomingJob } = body;
+        if (!message || typeof message !== "string") {
+          return Response.json({ success: false, error: "A message prompt is required." }, { status: 400 });
+        }
+        const activeProfile = profileId ? (profilesManager.getProfile(profileId) || profilesManager.getActiveProfile()) : profilesManager.getActiveProfile();
+        const seen = readSeenJobs();
+        const storedJob = (jobId && seen[jobId]) ? seen[jobId] : (incomingJob || {});
+
+        const company = incomingJob?.company || storedJob.company || "Company";
+        const role = incomingJob?.title || incomingJob?.role || storedJob.title || storedJob.role || "Role";
+        const location = incomingJob?.location || storedJob.location || "";
+        const fullJd = incomingJob?.full_jd || incomingJob?.fullJd || storedJob.full_jd || storedJob.summary || "";
+        const salary = incomingJob?.salary || storedJob.salary || "";
+        const keySkills = incomingJob?.key_skills || storedJob.key_skills || storedJob.keySkills || [];
+
+        const jobForChat = {
+          ...storedJob,
+          ...incomingJob,
+          company,
+          role,
+          location,
+          fullJd,
+          keySkills,
+          salary,
+        };
+
+        const reply = await aiService.generateJobChatResponse(activeProfile, jobForChat, message, history || []);
+        return Response.json({ success: true, reply });
+      } catch (err: any) {
+        return Response.json({ success: false, error: err.message }, { status: 500 });
+      }
+    }
+
     // API: POST /api/tailor (Curate Tailored CV & Cover Letter for a Role)
     if (url.pathname === "/api/tailor" && req.method === "POST") {
       try {
@@ -1855,12 +1892,13 @@ serve({
         const seen = readSeenJobs();
         const storedJob = seen[jobId] || {};
 
-        const company = body.company || storedJob.company || "Company";
-        const role = body.role || storedJob.role || storedJob.title || "Platform Engineer";
-        const location = body.location || storedJob.location || "United Kingdom";
-        const keySkills = (body.keySkills && body.keySkills.length) ? body.keySkills : (storedJob.key_skills || storedJob.keySkills || []);
+        const incomingJob = body.job || {};
+        const company = body.company || incomingJob.company || storedJob.company || "Company";
+        const role = body.role || incomingJob.role || incomingJob.title || storedJob.role || storedJob.title || "Platform Engineer";
+        const location = body.location || incomingJob.location || storedJob.location || "United Kingdom";
+        const keySkills = (body.keySkills && body.keySkills.length) ? body.keySkills : (incomingJob.keySkills || incomingJob.key_skills || storedJob.key_skills || storedJob.keySkills || []);
 
-        let fullJd = String(body.fullJd || storedJob.full_jd || storedJob.summary || "").trim();
+        let fullJd = String(body.fullJd || body.full_jd || incomingJob.fullJd || incomingJob.full_jd || storedJob.full_jd || storedJob.summary || "").trim();
         if (fullJd.length < 150) {
           const fetchedJd = await fetchJobDescription(storedJob);
           if (fetchedJd && fetchedJd.length > 50) {
@@ -1918,12 +1956,14 @@ serve({
 
         const isCoverStale = !existsSync(coverFullPath) || force || (() => {
           const content = readFileSync(coverFullPath, "utf-8");
-          if (content.split("\n").length < 30) return true;
-          if (detectedLang === "de" && /Dear Hiring Manager/i.test(content)) return true;
+          if (content.split("\n").length < 20) return true;
+          if (detectedLang === "de" && /Dear Hiring/i.test(content)) return true;
+          if (/proven track record|proven ability|solid track record|deep practical experience|dedication to building scalable|superficial patches|technical craftsmanship with active empathy|CI\/CD:\s*DevOps|not as boxes to tick|operate without heroics|systems serve the people|whether that means|—|\\vspace\{12pt\}|12pt/i.test(content)) return true;
           return false;
         })();
         if (isCoverStale) {
           coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang);
+          coverContent = aiService.humanizeText(coverContent);
           writeFileSync(coverFullPath, coverContent);
         } else {
           coverContent = readFileSync(coverFullPath, "utf-8");
@@ -1958,13 +1998,15 @@ serve({
 
           const isCoverEnStale = !existsSync(coverEnFull) || force || (() => {
             const content = readFileSync(coverEnFull, "utf-8");
-            if (content.split("\n").length < 30) return true;
+            if (content.split("\n").length < 20) return true;
             if (/Sehr geehrte|Mit freundlichen|hiermit bewerbe/i.test(content)) return true;
+            if (/proven track record|proven ability|solid track record|deep practical experience|dedication to building scalable|superficial patches|technical craftsmanship with active empathy|CI\/CD:\s*DevOps|not as boxes to tick|operate without heroics|systems serve the people|whether that means|—|\\vspace\{12pt\}|12pt/i.test(content)) return true;
             return false;
           })();
 
           if (isCoverEnStale) {
             coverEnglishContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, "en");
+            coverEnglishContent = aiService.humanizeText(coverEnglishContent);
             writeFileSync(coverEnFull, coverEnglishContent);
           } else {
             coverEnglishContent = readFileSync(coverEnFull, "utf-8");

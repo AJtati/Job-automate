@@ -216,6 +216,7 @@
 
           <div class="studio-actions-bar" id="studioActionsBar" style="display: none;">
             <button class="btn-primary" id="btnTailor">⚡ Tailor CV & Cover Letter</button>
+            <button class="btn-secondary" id="btnOpenJobChat">💬 Ask AI About Role</button>
             <button class="btn-secondary" id="btnMarkApplied">✅ Mark as Applied</button>
             <button class="btn-secondary" id="btnCopyRecruiterMsg">💬 Copy Outreach Note</button>
           </div>
@@ -226,6 +227,7 @@
           <button class="tab-btn active" data-tab="tab-cv">📄 Curated ATS CV</button>
           <button class="tab-btn" data-tab="tab-cover">✉️ Tailored Cover Letter</button>
           <button class="tab-btn" data-tab="tab-details">🎯 ATS Score & Job Description</button>
+          <button class="tab-btn" data-tab="tab-chat">💬 Job AI Assistant</button>
           <button class="tab-btn" data-tab="tab-answers">💡 Application Q&A</button>
         </div>
 
@@ -483,12 +485,34 @@
             </div>
           </label>
           <label class="provider-option">
+            <input type="radio" name="aiProvider" value="gemini" />
+            <div class="provider-box">
+              <div class="provider-title">✨ Google Gemini (Cloud API)</div>
+              <div class="provider-desc">Google AI Studio API. Fast sub-second generation with Gemini 2.0 Flash, 1.5 Pro, and multimodal reasoning.</div>
+            </div>
+          </label>
+          <label class="provider-option">
+            <input type="radio" name="aiProvider" value="openrouter" />
+            <div class="provider-box">
+              <div class="provider-title">🚀 OpenRouter (Multi-Model Hub)</div>
+              <div class="provider-desc">Universal model gateway. Access Claude, GPT-4o, DeepSeek, and Llama 3.3 under a single key.</div>
+            </div>
+          </label>
+          <label class="provider-option">
+            <input type="radio" name="aiProvider" value="nvidia" />
+            <div class="provider-box">
+              <div class="provider-title">⚡ NVIDIA Build (NIM Hardware)</div>
+              <div class="provider-desc">NVIDIA NIM accelerated enterprise inference for Llama 3.3 70B, Nemotron, Mixtral, and DeepSeek.</div>
+            </div>
+          </label>
+          <label class="provider-option">
             <input type="radio" name="aiProvider" value="builtin" />
             <div class="provider-box">
               <div class="provider-title">⚡ Built-in Semantic Engine (Offline)</div>
               <div class="provider-desc">High-speed deterministic natural language parser and LaTeX compiler. Zero external dependencies.</div>
             </div>
-          </div>
+          </label>
+        </div>
 
           <!-- Ollama settings -->
           <div class="provider-settings" id="ollamaSettings">
@@ -555,6 +579,79 @@
                 <option value="">Enter API key to load available models...</option>
               </select>
               <div id="openAiModelHint" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 5px;"></div>
+            </div>
+          </div>
+
+          <!-- Google Gemini settings -->
+          <div class="provider-settings" id="geminiSettings" style="display: none;">
+            <div class="form-group">
+              <label>Google Gemini API Key</label>
+              <div style="display: flex; gap: 8px;">
+                <input type="password" id="aiGeminiKey" placeholder="AIzaSy..." style="flex: 1;" />
+                <button type="button" class="btn-secondary" id="btnToggleGeminiKey" style="padding: 6px 12px; font-size: 13px;" title="Show / Hide Key">👁️</button>
+                <button type="button" class="btn-secondary" id="btnScanGeminiModels" style="padding: 6px 12px; font-size: 12px; white-space: nowrap;">🔍 Scan Available Models</button>
+              </div>
+              <div id="geminiKeyStatusMsg" style="font-size: 11.5px; margin-top: 5px; display: none;"></div>
+            </div>
+            <div class="form-group">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label style="margin-bottom: 0;">Select Available Gemini Model</label>
+                <button type="button" id="btnUseGeminiRecommended" style="font-size: 11px; color: var(--apple-green); background: none; border: none; cursor: pointer; display: none; text-decoration: underline;">✨ Use Recommended</button>
+              </div>
+              <select id="aiGeminiModelSelect">
+                <option value="">Enter API key to load available models...</option>
+              </select>
+              <div id="geminiModelHint" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 5px;"></div>
+            </div>
+          </div>
+
+          <!-- OpenRouter settings -->
+          <div class="provider-settings" id="openrouterSettings" style="display: none;">
+            <div class="form-group">
+              <label>OpenRouter API Key</label>
+              <div style="display: flex; gap: 8px;">
+                <input type="password" id="aiOpenrouterKey" placeholder="sk-or-v1-..." style="flex: 1;" />
+                <button type="button" class="btn-secondary" id="btnToggleOpenrouterKey" style="padding: 6px 12px; font-size: 13px;" title="Show / Hide Key">👁️</button>
+                <button type="button" class="btn-secondary" id="btnScanOpenrouterModels" style="padding: 6px 12px; font-size: 12px; white-space: nowrap;">🔍 Scan Available Models</button>
+              </div>
+              <div id="openrouterKeyStatusMsg" style="font-size: 11.5px; margin-top: 5px; display: none;"></div>
+            </div>
+            <div class="form-group">
+              <label style="font-size: 12px; color: var(--text-secondary);">Custom Base URL (Optional)</label>
+              <input type="text" id="aiOpenrouterBaseUrl" value="https://openrouter.ai/api/v1" placeholder="https://openrouter.ai/api/v1" />
+            </div>
+            <div class="form-group">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label style="margin-bottom: 0;">Select Available OpenRouter Model</label>
+                <button type="button" id="btnUseOpenrouterRecommended" style="font-size: 11px; color: var(--apple-green); background: none; border: none; cursor: pointer; display: none; text-decoration: underline;">✨ Use Recommended</button>
+              </div>
+              <select id="aiOpenrouterModelSelect">
+                <option value="">Enter API key to load available models...</option>
+              </select>
+              <div id="openrouterModelHint" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 5px;"></div>
+            </div>
+          </div>
+
+          <!-- NVIDIA Build NIM settings -->
+          <div class="provider-settings" id="nvidiaSettings" style="display: none;">
+            <div class="form-group">
+              <label>NVIDIA Build (NIM) API Key</label>
+              <div style="display: flex; gap: 8px;">
+                <input type="password" id="aiNvidiaKey" placeholder="nvapi-..." style="flex: 1;" />
+                <button type="button" class="btn-secondary" id="btnToggleNvidiaKey" style="padding: 6px 12px; font-size: 13px;" title="Show / Hide Key">👁️</button>
+                <button type="button" class="btn-secondary" id="btnScanNvidiaModels" style="padding: 6px 12px; font-size: 12px; white-space: nowrap;">🔍 Scan Available Models</button>
+              </div>
+              <div id="nvidiaKeyStatusMsg" style="font-size: 11.5px; margin-top: 5px; display: none;"></div>
+            </div>
+            <div class="form-group">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label style="margin-bottom: 0;">Select Available NVIDIA NIM Model</label>
+                <button type="button" id="btnUseNvidiaRecommended" style="font-size: 11px; color: var(--apple-green); background: none; border: none; cursor: pointer; display: none; text-decoration: underline;">✨ Use Recommended</button>
+              </div>
+              <select id="aiNvidiaModelSelect">
+                <option value="">Enter API key to load available models...</option>
+              </select>
+              <div id="nvidiaModelHint" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 5px;"></div>
             </div>
           </div>
 
