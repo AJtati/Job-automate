@@ -141,20 +141,25 @@ fi
 # 3.5 Bundle web app code and assets into Resources for standalone execution
 echo "Bundling web app resources into .app bundle..."
 cp -R "$REPO_DIR/app" "$APP_BUNDLE/Contents/Resources/"
+rm -rf "$APP_BUNDLE/Contents/Resources/app/tests"
 cp "$REPO_DIR/package.json" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
 
 # Bundle the exact zero-dependency scraper sources used by the server. Do not
 # package node_modules or any local candidate/job data.
-for SKILL in linkedin-search freehire-search; do
-    TARGET="$APP_BUNDLE/Contents/Resources/.agents/skills/$SKILL/cli"
-    mkdir -p "$TARGET"
-    cp -R "$REPO_DIR/.agents/skills/$SKILL/cli/src" "$TARGET/"
-    cp "$REPO_DIR/.agents/skills/$SKILL/cli/package.json" "$TARGET/" 2>/dev/null || true
+for SKILL_DIR in "$REPO_DIR"/.agents/skills/*; do
+    if [ -d "$SKILL_DIR/cli" ]; then
+        SKILL="$(basename "$SKILL_DIR")"
+        TARGET="$APP_BUNDLE/Contents/Resources/.agents/skills/$SKILL/cli"
+        mkdir -p "$TARGET"
+        cp -R "$SKILL_DIR/cli/src" "$TARGET/" 2>/dev/null || true
+        cp "$SKILL_DIR/cli/package.json" "$TARGET/" 2>/dev/null || true
+    fi
 done
 
-# Bundle clean template data without any personal candidate data
+# Bundle clean template data and public sponsor register without any personal candidate data
 mkdir -p "$APP_BUNDLE/Contents/Resources/data"
 cp "$REPO_DIR/data/profiles.template.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
+cp "$REPO_DIR/data/sponsor_register.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
 
 # A packaged runtime makes the installed app independent of the user's PATH.
 BUN_PATH="$(command -v bun)"
