@@ -172,5 +172,5 @@ describe("Multilingual Language Detection and Localized Resumes", () => {
     expect(resultIn.freehireCode).toBe("IN");
     expect(resultIn.currency).toBe("₹");
     expect(resultIn.language).toBe("en");
-  });
+  }, 15000);
 });

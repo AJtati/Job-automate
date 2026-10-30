@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { analyzeApplication, buildGroundedSummary } from "../application_engine";
+import { analyzeApplication, analyzeTailoredResume, buildGroundedSummary, extractResumeEvidence, stripLatex } from "../application_engine";
 import type { CandidateProfile } from "../profiles_manager";
 
 const profile: CandidateProfile = {
@@ -140,5 +140,90 @@ describe("application evidence scoring", () => {
     const nurseOnFinance = analyzeApplication(nurseProfile, accountingJob);
     expect(nurseOnFinance.overallScore).toBeLessThanOrEqual(30);
     expect(nurseOnFinance.verdict).toMatch(/Poor fit|Weak fit/);
+  });
+
+  test("analyzeTailoredResume calculates elevated dual ATS score for tailored resume while preserving domain boundaries", () => {
+    const job = {
+      company: "Do It",
+      role: "Senior Platform Engineer",
+      location: "London",
+      fullJd: `We are seeking a Senior Platform Engineer to build and operate our multicloud platform across AWS and GCP.
+Requirements:
+- Deep experience with Kubernetes lifecycle management and cluster upgrades.
+- Infrastructure as Code with Terraform.
+- CI/CD automation pipelines using GitHub Actions.
+- Observability and alerting with Prometheus and Grafana.
+- Python scripting for platform automation.`,
+      keySkills: ["AWS", "GCP", "Kubernetes", "Terraform", "GitHub Actions", "Prometheus", "Grafana", "Python"]
+    };
+
+    // Baseline un-tailored analysis
+    const baseline = analyzeApplication(profile, job);
+    expect(baseline.overallScore).toBeLessThan(75);
+
+    // Mock rendered tailored LaTeX resume
+    const mockTailoredLatex = `
+\\begin{document}
+\\Huge \\textbf{Sam Lee} \\\\
+\\large Senior Platform Engineer \\\\
+\\small sam@example.com $|$ London, UK
+
+\\section{Professional Summary}
+\\small{Senior Platform Engineer specializing in multicloud AWS and GCP infrastructure, Kubernetes cluster lifecycle management, Terraform infrastructure as code, and Prometheus monitoring.}
+
+\\section{Work Experience}
+\\resumeSubheading{Acme Cloud Systems}{London, UK}{Senior Platform Engineer}{2022 -- Present}
+\\resumeItemListStart
+  \\resumeItem{Architected and managed multi-region Kubernetes clusters on AWS and GCP using Terraform and Helm.}
+  \\resumeItem{Engineered automated CI/CD deployment pipelines with GitHub Actions, reducing release cycle time.}
+  \\resumeItem{Implemented Prometheus and Grafana observability stack with comprehensive alerting.}
+  \\resumeItem{Automated platform infrastructure workflows and operational tasks using Python and Bash.}
+\\resumeItemListEnd
+
+\\section{Technical Skills}
+\\begin{itemize}
+  \\item{\\textbf{Cloud \\& Platforms}{: AWS, GCP, Kubernetes, Docker}}
+  \\item{\\textbf{Infrastructure as Code}{: Terraform, Helm}}
+  \\item{\\textbf{CI/CD \\& Observability}{: GitHub Actions, Prometheus, Grafana, Datadog}}
+  \\item{\\textbf{Languages}{: Python, Bash}}
+\\end{itemize}
+\\end{document}
+`;
+
+    // Tailored resume analysis
+    const tailored = analyzeTailoredResume(mockTailoredLatex, job, profile, baseline);
+    expect(tailored.overallScore).toBeGreaterThanOrEqual(80);
+    expect(tailored.overallScore).toBeGreaterThan(baseline.overallScore);
+    expect(tailored.verdict).toBe("Strong fit");
+    expect(tailored.provenance).toContain("Tailored ATS document analysis");
+    expect(tailored.matchedKeywords).toContain("Kubernetes");
+    expect(tailored.matchedKeywords).toContain("Terraform");
+    expect(tailored.matchedKeywords).toContain("Prometheus");
+
+    // Incompatible domain test: Nurse applying for Platform Engineer cannot exceed 25% even with tailored resume
+    const nurseProfile: CandidateProfile = {
+      id: "nurse-test",
+      name: "Sarah Nurse",
+      headline: "Registered Nurse",
+      email: "sarah@example.com",
+      phone: "",
+      location: "London",
+      postcode: "",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: ["Registered Nurse"],
+      targetLocations: ["London"],
+      preferredRadiusMiles: 20,
+      minSalary: 0,
+      skills: { clinical: ["Patient Care", "Triage"] },
+      experience: [{ company: "NHS", role: "Staff Nurse", location: "London", startDate: "2020", endDate: "Present", bullets: ["Provided patient triage."] }],
+      education: [],
+      certifications: [],
+      spokenLanguages: ["English"]
+    };
+    const nurseBaseline = analyzeApplication(nurseProfile, job);
+    const nurseTailored = analyzeTailoredResume(mockTailoredLatex, job, nurseProfile, nurseBaseline);
+    expect(nurseTailored.overallScore).toBeLessThanOrEqual(25);
   });
 });

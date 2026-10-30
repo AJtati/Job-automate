@@ -6,7 +6,7 @@ import { spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { ProfilesManager, CandidateProfile, type ProfileScheduleConfig } from "./profiles_manager";
 import { AIService } from "./ai_service";
-import { analyzeApplication } from "./application_engine";
+import { analyzeApplication, analyzeTailoredResume } from "./application_engine";
 import { createLatexBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, type SupportedLanguage } from "./resume_engine";
 import { parseResumeDeterministically } from "./resume_parser";
 import { SchedulerService, computeNextRun, type ScrapeExecutionResult } from "./scheduler_service";
@@ -15,7 +15,9 @@ import { SearchConfigManager } from "./search_config";
 import {
   detectCandidateCountry, detectJobCountry, type CandidateCountryInfo,
   searchAdzuna, searchArbeitnow, searchCvLibrary, searchGoogleJobs,
-  searchJobicy, searchReed, searchRemotive, type SourceJob, type SourceReport,
+  searchJobicy, searchReed, searchRemotive, searchTheMuse,
+  searchGreenhouse, searchLever, searchAshby,
+  type SourceJob, type SourceReport,
 } from "./job_sources";
 
 const PORT = Number(process.env.PORT || process.env.AI_JOB_SEARCH_PORT || 3333);
@@ -1162,6 +1164,10 @@ export async function runScrapeForProfile(
     { enabled: config.sources.jobicy, name: "Jobicy", keyReady: true, search: (q, l) => searchJobicy(config, q, l) },
     { enabled: config.sources.arbeitnow, name: "Arbeitnow", keyReady: true, search: (q, l) => searchArbeitnow(config, q, l) },
     { enabled: config.sources.remotive, name: "Remotive", keyReady: true, search: (q, l) => searchRemotive(config, q, l) },
+    { enabled: config.sources.themuse, name: "The Muse", keyReady: true, search: (q, l) => searchTheMuse(config, q, l) },
+    { enabled: config.sources.greenhouse, name: "Greenhouse ATS", keyReady: true, search: (q, l) => searchGreenhouse(config, q, l) },
+    { enabled: config.sources.lever, name: "Lever ATS", keyReady: true, search: (q, l) => searchLever(config, q, l) },
+    { enabled: config.sources.ashby, name: "Ashby ATS", keyReady: true, search: (q, l) => searchAshby(config, q, l) },
   ];
   for (const provider of apiSources) {
     const before = counters();
@@ -1278,6 +1284,27 @@ serve({
             keySkills: item.key_skills || [],
           });
 
+          const baselineScore = analysis.overallScore;
+          let tailoredScore = item.tailored_score || null;
+          let effectiveAnalysis = analysis;
+
+          if (cvFile && existsSync(join(ROOT_DIR, cvFile))) {
+            try {
+              const cvText = readFileSync(join(ROOT_DIR, cvFile), "utf-8");
+              const tailoredAnalysis = analyzeTailoredResume(cvText, {
+                company: item.company || "",
+                role: item.title || "",
+                location: item.location || "",
+                fullJd,
+                keySkills: item.key_skills || [],
+              }, activeProfile, analysis);
+              tailoredScore = tailoredAnalysis.overallScore;
+              effectiveAnalysis = tailoredAnalysis;
+            } catch (err) {
+              console.warn("Error calculating tailored ATS score for", cvFile, err);
+            }
+          }
+
         return {
           id,
           title: item.title,
@@ -1289,9 +1316,12 @@ serve({
           salary: item.salary || "Competitive Market Rate",
           url: item.url,
           posted_date: item.posted_date || item.first_seen,
-          fit_score: analysis.overallScore,
-          fit_verdict: analysis.verdict,
-          analysis,
+          fit_score: tailoredScore ?? analysis.overallScore,
+          baseline_score: baselineScore,
+          tailored_score: tailoredScore,
+          fit_verdict: effectiveAnalysis.verdict,
+          analysis: effectiveAnalysis,
+          baseline_analysis: analysis,
           summary: item.summary || fullJd.slice(0, 260),
           full_jd: fullJd,
           key_skills: item.key_skills || analysis.requirements.filter(r => r.category === "technical").map(r => r.requirement),
@@ -1605,11 +1635,36 @@ serve({
           }
           if (edit.kind !== "cover") writeFileSync(join(ROOT_DIR, cvPath), cvContent, "utf-8");
           if (edit.kind !== "cv") writeFileSync(join(ROOT_DIR, coverPath), coverContent, "utf-8");
-          const analysis = analyzeApplication(activeProfile, { company, role, location, keySkills, fullJd });
-          seen[jobId] = { ...job, cv_file: cvPath, cover_file: coverPath, status: "drafted", analysis, fit_score: analysis.overallScore };
+          const baselineAnalysis = analyzeApplication(activeProfile, { company, role, location, keySkills, fullJd });
+          const tailoredAnalysis = analyzeTailoredResume(cvContent, { company, role, location, keySkills, fullJd }, activeProfile, baselineAnalysis);
+          seen[jobId] = {
+            ...job,
+            cv_file: cvPath,
+            cover_file: coverPath,
+            status: "drafted",
+            analysis: tailoredAnalysis,
+            baseline_analysis: baselineAnalysis,
+            fit_score: tailoredAnalysis.overallScore,
+            baseline_score: baselineAnalysis.overallScore,
+            tailored_score: tailoredAnalysis.overallScore
+          };
           saveSeenJobs(seen);
-          profilesManager.updateActiveProfileTracker(jobId, { status: "drafted", cvFile: cvPath, coverFile: coverPath, fitRating: String(analysis.overallScore), notes: `Scenario edit: ${prompt}` });
-          return new Response(JSON.stringify({ success: true, action: "edit_application", explanation: `Updated the open ${edit.kind === "cv" ? "resume" : edit.kind === "cover" ? "cover letter" : "application documents"}.`, cvPath, coverPath, cvContent, coverContent, analysis, fit_score: analysis.overallScore, status: "drafted" }), { headers: { "Content-Type": "application/json" } });
+          profilesManager.updateActiveProfileTracker(jobId, { status: "drafted", cvFile: cvPath, coverFile: coverPath, fitRating: String(tailoredAnalysis.overallScore), notes: `Scenario edit: ${prompt}` });
+          return new Response(JSON.stringify({
+            success: true,
+            action: "edit_application",
+            explanation: `Updated the open ${edit.kind === "cv" ? "resume" : edit.kind === "cover" ? "cover letter" : "application documents"}.`,
+            cvPath,
+            coverPath,
+            cvContent,
+            coverContent,
+            analysis: tailoredAnalysis,
+            baselineAnalysis,
+            fit_score: tailoredAnalysis.overallScore,
+            baseline_score: baselineAnalysis.overallScore,
+            tailored_score: tailoredAnalysis.overallScore,
+            status: "drafted"
+          }), { headers: { "Content-Type": "application/json" } });
         }
 
         // Apply profile updates if any (e.g. removing/adding certs, changing location)
@@ -1761,6 +1816,7 @@ serve({
           ...(typeof body.serpApiKey === "string" ? { serpApiKey: body.serpApiKey.trim() } : {}),
           ...(typeof body.adzunaAppId === "string" ? { adzunaAppId: body.adzunaAppId.trim() } : {}),
           ...(typeof body.adzunaAppKey === "string" ? { adzunaAppKey: body.adzunaAppKey.trim() } : {}),
+          ...(typeof body.customAtsCompanies === "string" ? { customAtsCompanies: body.customAtsCompanies.trim() } : {}),
         });
         return Response.json({ success: true, config: searchConfigManager.getPublic(), sponsorRegistry: sponsorRegistry.status() });
       } catch (err: any) {
@@ -2013,8 +2069,14 @@ serve({
           }
         }
 
-        // Rewriting does not create new evidence, so it must not inflate the ATS score.
-        const tailoredAnalysis = analysis;
+        // Dual ATS Evaluation: Baseline master profile fit vs. Tailored document score
+        const baselineAnalysis = analysis;
+        const tailoredAnalysis = analyzeTailoredResume(
+          cvContent,
+          { company, role, location, keySkills, fullJd },
+          activeProfile,
+          baselineAnalysis
+        );
 
         // Update Tracker with tailored fit rating
         updateTracker(company, role, "drafted", cvPath, coverPath, tailoredAnalysis.overallScore);
@@ -2025,13 +2087,16 @@ serve({
           fitRating: String(tailoredAnalysis.overallScore)
         });
 
-        // Update seen_jobs with tailored analysis and score
+        // Update seen_jobs with tailored analysis and dual scores
         if (seen[jobId]) {
           seen[jobId].status = "drafted";
           seen[jobId].cv_file = cvPath;
           seen[jobId].cover_file = coverPath;
           seen[jobId].fit_score = tailoredAnalysis.overallScore;
+          seen[jobId].baseline_score = baselineAnalysis.overallScore;
+          seen[jobId].tailored_score = tailoredAnalysis.overallScore;
           seen[jobId].analysis = tailoredAnalysis;
+          seen[jobId].baseline_analysis = baselineAnalysis;
           saveSeenJobs(seen);
         }
 
@@ -2052,11 +2117,14 @@ serve({
           coverEnglishContent,
           candidate: activeProfile.name,
           analysis: tailoredAnalysis,
+          baselineAnalysis: baselineAnalysis,
           fit_score: tailoredAnalysis.overallScore,
+          baseline_score: baselineAnalysis.overallScore,
+          tailored_score: tailoredAnalysis.overallScore,
           status: "drafted",
           message: isNonEnglish
             ? `Tailored CV & Cover Letter drafted in ${langPack.name} (plus English edition) for ${company}`
-            : `Tailored CV & Cover Letter drafted for ${company} (${tailoredAnalysis.overallScore}% ATS Match)`
+            : `Tailored CV & Cover Letter drafted for ${company} (${baselineAnalysis.overallScore}% Baseline ➔ ${tailoredAnalysis.overallScore}% Tailored ATS)`
         }), {
           headers: { "Content-Type": "application/json" }
         });

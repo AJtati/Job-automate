@@ -337,7 +337,7 @@ function header(profile: CandidateProfile, role: string): string {
 }
 
 function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis, lang: SupportedLanguage = "en"): string {
-  const roleTitle = job?.role || profile.headline || "Senior Professional";
+  const roleTitle = getDisplayRole(profile, job, analysis);
   const locParts = (profile.location || "").split(",").map(p => p.trim()).filter(Boolean);
   const city = locParts[0] || (profile.location ? profile.location.trim() : "Metropolitan Area");
   const country = locParts.length > 1 ? locParts[locParts.length - 1] : "";
@@ -568,28 +568,117 @@ export function createLatexBackbone(): string {
   return DEFAULT_LATEX_BACKBONE;
 }
 
-function getDisplayRole(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis): string {
-  if (!job?.role) return profile.headline || "Senior Professional";
-  if (analysis && (analysis.verdict === "Poor fit" || analysis.provenance?.includes("Domain incompatibility") || analysis.overallScore <= 30)) {
-    return profile.headline || "Senior Professional";
+export function cleanJobTitle(raw: string): string {
+  if (!raw) return "";
+
+  let title = raw
+    // Strip parenthesized reference numbers, locations, or notes: (Ref: 1234), (Remote), etc.
+    .replace(/\s*\([^)]*(?:ref|id|req|remote|hybrid|onsite|urgent|experience|train|mile|salary|sponsor)[^)]*\)/gi, "")
+    .replace(/\s*\[[^\]]*(?:ref|id|req|remote|hybrid|onsite|urgent|experience|train|mile|salary|sponsor)[^\]]*\]/gi, "")
+    .replace(/\s*\((?:ref:?\s*[\w\d]+|#\d+|\d+)\)/gi, "")
+    // Strip standalone reference IDs: Ref: 7501, #7501, Req 1234, ID: 12345
+    .replace(/\b(?:Ref(?:erence)?|ID|Req(?:uisition)?|Job\s*ID)[:\s#]*[A-Z0-9_-]+/gi, "")
+    // Strip salary and compensation figures: £85k, $120,000, 75k - 85k, etc.
+    .replace(/[£$€]\s*\d+[\d,]*(?:\s*k|\s*K)?(?:\s*-\s*[£$€]?\s*\d+[\d,]*(?:\s*k|\s*K)?)?/g, "")
+    .replace(/\b\d+k\b/gi, "")
+    .replace(/\b(?:up to|circ?a)\s+[£$€]?\s*\d+/gi, "")
+    .replace(/\b(?:per annum|per year|p\.a\.|per day|p\.d\.|per hour|p\.h\.|plus bonus|plus package)\b/gi, "")
+    // Strip recruitment marketing / clickbait / urgency riders:
+    .replace(/\b(?:no experience (?:needed|required)|training (?:provided|given)|immediate start|urgent(?:ly)?(?: required)?|apply now|hot job|career change)\b/gi, "")
+    .replace(/\b(?:outside IR35|inside IR35|perm(?:anent)?|contract(?:or)?|temp(?:orary)?)\b/gi, "");
+
+  // Split on delimiters (pipe, em-dash, en-dash, double colon, slash-slash, or hyphen with spaces)
+  const segments = title.split(/\s*[\u2013\u2014|::]\s*|\s+-\s+|\s*\/\/\s*/);
+  // Pick the first segment that contains a recognizable job role noun
+  let chosen = segments[0]?.trim() || "";
+  for (const seg of segments) {
+    const s = seg.trim();
+    if (/engineer|developer|architect|consultant|specialist|analyst|manager|lead|administrator|sre|qa|tester|sdet|scientist|designer|officer|associate|nurse|practitioner|auditor|accountant|programmer/i.test(s)) {
+      chosen = s;
+      break;
+    }
   }
+
+  // Clean remaining trailing dashes, punctuation, whitespace
+  chosen = chosen
+    .replace(/^[\s\-–—|/:]+|[\s\-–—|/:]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return chosen;
+}
+
+export function getDisplayRole(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis): string {
+  const fallback = profile.headline || "Senior Professional";
+  if (!job?.role) return fallback;
+
+  if (analysis && (analysis.verdict === "Poor fit" || analysis.provenance?.includes("Domain incompatibility") || analysis.overallScore <= 30)) {
+    return fallback;
+  }
+
   const headline = (profile.headline || "").toLowerCase();
-  const role = (job.role || "").toLowerCase();
+  const rawRole = job.role || "";
+  const cleanedRole = cleanJobTitle(rawRole);
+  const roleLower = cleanedRole.toLowerCase();
+
+  // Incompatible domain guardrails
   const isDynamics = /dynamics|power\s*platform|dataverse|crm\b/i.test(headline);
   const isDevops = /devops|platform\s*engineer|sre\b|kubernetes|infrastructure/i.test(headline);
   const isQA = /\bqa\b|tester\b|quality\s*assurance|sdet\b/i.test(headline);
 
-  if (isDynamics && (/platform\s*engineer|sre\b|devops|qa\b|tester/i.test(role) && !/dynamics|crm/i.test(role))) {
+  if (isDynamics && (/platform\s*engineer|sre\b|devops|qa\b|tester/i.test(roleLower) && !/dynamics|crm/i.test(roleLower))) {
     return profile.headline || "Senior Dynamics Developer";
   }
-  if (isDevops && (/dynamics|power\s*platform|crm\b|qa\b|tester/i.test(role))) {
+  if (isDevops && (/dynamics|power\s*platform|crm\b|qa\b|tester/i.test(roleLower))) {
     return profile.headline || "DevOps / Platform Engineer";
   }
-  if (isQA && (/devops|platform\s*engineer|dynamics|crm/i.test(role))) {
+  if (isQA && (/devops|platform\s*engineer|dynamics|crm/i.test(roleLower))) {
     return profile.headline || "QA Automation Engineer";
   }
 
-  return job.role;
+  // Seniority protection:
+  // If candidate is experienced (>= 2 positions recorded or experience spanning >= 2 years),
+  // NEVER demote them to "Trainee", "Junior", "Graduate", or "Apprentice" on their CV!
+  const hasSubstantialExperience = (profile.experience || []).length >= 2 || (profile.experience || []).some(e => {
+    const start = parseInt((e.startDate || "").match(/\b(19\d\d|20\d\d)\b/)?.[1] || "0", 10);
+    const now = new Date().getFullYear();
+    return start > 0 && (now - start >= 2);
+  });
+
+  let calibratedRole = cleanedRole;
+  if (hasSubstantialExperience) {
+    // Strip junior/trainee prefixes from the job title to preserve candidate's genuine seniority
+    calibratedRole = calibratedRole
+      .replace(/\b(?:trainee|junior|graduate|entry[- ]level|associate|apprentice)\s+/gi, "")
+      .trim();
+  }
+
+  // If after cleaning it's empty or trivial, fallback to profile headline
+  if (!calibratedRole || calibratedRole.length < 3) {
+    return fallback;
+  }
+
+  // Preserve standard acronym capitalizations across all tracks (DevOps, SRE, CI/CD, QA, SDET, CRM, D365, AWS, GCP, ETL, BI)
+  const normalizedWords = calibratedRole.split(" ").map(w => {
+    const lower = w.toLowerCase().replace(/[^a-z0-9/]/g, "");
+    if (lower === "devops") return "DevOps";
+    if (lower === "sre") return "Site Reliability Engineer";
+    if (lower === "ci/cd" || lower === "cicd") return "CI/CD";
+    if (lower === "qa") return "QA";
+    if (lower === "sdet") return "SDET";
+    if (lower === "crm") return "CRM";
+    if (lower === "d365") return "Dynamics 365";
+    if (lower === "aws") return "AWS";
+    if (lower === "gcp") return "GCP";
+    if (lower === "bi") return "BI";
+    if (lower === "etl") return "ETL";
+    if (lower === "ai") return "AI";
+    if (lower === "ml") return "ML";
+    if (lower === "ui/ux") return "UI/UX";
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  });
+
+  return normalizedWords.join(" ");
 }
 
 export function renderTailoredResume(
@@ -646,8 +735,16 @@ export function renderGroundedCoverLetter(
   const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
   const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
 
-  const roleClean = job.role || "Specialist";
-  const companyClean = job.company || "Hiring Team";
+  let roleClean = cleanJobTitle(job.role) || profile.headline || "Specialist";
+  const hasSubstantialExperience = (profile.experience || []).length >= 2 || (profile.experience || []).some(e => {
+    const start = parseInt((e.startDate || "").match(/\b(19\d\d|20\d\d)\b/)?.[1] || "0", 10);
+    const now = new Date().getFullYear();
+    return start > 0 && (now - start >= 2);
+  });
+  if (hasSubstantialExperience) {
+    roleClean = roleClean.replace(/\b(?:trainee|junior|graduate|entry[- ]level|associate|apprentice)\s+/gi, "").trim();
+  }
+  const companyClean = cleanJobTitle(job.company || "Hiring Team").replace(/\s*\(Verified.*?\)/gi, "").trim();
   const headlineClean = profile.headline || "Dedicated Specialist";
 
   // Recent experience facts from active candidate profile

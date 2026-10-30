@@ -13,8 +13,13 @@ export interface SearchConfig {
     jobicy: boolean;
     arbeitnow: boolean;
     remotive: boolean;
+    themuse: boolean;
+    greenhouse: boolean;
+    lever: boolean;
+    ashby: boolean;
   };
   sponsorshipMode: SponsorshipMode;
+  customAtsCompanies?: string;
   cvLibraryApiKey?: string;
   reedApiKey?: string;
   serpApiKey?: string;
@@ -33,6 +38,10 @@ const DEFAULT_CONFIG: SearchConfig = {
     jobicy: true,
     arbeitnow: false,
     remotive: true,
+    themuse: true,
+    greenhouse: true,
+    lever: true,
+    ashby: true,
   },
   sponsorshipMode: "all",
 };
@@ -123,6 +132,7 @@ export class SearchConfigManager {
     if (!clean.serpApiKey) delete clean.serpApiKey;
     if (!clean.adzunaAppId) delete clean.adzunaAppId;
     if (!clean.adzunaAppKey) delete clean.adzunaAppKey;
+    if (clean.customAtsCompanies !== undefined && !clean.customAtsCompanies.trim()) delete clean.customAtsCompanies;
     this.config = {
       ...this.config,
       ...clean,

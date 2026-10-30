@@ -685,6 +685,10 @@
           <label><input type="checkbox" id="sourceLinkedin" checked disabled><span><b>LinkedIn · Core</b><small>Global Worldwide · USA, Germany, India, Europe, UK & Remote</small></span></label>
           <label><input type="checkbox" id="sourceFreehire" checked disabled><span><b>Direct company ATS · Core</b><small>Multi-Country Tech ATS · US, DE, IN, UK, EU & Remote</small></span></label>
           <label><input type="checkbox" id="sourceArbeitnow"><span><b>Arbeitnow · Germany & EU</b><small>Free European & German tech jobs with visa/relocation tags</small></span></label>
+          <label><input type="checkbox" id="sourceGreenhouse"><span><b>Greenhouse ATS · Public API</b><small>100% Free · Cloudflare, Stripe, Datadog, Figma, Docker, GitLab, Canva</small></span></label>
+          <label><input type="checkbox" id="sourceLever"><span><b>Lever ATS · Public API</b><small>100% Free · Palantir, Spotify, Netflix, Atlassian global tech jobs</small></span></label>
+          <label><input type="checkbox" id="sourceAshby"><span><b>Ashby ATS · Public API</b><small>100% Free · Linear, Notion, Ramp, Anthropic, OpenAI high-growth startups</small></span></label>
+          <label><input type="checkbox" id="sourceTheMuse"><span><b>The Muse · Free Public API</b><small>100% Free · No key needed · Global tech & remote engineering jobs</small></span></label>
           <label><input type="checkbox" id="sourceAdzuna"><span><b>Adzuna · Multi-Country</b><small>Official API for US, Germany, India, UK, France, Canada, Australia</small></span></label>
           <label><input type="checkbox" id="sourceGoogleJobs"><span><b>Google Jobs · Worldwide</b><small>Via SerpAPI across all international countries & locations</small></span></label>
           <label><input type="checkbox" id="sourceJobicy"><span><b>Jobicy · Global Remote</b><small>Free recent remote tech jobs API</small></span></label>
@@ -700,6 +704,10 @@
         <div class="form-grid-2">
           <div class="form-group"><label>Adzuna app ID <span id="adzunaIdStatus" class="source-key-status"></span></label><input type="password" id="adzunaAppId" placeholder="Leave blank to keep saved ID"></div>
           <div class="form-group"><label>Adzuna app key <span id="adzunaKeyStatus" class="source-key-status"></span></label><input type="password" id="adzunaAppKey" placeholder="Leave blank to keep saved key"></div>
+        </div>
+        <div class="form-group">
+          <label>Target ATS company slugs <small style="color: var(--text-muted); font-weight: normal;">(optional comma-separated: e.g. stripe, datadog, linear, notion, spotify)</small></label>
+          <input type="text" id="customAtsCompanies" placeholder="e.g. cloudflare, datadog, stripe, linear, notion, palantir">
         </div>
         <div class="form-group">
           <label>Sponsorship results</label>
