@@ -10,7 +10,7 @@ export interface SourceJob {
   postedDate: string;
   description: string;
   salary?: string;
-  portal: "cv-library" | "reed" | "google-jobs" | "adzuna" | "jobicy" | "arbeitnow" | "remotive";
+  portal: "cv-library" | "reed" | "google-jobs" | "adzuna" | "jobicy" | "arbeitnow" | "remotive" | "themuse" | "greenhouse" | "lever" | "ashby";
   sourceLabel: string;
 }
 
@@ -172,6 +172,97 @@ export function normalizeRemotiveJobs(payload: any): SourceJob[] {
     portal: "remotive" as const,
     sourceLabel: "Remotive",
   })).filter((job: SourceJob) => job.title && job.company && job.url);
+}
+
+export function normalizeTheMuseJobs(payload: any): SourceJob[] {
+  return (payload?.results || []).map((job: any) => {
+    const locNames = (job.locations || []).map((l: any) => l.name).filter(Boolean);
+    const locStr = locNames.length ? locNames.join(", ") : "Flexible / Remote";
+    const applyUrl = job.refs?.landing_page || "";
+    const rawDesc = (job.contents || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/\s+/g, " ")
+      .trim();
+    return {
+      externalId: String(job.id || stableId(job.name, job.company?.name, applyUrl)),
+      title: text(job.name),
+      company: text(job.company?.name || "Unknown employer"),
+      location: text(locStr),
+      url: String(applyUrl),
+      postedDate: dateOnly(job.publication_date),
+      description: text(rawDesc),
+      portal: "themuse" as const,
+      sourceLabel: "The Muse",
+    };
+  }).filter((job: SourceJob) => job.title && job.company && job.url);
+}
+
+export function normalizeGreenhouseJobs(company: string, payload: any): SourceJob[] {
+  const companyTitle = company.charAt(0).toUpperCase() + company.slice(1);
+  return (payload?.jobs || []).map((job: any) => {
+    const rawContent = (job.content || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/\s+/g, " ")
+      .trim();
+    return {
+      externalId: String(job.id || stableId(job.title, company, job.absolute_url)),
+      title: text(job.title),
+      company: text(companyTitle),
+      location: text(job.location?.name || "Global / Remote"),
+      url: String(job.absolute_url || ""),
+      postedDate: dateOnly(job.updated_at),
+      description: text(rawContent),
+      portal: "greenhouse" as const,
+      sourceLabel: `Greenhouse (${companyTitle})`,
+    };
+  }).filter((job: SourceJob) => job.title && job.company && job.url);
+}
+
+export function normalizeLeverJobs(company: string, payload: any): SourceJob[] {
+  const companyTitle = company.charAt(0).toUpperCase() + company.slice(1);
+  const list = Array.isArray(payload) ? payload : [];
+  return list.map((job: any) => {
+    const desc = text(job.descriptionPlain || job.additionalPlain || "");
+    const loc = job.categories?.location || (job.workplaceType === "remote" ? "Remote" : "Global / Remote");
+    return {
+      externalId: String(job.id || stableId(job.text, company, job.hostedUrl)),
+      title: text(job.text),
+      company: text(companyTitle),
+      location: text(loc),
+      url: String(job.applyUrl || job.hostedUrl || ""),
+      postedDate: dateOnly(job.createdAt ? new Date(job.createdAt) : undefined),
+      description: desc,
+      portal: "lever" as const,
+      sourceLabel: `Lever (${companyTitle})`,
+    };
+  }).filter((job: SourceJob) => job.title && job.company && job.url);
+}
+
+export function normalizeAshbyJobs(company: string, payload: any): SourceJob[] {
+  const companyTitle = company.charAt(0).toUpperCase() + company.slice(1);
+  return (payload?.jobs || []).map((job: any) => {
+    const locs = [job.location, ...(job.secondaryLocations || []).map((l: any) => l.location || l)].filter(Boolean);
+    const locStr = locs.length ? locs.join(", ") : "Global / Remote";
+    return {
+      externalId: String(job.id || stableId(job.title, company, job.jobUrl)),
+      title: text(job.title),
+      company: text(companyTitle),
+      location: text(locStr),
+      url: String(job.jobUrl || ""),
+      postedDate: dateOnly(job.publishedAt),
+      description: text(job.descriptionPlain || ""),
+      portal: "ashby" as const,
+      sourceLabel: `Ashby (${companyTitle})`,
+    };
+  }).filter((job: SourceJob) => job.title && job.company && job.url);
 }
 
 export interface CandidateCountryInfo {
@@ -339,13 +430,47 @@ export async function searchAdzuna(config: SearchConfig, query: string, location
   return normalizeAdzunaJobs(await response.json());
 }
 
+function sanitizeJobicyTag(query: string): string | null {
+  const cleaned = (query || "").replace(/[^a-zA-Z0-9\s]/g, " ").trim();
+  if (cleaned.length >= 3 && cleaned.length <= 20) {
+    return cleaned;
+  }
+  const words = cleaned.split(/\s+/).filter(w => w.length >= 3 && w.length <= 20);
+  const priorityTerms = [
+    "devops", "platform", "sre", "cloud", "infrastructure", "kubernetes",
+    "dynamics", "testing", "tester", "qa",
+    "backend", "frontend", "fullstack", "developer", "engineer"
+  ];
+  for (const term of priorityTerms) {
+    const match = words.find(w => w.toLowerCase() === term || term.includes(w.toLowerCase()));
+    if (match) return match.slice(0, 20);
+  }
+  if (words.length > 0) {
+    return words[0].slice(0, 20);
+  }
+  return null;
+}
+
 export async function searchJobicy(_config: SearchConfig, query: string, location: string): Promise<SourceJob[]> {
   const url = new URL("https://jobicy.com/api/jobs");
   url.searchParams.set("count", "100");
   url.searchParams.set("geo", "europe");
-  url.searchParams.set("tag", query);
+  const tag = sanitizeJobicyTag(query);
+  if (tag) {
+    url.searchParams.set("tag", tag);
+  }
   const response = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error(`Jobicy returned ${response.status}`);
+  if (!response.ok) {
+    // If Jobicy returns 400 for a specific tag, fallback to general feed rather than failing
+    const fallbackRes = await fetch("https://jobicy.com/api/jobs?count=100&geo=europe", {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(15000)
+    }).catch(() => null);
+    if (fallbackRes && fallbackRes.ok) {
+      return normalizeJobicyJobs(await fallbackRes.json()).filter(job => matchesQuery(job, query) && matchesUkEligibility(job, location));
+    }
+    throw new Error(`Jobicy returned ${response.status}`);
+  }
   return normalizeJobicyJobs(await response.json()).filter(job => matchesQuery(job, query) && matchesUkEligibility(job, location));
 }
 
@@ -361,4 +486,126 @@ export async function searchRemotive(_config: SearchConfig, query: string, locat
   const response = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
   if (!response.ok) throw new Error(`Remotive returned ${response.status}`);
   return normalizeRemotiveJobs(await response.json()).filter(job => matchesQuery(job, query) && matchesUkEligibility(job, location));
+}
+
+export async function searchTheMuse(_config: SearchConfig, query: string, location: string): Promise<SourceJob[]> {
+  const url = new URL("https://www.themuse.com/api/public/jobs");
+  url.searchParams.set("page", "1");
+  url.searchParams.set("descending", "true");
+  if (/software|engineer|developer|devops|cloud|platform|sre|qa|test|data|infrastructure/i.test(query)) {
+    url.searchParams.set("category", "Software Engineering");
+  }
+  if (/remote/i.test(location || "")) {
+    url.searchParams.set("location", "Flexible / Remote");
+  } else if (/united kingdom|\buk\b|london|manchester|leeds|birmingham|hartlepool/i.test(location || "")) {
+    url.searchParams.set("location", "London, United Kingdom");
+  } else if (/germany|deutschland|berlin|munich|frankfurt|chemnitz/i.test(location || "")) {
+    url.searchParams.set("location", "Berlin, Germany");
+  } else if (location && !/any|all/i.test(location)) {
+    url.searchParams.set("location", location);
+  }
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)"
+    },
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!response.ok) throw new Error(`The Muse returned ${response.status}`);
+  return normalizeTheMuseJobs(await response.json()).filter(job => matchesQuery(job, query) && matchesUkEligibility(job, location));
+}
+
+export const DEFAULT_GREENHOUSE_COMPANIES = [
+  "cloudflare", "datadog", "stripe", "figma", "elastic", "gitlab", "docker", "canva", "reddit", "airbnb"
+];
+
+export const DEFAULT_LEVER_COMPANIES = [
+  "palantir", "spotify", "netflix", "atlassian"
+];
+
+export const DEFAULT_ASHBY_COMPANIES = [
+  "linear", "notion", "ramp", "anthropic", "openai"
+];
+
+function parseCustomAtsCompanies(config: SearchConfig): string[] {
+  if (!config.customAtsCompanies) return [];
+  return config.customAtsCompanies
+    .split(/[,;\s]+/)
+    .map(s => s.trim().toLowerCase().replace(/[^a-z0-9_-]/g, ""))
+    .filter(Boolean);
+}
+
+export async function searchGreenhouse(
+  config: SearchConfig,
+  query: string,
+  location: string
+): Promise<SourceJob[]> {
+  const custom = parseCustomAtsCompanies(config);
+  const companies = Array.from(new Set([...custom, ...DEFAULT_GREENHOUSE_COMPANIES])).slice(0, 15);
+  const allJobs: SourceJob[] = [];
+
+  await Promise.all(companies.map(async (company) => {
+    try {
+      const res = await fetch(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(company)}/jobs?content=true`, {
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const normalized = normalizeGreenhouseJobs(company, data);
+      const filtered = normalized.filter(j => matchesQuery(j, query) && matchesUkEligibility(j, location));
+      allJobs.push(...filtered);
+    } catch {}
+  }));
+
+  return allJobs;
+}
+
+export async function searchLever(
+  config: SearchConfig,
+  query: string,
+  location: string
+): Promise<SourceJob[]> {
+  const custom = parseCustomAtsCompanies(config);
+  const companies = Array.from(new Set([...custom, ...DEFAULT_LEVER_COMPANIES])).slice(0, 15);
+  const allJobs: SourceJob[] = [];
+
+  await Promise.all(companies.map(async (company) => {
+    try {
+      const res = await fetch(`https://api.lever.co/v0/postings/${encodeURIComponent(company)}?mode=json`, {
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const normalized = normalizeLeverJobs(company, data);
+      const filtered = normalized.filter(j => matchesQuery(j, query) && matchesUkEligibility(j, location));
+      allJobs.push(...filtered);
+    } catch {}
+  }));
+
+  return allJobs;
+}
+
+export async function searchAshby(
+  config: SearchConfig,
+  query: string,
+  location: string
+): Promise<SourceJob[]> {
+  const custom = parseCustomAtsCompanies(config);
+  const companies = Array.from(new Set([...custom, ...DEFAULT_ASHBY_COMPANIES])).slice(0, 15);
+  const allJobs: SourceJob[] = [];
+
+  await Promise.all(companies.map(async (company) => {
+    try {
+      const res = await fetch(`https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(company)}`, {
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const normalized = normalizeAshbyJobs(company, data);
+      const filtered = normalized.filter(j => matchesQuery(j, query) && matchesUkEligibility(j, location));
+      allJobs.push(...filtered);
+    } catch {}
+  }));
+
+  return allJobs;
 }

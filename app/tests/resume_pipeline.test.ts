@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { analyzeApplication } from "../application_engine";
 import { parseResumeDeterministically } from "../resume_parser";
-import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume } from "../resume_engine";
+import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole } from "../resume_engine";
 import type { CandidateProfile } from "../profiles_manager";
 
 const latex = String.raw`\textbf{\Huge Jordan Patel} \\
@@ -171,6 +171,146 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     expect(parsed.profile.targetRoles).not.toContain("Platform Engineer");
     expect(parsed.profile.keywords?.length).toBeGreaterThan(0);
     expect(parsed.profile.keywords).toContain("Patient Care");
+  });
+
+  test("headline cleaner and display role aggressively purges recruiter noise and protects seniority", () => {
+    // 1. Recruiter clickbait and ref codes
+    const messyRole1 = "Trainee DevOps Engineer | No experience needed (Ref: 7501)";
+    expect(cleanJobTitle(messyRole1)).toBe("Trainee DevOps Engineer");
+
+    const messyRole2 = "Senior Platform Engineer - £85k - 95k + Hybrid (Ref: AB1234)";
+    expect(cleanJobTitle(messyRole2)).toBe("Senior Platform Engineer");
+
+    const messyRole3 = "Cloud Infrastructure Engineer / SRE | Remote UK | Immediate Start";
+    expect(cleanJobTitle(messyRole3)).toBe("Cloud Infrastructure Engineer / SRE");
+
+    // 2. Experienced candidate seniority protection:
+    // When an experienced engineer applies to an entry/trainee scheme, never stamp 'Trainee' on their CV
+    const experiencedCandidate: CandidateProfile = {
+      id: "ajith-test",
+      name: "Ajith Surya Thati",
+      headline: "DevOps Engineer / Platform Engineer",
+      email: "ajith@example.com",
+      phone: "+44 7469 475250",
+      location: "Hartlepool, UK",
+      postcode: "TS24",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: true,
+      targetRoles: ["DevOps Engineer", "Platform Engineer"],
+      targetLocations: ["Remote", "Newcastle"],
+      preferredRadiusMiles: 40,
+      minSalary: 0,
+      skills: { devops: ["Kubernetes", "Docker", "Terraform", "AWS", "CI/CD"] },
+      experience: [
+        { company: "CloudCorp", role: "DevOps Engineer", location: "UK", startDate: "2021", endDate: "Present", bullets: ["Maintained Kubernetes clusters."] },
+        { company: "TechServices", role: "Systems Engineer", location: "UK", startDate: "2018", endDate: "2021", bullets: ["Automated deployments."] }
+      ],
+      education: [],
+      certifications: []
+    };
+
+    const job = {
+      company: "Qualify Nation Recruitment",
+      role: messyRole1, // "Trainee DevOps Engineer | No experience needed (Ref: 7501)"
+      location: "Newcastle",
+      fullJd: "Exciting opportunity to join as a DevOps engineer. Training provided."
+    };
+
+    const analysis = analyzeApplication(experiencedCandidate, job);
+    const displayRole = getDisplayRole(experiencedCandidate, job, analysis);
+
+    // Must be calibrated to 'DevOps Engineer' without 'Trainee', 'Ref: 7501', or 'No experience needed'
+    expect(displayRole).toBe("DevOps Engineer");
+    expect(displayRole).not.toContain("Trainee");
+    expect(displayRole).not.toContain("Ref: 7501");
+    expect(displayRole).not.toContain("No experience needed");
+
+    // Resume rendering check
+    const resumeLatex = renderTailoredResume(experiencedCandidate, job, analysis);
+    expect(resumeLatex).toContain("\\textbf{\\large DevOps Engineer}");
+    expect(resumeLatex).not.toContain("Trainee DevOps Engineer");
+    expect(resumeLatex).not.toContain("Ref: 7501");
+    expect(resumeLatex).not.toContain("No experience needed");
+
+    // Cover letter rendering check
+    const coverLatex = renderGroundedCoverLetter(experiencedCandidate, job, analysis);
+    expect(coverLatex).toContain("DevOps Engineer position at Qualify Nation Recruitment");
+    expect(coverLatex).not.toContain("Trainee DevOps Engineer");
+    expect(coverLatex).not.toContain("Ref: 7501");
+
+    // 3. Multi-Track: Dynamics 365 profile protection
+    const dynamicsCandidate: CandidateProfile = {
+      id: "manju-test",
+      name: "Manjubhargavi Cherupally",
+      headline: "Senior Dynamics 365 CRM & Power Platform Developer",
+      email: "manju@example.com",
+      phone: "+44 7774 123456",
+      location: "Manchester, UK",
+      postcode: "M1",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: ["Senior Dynamics Developer"],
+      targetLocations: ["Manchester"],
+      preferredRadiusMiles: 30,
+      minSalary: 0,
+      skills: { dynamics: ["Power Apps", "Dataverse", "C# Plugins", "Workflows"] },
+      experience: [
+        { company: "Solutions Ltd", role: "Senior Dynamics Developer", location: "UK", startDate: "2021", endDate: "Present", bullets: ["Built custom Power Apps."] },
+        { company: "Consulting", role: "CRM Developer", location: "UK", startDate: "2018", endDate: "2021", bullets: ["Wrote C# plugins."] }
+      ],
+      education: [],
+      certifications: []
+    };
+    const messyDynamicsJob = {
+      company: "Enterprise Cloud Partner",
+      role: "Junior Dynamics 365 CRM Developer - Immediate Start | £45k (Ref: D365-99)",
+      location: "Manchester",
+      fullJd: "Seeking a Dynamics 365 developer with Power Platform and C# plugins experience."
+    };
+    const dynamicsAnalysis = analyzeApplication(dynamicsCandidate, messyDynamicsJob);
+    const dynamicsRole = getDisplayRole(dynamicsCandidate, messyDynamicsJob, dynamicsAnalysis);
+    expect(dynamicsRole).toContain("Dynamics 365");
+    expect(dynamicsRole).not.toContain("Junior");
+    expect(dynamicsRole).not.toContain("Ref: D365-99");
+    expect(dynamicsRole).not.toContain("£45k");
+
+    // 4. Multi-Track: QA & Testing profile protection
+    const qaCandidate: CandidateProfile = {
+      id: "shivani-test",
+      name: "Shivani Chitupolu",
+      headline: "QA Engineer with 4.5 years of experience in Manual, Automation & API Testing",
+      email: "shivani@example.com",
+      phone: "+44 7700 900222",
+      location: "London, UK",
+      postcode: "E1",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: true,
+      targetRoles: ["QA Automation Engineer", "SDET"],
+      targetLocations: ["London"],
+      preferredRadiusMiles: 30,
+      minSalary: 0,
+      skills: { testing: ["Selenium", "Playwright", "Cypress", "Postman", "API Testing"] },
+      experience: [
+        { company: "FinTech QA", role: "QA Automation Engineer", location: "London", startDate: "2020", endDate: "Present", bullets: ["Designed Playwright test suites."] },
+        { company: "Quality Lab", role: "Software Tester", location: "London", startDate: "2018", endDate: "2020", bullets: ["Manual and automated testing."] }
+      ],
+      education: [],
+      certifications: []
+    };
+    const messyQaJob = {
+      company: "Tech Recruitment",
+      role: "Trainee QA Tester / Test Automation (Ref: QA-101) - Urgent Hire",
+      location: "London",
+      fullJd: "Exciting QA Tester opportunity. Experience with test automation is a plus."
+    };
+    const qaAnalysis = analyzeApplication(qaCandidate, messyQaJob);
+    const qaRole = getDisplayRole(qaCandidate, messyQaJob, qaAnalysis);
+    expect(qaRole).toContain("QA");
+    expect(qaRole).not.toContain("Trainee");
+    expect(qaRole).not.toContain("Ref: QA-101");
   });
 });
 

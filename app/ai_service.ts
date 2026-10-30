@@ -4,7 +4,7 @@ import { CandidateProfile } from "./profiles_manager";
 import { analyzeApplication, buildGroundedSummary, type JobInput } from "./application_engine";
 import { parseResumeDeterministically } from "./resume_parser";
 import {
-  renderGroundedCoverLetter, renderTailoredResume,
+  renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle,
   detectLanguageDeterministically, type SupportedLanguage, LANGUAGE_PACKS,
 } from "./resume_engine";
 import { detectCandidateCountry, type CandidateCountryInfo } from "./job_sources";
@@ -2978,14 +2978,38 @@ Regarding your question about **${userMessage}**:
 
 function cleanCandidateHeadline(role: string, fallbackHeadline = "Professional Candidate"): string {
   if (!role) return fallbackHeadline;
-  let clean = role.split(/—|-|\|/)[0].trim();
-  clean = clean.replace(/\(.*?\)/g, "").trim();
+  let clean = cleanJobTitle(role);
   const lower = clean.toLowerCase();
+
+  // DevOps & Cloud
   if (lower.includes("devops") && lower.includes("lead")) return "Lead DevOps Engineer";
   if (lower.includes("platform") && lower.includes("lead")) return "Lead Platform Engineer";
   if (lower.includes("platform") && lower.includes("senior")) return "Senior Platform Engineer";
   if (lower.includes("devops") && lower.includes("senior")) return "Senior DevOps Engineer";
-  if (lower.includes("sre") || lower.includes("site reliability")) return "Senior Site Reliability Engineer";
-  if (lower.includes("cloud")) return "Senior Cloud Infrastructure Engineer";
+  if (lower.includes("devops")) return "DevOps Engineer";
+  if (lower.includes("platform")) return "Platform Engineer";
+  if (lower.includes("sre") || lower.includes("site reliability")) return "Site Reliability Engineer";
+  if (lower.includes("cloud")) return "Cloud Infrastructure Engineer";
+
+  // Dynamics 365 & Power Platform
+  if (lower.includes("dynamics") && lower.includes("senior")) return "Senior Dynamics 365 Developer";
+  if (lower.includes("dynamics") || lower.includes("d365")) return "Dynamics 365 Developer";
+  if (lower.includes("power platform") || lower.includes("power apps")) return "Power Platform Developer";
+
+  // QA & Testing
+  if ((lower.includes("qa") || lower.includes("test")) && lower.includes("lead")) return "Lead QA Automation Engineer";
+  if ((lower.includes("qa") || lower.includes("test")) && lower.includes("senior")) return "Senior QA Automation Engineer";
+  if (lower.includes("sdet")) return "SDET / Software Test Engineer";
+  if (lower.includes("qa") || lower.includes("test")) return "QA Automation Engineer";
+
+  // Full Stack & Web
+  if (lower.includes("full stack") || lower.includes("fullstack")) return lower.includes("senior") ? "Senior Full Stack Engineer" : "Full Stack Engineer";
+  if (lower.includes("frontend") || lower.includes("front end")) return lower.includes("senior") ? "Senior Frontend Engineer" : "Frontend Engineer";
+  if (lower.includes("backend") || lower.includes("back end")) return lower.includes("senior") ? "Senior Backend Engineer" : "Backend Engineer";
+
+  // Data & AI
+  if (lower.includes("data engineer")) return lower.includes("senior") ? "Senior Data Engineer" : "Data Engineer";
+  if (lower.includes("data scientist")) return lower.includes("senior") ? "Senior Data Scientist" : "Data Scientist";
+
   return clean || fallbackHeadline;
 }

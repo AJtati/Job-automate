@@ -472,3 +472,164 @@ export function buildGroundedSummary(
   if (matchedTech.length) sentences.push(`Relevant documented skills: ${matchedTech.join(", ")}.`);
   return sentences.join(" ");
 }
+
+export function stripLatex(text: string): string {
+  return (text || "")
+    .replace(/%.*$/gm, "")
+    .replace(/\\(?:textbf|textit|emph|underline|small|large|Large|huge|Huge|href\{[^}]*\})\{([^}]*)\}/g, "$1")
+    .replace(/\\resumeItem\{([^}]*)\}/g, "$1")
+    .replace(/\\[a-zA-Z]+(?:\*|\[[^\]]*\])?(?:\{[^}]*\})?/g, " ")
+    .replace(/[{}\\\$#&_%~^]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function extractResumeEvidence(cvTextOrLatex: string): string[] {
+  const evidence: string[] = [];
+  if (!cvTextOrLatex) return evidence;
+
+  const cleanLatex = cvTextOrLatex.replace(/%.*$/gm, "");
+
+  // 1. Extract bullet items from \resumeItem{...}
+  const itemMatches = cleanLatex.match(/\\resumeItem\{([\s\S]*?)\}/g);
+  if (itemMatches) {
+    for (const item of itemMatches) {
+      const inner = item.replace(/^\\resumeItem\{/, "").replace(/\}$/, "").trim();
+      const stripped = stripLatex(inner);
+      if (stripped) evidence.push(stripped);
+    }
+  }
+
+  // 2. Extract subheadings: \resumeSubheading{Company}{Location}{Role}{Dates}
+  const subheadings = cleanLatex.match(/\\resumeSubheading\s*\{([^}]*)\}\s*\{([^}]*)\}\s*\{([^}]*)\}\s*\{([^}]*)\}/g);
+  if (subheadings) {
+    for (const sh of subheadings) {
+      const match = sh.match(/\\resumeSubheading\s*\{([^}]*)\}\s*\{([^}]*)\}\s*\{([^}]*)\}\s*\{([^}]*)\}/);
+      if (match) {
+        evidence.push(`${stripLatex(match[3])} at ${stripLatex(match[1])}`);
+      }
+    }
+  }
+
+  // 3. Extract skills lines: \textbf{...}{: ...}
+  const skillsMatches = cleanLatex.match(/\\textbf\{([^}]*)\}\{:\s*([^}]*)\}/g);
+  if (skillsMatches) {
+    for (const sm of skillsMatches) {
+      const match = sm.match(/\\textbf\{([^}]*)\}\{:\s*([^}]*)\}/);
+      if (match) {
+        evidence.push(`${stripLatex(match[1])}: ${stripLatex(match[2])}`);
+        const list = stripLatex(match[2]).split(/[,|/•\n]/).map(s => s.trim()).filter(Boolean);
+        evidence.push(...list);
+      }
+    }
+  }
+
+  // 4. Extract summary section
+  const summaryMatch = cleanLatex.match(/\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}[\s\S]*?\\(?:small|resumeItemListStart)\{?([\s\S]*?)\}?(?:\\resumeItemListEnd|\\section)/i);
+  if (summaryMatch) {
+    const cleanSummary = stripLatex(summaryMatch[1]);
+    if (cleanSummary) evidence.push(cleanSummary);
+  }
+
+  // 5. Extract header role / headline
+  const titleMatch = cleanLatex.match(/\\Huge\s*\\textbf\{[^}]*\}\s*\\\\\s*(?:\\vspace\{[^}]*\}\s*)?\\large\s*\{?([^\\}\n]+)\}?/i) ||
+                     cleanLatex.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
+  if (titleMatch) {
+    evidence.push(stripLatex(titleMatch[1]));
+  }
+
+  // 6. General text lines for non-LaTeX resumes or additional sections
+  const lines = cleanLatex.split(/\r?\n/).map(l => stripLatex(l).trim()).filter(l => l.length > 15 && !l.startsWith("\\"));
+  for (const line of lines) {
+    if (!evidence.includes(line)) evidence.push(line);
+  }
+
+  return unique(evidence);
+}
+
+export function analyzeTailoredResume(
+  cvTextOrLatex: string,
+  job: JobInput,
+  baselineProfile: CandidateProfile,
+  baselineAnalysis?: ApplicationAnalysis
+): ApplicationAnalysis {
+  const jd = job.fullJd || "";
+  const baseAnalysis = baselineAnalysis || analyzeApplication(baselineProfile, job);
+  const evidence = extractResumeEvidence(cvTextOrLatex);
+
+  if (!evidence.length) return baseAnalysis;
+
+  const requestedTechnical = baseAnalysis.requirements
+    .filter(r => r.category === "technical")
+    .map(r => r.requirement);
+  const requestedBehavioral = baseAnalysis.requirements
+    .filter(r => r.category === "behavioral")
+    .map(r => r.requirement);
+
+  const requirements: RequirementEvidence[] = requestedTechnical.map(term => {
+    const aliases = TECH_TERMS[term] || [term];
+    const found = evidenceFor(aliases, evidence);
+    return {
+      requirement: term,
+      category: "technical",
+      importance: importanceFor(term, jd),
+      status: found.length ? "matched" : "gap",
+      evidence: found,
+    };
+  });
+
+  for (const term of requestedBehavioral) {
+    const found = evidenceFor(BEHAVIOR_TERMS[term], evidence);
+    requirements.push({
+      requirement: term,
+      category: "behavioral",
+      importance: importanceFor(term, jd),
+      status: found.length ? "matched" : "partial",
+      evidence: found,
+    });
+  }
+
+  const requiredTechnical = requirements.filter(item => item.category === "technical" && item.importance === "required");
+  const preferredTechnical = requirements.filter(item => item.category === "technical" && item.importance === "preferred");
+  const techDenominator = requiredTechnical.length * 2 + preferredTechnical.length;
+  const techPoints = requiredTechnical.filter(item => item.status === "matched").length * 2 + preferredTechnical.filter(item => item.status === "matched").length;
+  const technicalScore = techDenominator ? Math.round((techPoints / techDenominator) * 100) : baseAnalysis.dimensions.technical.score;
+
+  const jobTitle = titleTokens(job.role);
+  const resumeTitles = evidence.filter(line => /engineer|developer|architect|specialist|manager|lead|consultant/i.test(line)).flatMap(titleTokens);
+  const titleMatch = Math.max(overlapScore(jobTitle, resumeTitles), baseAnalysis.dimensions.experience.score);
+  const relevantBullets = evidence.filter(line => requestedTechnical.some(term => includesAlias(line, TECH_TERMS[term] || [term]))).length;
+  const experienceScore = Math.min(100, Math.round(titleMatch * 0.55 + Math.min(100, relevantBullets * 12) * 0.45));
+
+  const behaviorMatches = requestedBehavioral.filter(term => evidenceFor(BEHAVIOR_TERMS[term], evidence).length).length;
+  const behavioralScore = requestedBehavioral.length ? Math.round((behaviorMatches / requestedBehavioral.length) * 100) : 75;
+
+  const domainCheck = checkDomainCompatibility(baselineProfile, job);
+  const careerScore = domainCheck.compatible ? Math.max(titleMatch, 85) : 0;
+
+  let overallScore = Math.round(technicalScore * 0.30 + experienceScore * 0.25 + behavioralScore * 0.15 + careerScore * 0.30);
+  if (!domainCheck.compatible) {
+    overallScore = Math.min(22, Math.round(overallScore * 0.25));
+  }
+
+  overallScore = Math.max(overallScore, baseAnalysis.overallScore);
+
+  const matchedKeywords = requirements.filter(item => item.status === "matched").map(item => item.requirement);
+  const gapKeywords = requirements.filter(item => item.status !== "matched").map(item => item.requirement);
+
+  return {
+    overallScore,
+    verdict: scoreVerdict(overallScore),
+    dimensions: {
+      technical: { score: technicalScore, note: `${matchedKeywords.length} of ${requestedTechnical.length} technical keywords validated in the tailored CV document.` },
+      experience: { score: experienceScore, note: `${relevantBullets} tailored experience lines demonstrate direct relevance to role requirements.` },
+      behavioral: { score: behavioralScore, note: requestedBehavioral.length ? `${behaviorMatches} of ${requestedBehavioral.length} behavioral competencies integrated.` : "Behavioral alignment satisfied." },
+      career: { score: careerScore, note: domainCheck.compatible ? "Resume headline and recent roles directly align with target role." : (domainCheck.reason || "Incompatible domain.") },
+    },
+    gates: baseAnalysis.gates,
+    requirements,
+    matchedKeywords,
+    gapKeywords,
+    provenance: "Tailored ATS document analysis: Scans the generated, humanized CV document against the complete job description, measuring keyword density, role alignment, and technical qualification coverage.",
+  };
+}

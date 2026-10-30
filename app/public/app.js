@@ -1163,6 +1163,8 @@ async function runScenarioPrompt() {
         selectedJob.cover_file = data.coverPath || selectedJob.cover_file;
         selectedJob.analysis = data.analysis || selectedJob.analysis;
         selectedJob.fit_score = data.fit_score ?? selectedJob.fit_score;
+        if (data.tailored_score) selectedJob.tailored_score = data.tailored_score;
+        if (data.baseline_score) selectedJob.baseline_score = data.baseline_score;
         activeTailoredData = data;
         renderJobs();
         renderStudioTabContent();
@@ -1939,7 +1941,10 @@ function renderJobs() {
       arbeitnow: "Arbeitnow", remotive: "Remotive", "external-url": "Imported",
     };
     const portalTag = `<span class="meta-pill" style="color: #93c5fd; border-color: rgba(147,197,253,0.3); font-weight: 500;">${escapeHtml(portalNames[job.portal] || job.portal || "Source")}</span>`;
-    const scoreLabel = job.fit_score > 0 ? `${job.fit_score}% match` : "Needs full JD";
+    const isTailored = Boolean(job.tailored_score && job.baseline_score && job.tailored_score !== job.baseline_score);
+    const scoreLabel = isTailored
+      ? `<span style="font-size: 11px; opacity: 0.65; text-decoration: line-through; margin-right: 3px;">${job.baseline_score}%</span><span style="color: #34d399; font-weight: 700;">🎯 ${job.tailored_score}%</span>`
+      : (job.fit_score > 0 ? `${job.fit_score}% match` : "Needs full JD");
 
     card.innerHTML = `
       <div class="job-card-header">
@@ -1992,9 +1997,12 @@ function selectJob(job) {
   studioLocation.textContent = ` · ${job.location} (~${job.distance_miles} mi)`;
 
   const atsBadge = document.getElementById("studioAtsBadge");
-  const atsScore = document.getElementById("studioAtsScore");
-  if (atsBadge && atsScore) {
-    atsScore.textContent = job.fit_score > 0 ? `${job.fit_score}%` : "Needs JD";
+  if (atsBadge) {
+    if (job.tailored_score && job.baseline_score && job.tailored_score !== job.baseline_score) {
+      atsBadge.innerHTML = `🎯 <span style="opacity: 0.7; text-decoration: line-through; font-size: 11.5px; margin-right: 3px;">${job.baseline_score}%</span> <span style="color: #34d399; font-weight: 800;">${job.tailored_score}%</span> <span style="font-size: 10.5px; opacity: 0.85; margin-left: 3px; font-weight: 600;">(Tailored ATS)</span>`;
+    } else {
+      atsBadge.innerHTML = `🎯 <span id="studioAtsScore">${job.fit_score > 0 ? `${job.fit_score}%` : "Needs JD"}</span> Match`;
+    }
     atsBadge.style.display = "inline-flex";
   }
 
@@ -2173,7 +2181,8 @@ async function renderCVTab() {
   // Visual Parsing
   const parsed = parseLatexCV(texCode);
   const isGermanDoc = (currentDocLang === "native" && (activeTailoredData?.language === "de" || /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) || parsed.language === "de")) || /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) || /\\section\{Profil\}/i.test(texCode);
-  const headlineRole = cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
+  const latexRoleMatch = texCode.match(/\\textbf\{\\large\s*([^}]+)\}/i) || texCode.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
+  const headlineRole = latexRoleMatch ? latexRoleMatch[1].replace(/\\&/g, "&").trim() : cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
   const expToRender = (parsed.experience && parsed.experience.length > 0)
     ? parsed.experience
     : (activeProfile?.experience || []).map(exp => ({
@@ -2473,22 +2482,53 @@ function renderDetailsTab() {
     ? analysis.gapKeywords 
     : [];
 
+  const isTailored = Boolean(selectedJob.tailored_score && selectedJob.baseline_score && selectedJob.tailored_score !== selectedJob.baseline_score);
+  const baselineScore = selectedJob.baseline_score || fitScore;
+  const tailoredScore = selectedJob.tailored_score || fitScore;
+
   studioContent.innerHTML = `
     <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px;">
       
       <!-- ATS Compatibility Overview Header -->
       <div class="ats-overview-card">
         <div>
-          <div style="font-size: 11px; text-transform: uppercase; font-weight: 700; color: #34d399; letter-spacing: 0.5px;">ATS Compatibility Assessment</div>
+          <div style="font-size: 11px; text-transform: uppercase; font-weight: 700; color: #34d399; letter-spacing: 0.5px;">
+            ${isTailored ? "Dual-Track ATS Compatibility Assessment" : "ATS Compatibility Assessment"}
+          </div>
           <div class="ats-overall-number">
-            🎯 ${fitScore}% Match
-            <span style="font-size: 13.5px; font-weight: 600; color: #34d399; margin-left: 8px;">
-              ✨ ${verdict}
-            </span>
+            ${isTailored ? `
+              <div style="display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;">
+                <span style="font-size: 16px; color: #94a3b8; text-decoration: line-through; opacity: 0.75;">${baselineScore}% Baseline</span>
+                <span style="font-size: 22px; color: #34d399; font-weight: 800;">➔ 🎯 ${tailoredScore}% Tailored ATS</span>
+                <span style="font-size: 13px; font-weight: 600; color: #34d399;">✨ ${verdict}</span>
+              </div>
+            ` : `
+              🎯 ${fitScore}% Match
+              <span style="font-size: 13.5px; font-weight: 600; color: #34d399; margin-left: 8px;">
+                ✨ ${verdict}
+              </span>
+            `}
           </div>
           <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
-            Benchmarked for <b>${escapeHtml(activeProfile?.name || "Candidate")}</b> against <b>${escapeHtml(selectedJob.company)}</b>
+            ${isTailored 
+              ? `Tailored resume for <b>${escapeHtml(activeProfile?.name || "Candidate")}</b> scanned directly against <b>${escapeHtml(selectedJob.company)}</b> requirements`
+              : `Benchmarked for <b>${escapeHtml(activeProfile?.name || "Candidate")}</b> against <b>${escapeHtml(selectedJob.company)}</b>`
+            }
           </div>
+          ${isTailored ? `
+            <div style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
+              <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 6px 10px; font-size: 11.5px;">
+                <span style="color: #94a3b8;">Untailored Master Background:</span> <b style="color: #cbd5e1;">${baselineScore}%</b>
+              </div>
+              <div style="background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.3); border-radius: 6px; padding: 6px 10px; font-size: 11.5px;">
+                <span style="color: #34d399;">Optimized Application Document:</span> <b style="color: #34d399;">${tailoredScore}% (+${tailoredScore - baselineScore}%)</b>
+              </div>
+            </div>
+          ` : `
+            <div style="margin-top: 8px; font-size: 11.5px; color: #93c5fd;">
+              💡 <i>Tip: Click <b>"⚡ Tailor CV & Cover Letter"</b> above to front-load matching skills and lift ATS score to 90%+</i>
+            </div>
+          `}
         </div>
         <div style="text-align: right;">
           <div class="meta-pill" style="font-size: 12px; padding: 5px 12px; background: rgba(10, 132, 255, 0.15); border-color: rgba(10, 132, 255, 0.35); color: #93c5fd;">
@@ -2826,7 +2866,7 @@ function renderJobChatTab() {
               </span>
             </h3>
             <div class="job-chat-header-sub" style="margin-top: 3px;">
-              Grounded in candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b> and full job description · <b>${fitScore}% Match</b>
+              Grounded in candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b> and full job description · <b>${selectedJob.tailored_score && selectedJob.baseline_score && selectedJob.tailored_score !== selectedJob.baseline_score ? `${selectedJob.baseline_score}% Baseline ➔ ${selectedJob.tailored_score}% Tailored ATS Match` : `${fitScore}% Match`}</b>
             </div>
           </div>
         </div>
@@ -3068,14 +3108,23 @@ async function tailorCurrentJob() {
       selectedJob.status = "drafted";
       selectedJob.cv_file = data.cvPath;
       selectedJob.cover_file = data.coverPath;
+      selectedJob.fit_score = data.tailored_score || data.fit_score;
+      selectedJob.baseline_score = data.baseline_score;
+      selectedJob.tailored_score = data.tailored_score;
       if (data.analysis) {
         selectedJob.analysis = data.analysis;
-        selectedJob.fit_score = data.analysis.overallScore;
+      }
+      if (data.baselineAnalysis) {
+        selectedJob.baseline_analysis = data.baselineAnalysis;
       }
       activeTailoredData = data;
       renderJobs();
+      selectJob(selectedJob);
       renderStudioTabContent();
-      showToast(`✨ Tailored ATS CV & Cover Letter generated for ${selectedJob.company}!`);
+      const scoreNote = data.baseline_score && data.tailored_score
+        ? ` (${data.baseline_score}% Baseline ➔ ${data.tailored_score}% Tailored ATS)`
+        : ` (${selectedJob.fit_score}% Match)`;
+      showToast(`✨ Tailored ATS CV & Cover Letter generated for ${selectedJob.company}${scoreNote}!`);
     } else {
       showToast(data.error || "Failed to tailor application");
     }
@@ -3365,6 +3414,11 @@ async function fetchSearchConfig() {
     document.getElementById("sourceJobicy").checked = Boolean(sources.jobicy);
     document.getElementById("sourceArbeitnow").checked = Boolean(sources.arbeitnow);
     document.getElementById("sourceRemotive").checked = Boolean(sources.remotive);
+    document.getElementById("sourceTheMuse").checked = Boolean(sources.themuse ?? true);
+    document.getElementById("sourceGreenhouse").checked = Boolean(sources.greenhouse ?? true);
+    document.getElementById("sourceLever").checked = Boolean(sources.lever ?? true);
+    document.getElementById("sourceAshby").checked = Boolean(sources.ashby ?? true);
+    document.getElementById("customAtsCompanies").value = searchConfig.customAtsCompanies || "";
     document.getElementById("sponsorshipMode").value = searchConfig.sponsorshipMode || "all";
 
     const updateKeyIndicator = (statusId, inputId, isConfigured, name) => {
@@ -3403,7 +3457,12 @@ async function saveSearchConfig() {
       jobicy: document.getElementById("sourceJobicy").checked,
       arbeitnow: document.getElementById("sourceArbeitnow").checked,
       remotive: document.getElementById("sourceRemotive").checked,
+      themuse: document.getElementById("sourceTheMuse").checked,
+      greenhouse: document.getElementById("sourceGreenhouse").checked,
+      lever: document.getElementById("sourceLever").checked,
+      ashby: document.getElementById("sourceAshby").checked,
     },
+    customAtsCompanies: document.getElementById("customAtsCompanies").value,
     sponsorshipMode: document.getElementById("sponsorshipMode").value,
     cvLibraryApiKey: document.getElementById("cvLibraryApiKey").value,
     reedApiKey: document.getElementById("reedApiKey").value,
@@ -3712,16 +3771,69 @@ function escapeHtml(text) {
 
 function cleanCandidateHeadline(role, fallback = "Professional Candidate") {
   if (!role) return fallback;
-  let clean = role.split(/—|-|\|/)[0].trim();
-  clean = clean.replace(/\(.*?\)/g, "").trim();
-  const lower = clean.toLowerCase();
+
+  // Purge reference numbers, salary, clickbait, locations
+  let clean = role
+    .replace(/\s*\([^)]*(?:ref|id|req|remote|hybrid|onsite|urgent|experience|train|mile|salary|sponsor)[^)]*\)/gi, "")
+    .replace(/\s*\[[^\]]*(?:ref|id|req|remote|hybrid|onsite|urgent|experience|train|mile|salary|sponsor)[^\]]*\]/gi, "")
+    .replace(/\s*\((?:ref:?\s*[\w\d]+|#\d+|\d+)\)/gi, "")
+    .replace(/\b(?:Ref(?:erence)?|ID|Req(?:uisition)?|Job\s*ID)[:\s#]*[A-Z0-9_-]+/gi, "")
+    .replace(/[£$€]\s*\d+[\d,]*(?:\s*k|\s*K)?(?:\s*-\s*[£$€]?\s*\d+[\d,]*(?:\s*k|\s*K)?)?/g, "")
+    .replace(/\b\d+k\b/gi, "")
+    .replace(/\b(?:up to|circ?a)\s+[£$€]?\s*\d+/gi, "")
+    .replace(/\b(?:per annum|per year|p\.a\.|per day|p\.d\.|per hour|p\.h\.|plus bonus|plus package)\b/gi, "")
+    .replace(/\b(?:no experience (?:needed|required)|training (?:provided|given)|immediate start|urgent(?:ly)?(?: required)?|apply now|hot job|career change)\b/gi, "")
+    .replace(/\b(?:outside IR35|inside IR35|perm(?:anent)?|contract(?:or)?|temp(?:orary)?)\b/gi, "");
+
+  const segments = clean.split(/\s*[\u2013\u2014|::]\s*|\s+-\s+|\s*\/\/\s*/);
+  let chosen = segments[0]?.trim() || "";
+  for (const seg of segments) {
+    const s = seg.trim();
+    if (/engineer|developer|architect|consultant|specialist|analyst|manager|lead|administrator|sre|qa|tester|scientist/i.test(s)) {
+      chosen = s;
+      break;
+    }
+  }
+
+  // Seniority protection: strip trainee/junior if candidate is experienced
+  const expCount = (activeProfile?.experience || []).length;
+  if (expCount >= 2) {
+    chosen = chosen.replace(/\b(?:trainee|junior|graduate|entry[- ]level|associate|apprentice)\s+/gi, "").trim();
+  }
+
+  const lower = chosen.toLowerCase();
+
+  // DevOps & Cloud Infrastructure
   if (lower.includes("devops") && lower.includes("lead")) return "Lead DevOps Engineer";
   if (lower.includes("platform") && lower.includes("lead")) return "Lead Platform Engineer";
   if (lower.includes("platform") && lower.includes("senior")) return "Senior Platform Engineer";
   if (lower.includes("devops") && lower.includes("senior")) return "Senior DevOps Engineer";
-  if (lower.includes("sre") || lower.includes("site reliability")) return "Senior Site Reliability Engineer";
-  if (lower.includes("cloud")) return "Senior Cloud Infrastructure Engineer";
-  return clean || fallback;
+  if (lower.includes("devops")) return "DevOps Engineer";
+  if (lower.includes("platform")) return "Platform Engineer";
+  if (lower.includes("sre") || lower.includes("site reliability")) return "Site Reliability Engineer";
+  if (lower.includes("cloud")) return "Cloud Infrastructure Engineer";
+
+  // Microsoft Dynamics 365 & Power Platform
+  if (lower.includes("dynamics") && lower.includes("senior")) return "Senior Dynamics 365 Developer";
+  if (lower.includes("dynamics") || lower.includes("d365")) return "Dynamics 365 Developer";
+  if (lower.includes("power platform") || lower.includes("power apps")) return "Power Platform Developer";
+
+  // QA & Test Automation
+  if ((lower.includes("qa") || lower.includes("test")) && lower.includes("lead")) return "Lead QA Automation Engineer";
+  if ((lower.includes("qa") || lower.includes("test")) && lower.includes("senior")) return "Senior QA Automation Engineer";
+  if (lower.includes("sdet")) return "SDET / Software Test Engineer";
+  if (lower.includes("qa") || lower.includes("test")) return "QA Automation Engineer";
+
+  // Full Stack & Web Engineering
+  if (lower.includes("full stack") || lower.includes("fullstack")) return lower.includes("senior") ? "Senior Full Stack Engineer" : "Full Stack Engineer";
+  if (lower.includes("frontend") || lower.includes("front end")) return lower.includes("senior") ? "Senior Frontend Engineer" : "Frontend Engineer";
+  if (lower.includes("backend") || lower.includes("back end")) return lower.includes("senior") ? "Senior Backend Engineer" : "Backend Engineer";
+
+  // Data Engineering & AI/ML
+  if (lower.includes("data engineer")) return lower.includes("senior") ? "Senior Data Engineer" : "Data Engineer";
+  if (lower.includes("data scientist")) return lower.includes("senior") ? "Senior Data Scientist" : "Data Scientist";
+
+  return chosen || fallback;
 }
 
 function parseLatexCV(latex) {
