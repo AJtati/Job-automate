@@ -59,7 +59,10 @@
           <span id="scrapeSpinner" style="display: none;">⏳</span>
           <span id="scrapeLabel">⚡ Run Daily Scrape</span>
         </button>
-        <button class="btn-secondary" id="btnSchedule" title="Configure automated scraper schedule (intervals or daily time)">⏰ Schedule</button>
+        <button class="btn-secondary" id="btnSchedule" title="Configure automated scraper schedule (intervals or daily time)">
+          <span id="btnScheduleDot" style="display: none; width: 7px; height: 7px; border-radius: 50%; background: #34d399; margin-right: 5px; vertical-align: middle;"></span>
+          <span id="btnScheduleText">⏰ Schedule</span>
+        </button>
         <button class="btn-secondary" id="btnSearchSettings" title="Choose job sources and sponsorship verification">Sources</button>
         <button class="btn-secondary" id="btnRefresh" title="Refresh job feed">🔄</button>
       </div>
@@ -173,8 +176,13 @@
       <section class="job-feed">
         <div class="feed-header">
           <div class="feed-header-left">
-            <span class="feed-title" id="feedTitle">All Opportunities</span>
-            <span class="feed-count" id="feedCount">0 roles</span>
+            <div style="display: flex; align-items: baseline; gap: 8px;">
+              <span class="feed-title" id="feedTitle">All Opportunities</span>
+              <span class="feed-count" id="feedCount">0 roles</span>
+            </div>
+            <div class="feed-sync-status" id="feedSyncStatus" style="font-size: 11px; color: var(--text-tertiary); margin-top: 2px;">
+              Auto-sync active · Checking for updates
+            </div>
           </div>
           <div class="feed-sort-wrapper">
             <label for="feedSortSelect" class="feed-sort-label">Sort:</label>

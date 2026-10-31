@@ -1239,7 +1239,20 @@ serve({
     }
 
     if (url.pathname === "/api/search/status" && req.method === "GET") {
-      return Response.json({ lastSearch: readLastSearchStatus() });
+      const lastSearch = readLastSearchStatus();
+      const activeProfile = profilesManager.getActiveProfile();
+      const scheduleStatus = schedulerService.getStatus(activeProfile.id);
+      const seen = readSeenJobs();
+      const relevantJobsCount = Object.values(seen).filter((item: any) => isJobRelevantToProfile(item, activeProfile)).length;
+      const totalJobsCount = Object.keys(seen).length;
+
+      return Response.json({
+        lastSearch,
+        relevantJobsCount,
+        totalJobsCount,
+        scheduleStatus: scheduleStatus.activeProfileSchedule,
+        serverTime: new Date().toISOString(),
+      });
     }
 
     // API: GET /api/jobs
