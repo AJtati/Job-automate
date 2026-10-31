@@ -168,6 +168,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await fetchDiagnostics();
   await fetchJobs();
   setupEventListeners();
+  initAutoSync();
 });
 
 function setupEventListeners() {
@@ -202,6 +203,7 @@ function setupEventListeners() {
   // Scrape button
   btnScrape.addEventListener("click", triggerScrape);
   btnSearchSettings?.addEventListener("click", async () => {
+    await fetchDiagnostics();
     await fetchSearchConfig();
     searchConfigModal.style.display = "flex";
   });
@@ -991,6 +993,8 @@ async function deleteProfileById(profileId, profileName) {
       renderProfileDropdownList();
       updateProfileUI();
       await fetchJobs();
+      await fetchDiagnostics();
+      await checkBackgroundSync();
     } else {
       showToast(data.error || "Failed to delete profile");
     }
@@ -1097,6 +1101,8 @@ async function handleImportResume() {
       updateProfileUI();
       renderLocationNavFilters();
       await fetchJobs();
+      await fetchDiagnostics();
+      await checkBackgroundSync();
     } else {
       showToast(data.error || "Failed to parse resume");
     }
@@ -1658,7 +1664,7 @@ async function handleAutoSelectBestModel() {
 // Job Feed & Application Tailoring
 // --------------------------------------------------------------------------
 
-async function fetchJobs() {
+async function fetchJobs(silent = false) {
   try {
     const res = await fetch("/api/jobs");
     const data = await res.json();
@@ -1670,14 +1676,18 @@ async function fetchJobs() {
     // Keep selected job or select first
     if (selectedJob) {
       const match = allJobs.find(j => j.id === selectedJob.id || (j.company === selectedJob.company && j.title === selectedJob.title));
-      if (match) selectJob(match);
-      else if (allJobs.length > 0) selectJob(allJobs[0]);
+      if (match) {
+        selectedJob = match;
+        if (!silent) selectJob(match);
+      } else if (allJobs.length > 0 && !silent) {
+        selectJob(allJobs[0]);
+      }
     } else if (allJobs.length > 0) {
       selectJob(allJobs[0]);
     }
   } catch (err) {
     console.error("Failed to fetch jobs:", err);
-    showToast("Error loading jobs");
+    if (!silent) showToast("Error loading jobs");
   }
 }
 
@@ -3707,6 +3717,142 @@ async function runScheduleTestNow() {
   }
 }
 
+let lastKnownSearchCompletedAt = null;
+let lastKnownJobsCount = 0;
+let isSyncing = false;
+let autoSyncInterval = null;
+
+async function checkBackgroundSync() {
+  if (isSyncing) return;
+  try {
+    const res = await fetch("/api/search/status");
+    if (!res.ok) return;
+    const data = await res.json();
+
+    // 1. Update Schedule button UI & Countdown
+    const schedule = data.scheduleStatus;
+    const btnScheduleDot = document.getElementById("btnScheduleDot");
+    const btnScheduleText = document.getElementById("btnScheduleText");
+    if (schedule && schedule.enabled) {
+      if (btnScheduleDot) btnScheduleDot.style.display = "inline-block";
+      if (btnScheduleText) {
+        if (schedule.isRunningNow) {
+          btnScheduleText.textContent = "⏳ Scraping...";
+        } else if (schedule.countdown) {
+          btnScheduleText.textContent = `⏰ ${schedule.countdown}`;
+        }
+      }
+    } else {
+      if (btnScheduleDot) btnScheduleDot.style.display = "none";
+      if (btnScheduleText) btnScheduleText.textContent = "⏰ Schedule";
+    }
+
+    // 2. Check if a new background scrape completed or job count changed
+    const searchCompletedAt = data.lastSearch?.completedAt || schedule?.lastRunAt || null;
+    const currentJobsCount = data.relevantJobsCount !== undefined ? data.relevantJobsCount : (data.totalJobsCount || 0);
+
+    // Initialize baseline on first run
+    if (!lastKnownSearchCompletedAt && searchCompletedAt) {
+      lastKnownSearchCompletedAt = searchCompletedAt;
+      lastKnownJobsCount = currentJobsCount;
+      updateFeedSyncStatus(data);
+      return;
+    }
+
+    const hasNewSearch = searchCompletedAt && lastKnownSearchCompletedAt && new Date(searchCompletedAt).getTime() > new Date(lastKnownSearchCompletedAt).getTime();
+    const hasJobCountDiff = currentJobsCount > 0 && lastKnownJobsCount > 0 && currentJobsCount !== lastKnownJobsCount;
+
+    if (hasNewSearch || hasJobCountDiff) {
+      isSyncing = true;
+      lastKnownSearchCompletedAt = searchCompletedAt;
+      const prevCount = lastKnownJobsCount;
+      lastKnownJobsCount = currentJobsCount;
+
+      // Silently refresh jobs without disrupting active view
+      await fetchJobs(true);
+      await fetchDiagnostics();
+
+      const newCount = currentJobsCount - prevCount;
+      const addedMsg = data.lastSearch?.addedCount || (newCount > 0 ? newCount : 0);
+      if (addedMsg > 0) {
+        showToast(`✨ Auto-sync: ${addedMsg} newly discovered opportunities added to feed!`);
+      }
+      isSyncing = false;
+    }
+
+    updateFeedSyncStatus(data);
+  } catch (err) {
+    // Network or server starting, fail silently
+  }
+}
+
+function formatSyncTimestamp(isoString) {
+  if (!isoString) return "";
+  try {
+    const dt = new Date(isoString);
+    if (isNaN(dt.getTime())) return "";
+    const now = new Date();
+    const diffMs = now.getTime() - dt.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+
+    const isToday = dt.getDate() === now.getDate() &&
+                    dt.getMonth() === now.getMonth() &&
+                    dt.getFullYear() === now.getFullYear();
+
+    const timeStr = dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (isToday) {
+      return `Today at ${timeStr}`;
+    }
+
+    return dt.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  } catch {
+    return "";
+  }
+}
+
+function updateFeedSyncStatus(syncData) {
+  const syncStatusEl = document.getElementById("feedSyncStatus");
+  if (!syncStatusEl) return;
+
+  const lastTime = syncData.lastSearch?.completedAt || syncData.scheduleStatus?.lastRunAt;
+  const lastResult = syncData.scheduleStatus?.lastRunResult;
+
+  if (lastTime) {
+    const formatted = formatSyncTimestamp(lastTime);
+    const addedCount = syncData.lastSearch?.addedCount !== undefined
+      ? syncData.lastSearch.addedCount
+      : (lastResult?.addedCount || 0);
+    const addedPart = addedCount > 0 ? ` (${addedCount} new)` : "";
+    syncStatusEl.textContent = `Auto-sync active · Last scrape: ${formatted}${addedPart}`;
+  } else {
+    syncStatusEl.textContent = "Auto-sync active · Checking every 30s";
+  }
+}
+
+function initAutoSync() {
+  checkBackgroundSync();
+  if (autoSyncInterval) clearInterval(autoSyncInterval);
+  autoSyncInterval = setInterval(checkBackgroundSync, 30000); // Live poll every 30s
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      checkBackgroundSync();
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    checkBackgroundSync();
+  });
+}
+
 async function triggerScrape(request = {}) {
   scrapeSpinner.style.display = "inline-block";
   scrapeLabel.textContent = "Searching Live...";
@@ -3732,6 +3878,8 @@ async function triggerScrape(request = {}) {
       if (data.sponsorshipMode === "licensed") currentFilter = "sponsor_verified";
       if (data.sponsorshipMode === "explicit") currentFilter = "sponsorship_explicit";
       await fetchJobs();
+      await fetchDiagnostics();
+      await checkBackgroundSync();
     } else {
       showToast(data.error || "Search failed. Open Sources for diagnostics.");
     }
