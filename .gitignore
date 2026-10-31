@@ -2,6 +2,7 @@
 node_modules
 bun.lock
 .cache/
+bin/
 
 # Python
 __pycache__/

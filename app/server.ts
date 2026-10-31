@@ -2050,6 +2050,17 @@ serve({
         const body = await req.json();
         const { jobId, force, deepTailor } = body;
         const activeProfile = profilesManager.getActiveProfile();
+        const hasExp = (activeProfile.experience || []).some(e => e.bullets && e.bullets.length > 0);
+        const hasText = activeProfile.sourceResume?.text && activeProfile.sourceResume.text.trim().length > 100;
+        const hasSkills = Object.values(activeProfile.skills || {}).some(v => Array.isArray(v) && v.length > 0);
+
+        if (!hasExp && !hasText && !hasSkills && (!activeProfile.name || activeProfile.name.trim().length === 0)) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: "Your candidate profile is currently empty. Please upload your CV/resume or set up your profile details first before tailoring."
+          }), { status: 400, headers: { "Content-Type": "application/json" } });
+        }
+
         const seen = readSeenJobs();
         const storedJob = seen[jobId] || {};
         const isDeepTailor = Boolean(deepTailor !== undefined ? deepTailor : activeProfile.enableDeepTailor);
@@ -2514,9 +2525,16 @@ serve({
           return new Response(JSON.stringify({ error: "Missing latexCode" }), { status: 400 });
         }
 
-        // Compiler discovery: Prefer modern self-contained tectonic, then lualatex/xelatex/pdflatex
+        // Compiler discovery: Prefer bundled standalone tectonic, then homebrew/system tectonic, then lualatex/xelatex/pdflatex
         const candidates = [
-          { name: "tectonic", paths: ["/opt/homebrew/bin/tectonic", "/usr/local/bin/tectonic", "tectonic"], isTectonic: true },
+          { name: "tectonic", paths: [
+              join(APP_ROOT, "bin", "tectonic"),
+              join(dirname(BUN_EXECUTABLE), "tectonic"),
+              join(APP_ROOT, "Contents", "Resources", "bin", "tectonic"),
+              "/opt/homebrew/bin/tectonic",
+              "/usr/local/bin/tectonic",
+              "tectonic"
+            ], isTectonic: true },
           { name: kind === "cover" ? "xelatex" : "lualatex", paths: [`/Library/TeX/texbin/${kind === "cover" ? "xelatex" : "lualatex"}`], isTectonic: false },
           { name: "xelatex", paths: ["/Library/TeX/texbin/xelatex", "/usr/local/bin/xelatex", "xelatex"], isTectonic: false },
           { name: "lualatex", paths: ["/Library/TeX/texbin/lualatex", "/usr/local/bin/lualatex", "lualatex"], isTectonic: false },

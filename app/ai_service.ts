@@ -1183,7 +1183,8 @@ export class AIService {
               max_tokens: 4096,
               system: systemPrompt,
               messages: [{ role: "user", content: prompt }]
-            })
+            }),
+            signal: AbortSignal.timeout(25000)
           });
           if (res.ok) {
             const data: any = await res.json();
@@ -1230,7 +1231,8 @@ export class AIService {
                 ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
                 { role: "user", content: prompt }
               ]
-            })
+            }),
+            signal: AbortSignal.timeout(25000)
           });
           if (res.ok) {
             const data: any = await res.json();

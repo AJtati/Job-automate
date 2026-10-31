@@ -167,6 +167,21 @@ mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
 cp "$BUN_PATH" "$APP_BUNDLE/Contents/Resources/bin/bun"
 chmod +x "$APP_BUNDLE/Contents/Resources/bin/bun"
 
+# Bundle standalone Tectonic LaTeX engine so any user gets zero-dependency PDF compiling
+TECTONIC_BIN="$REPO_DIR/bin/tectonic"
+if [ ! -f "$TECTONIC_BIN" ]; then
+    echo "Downloading standalone Tectonic for macOS ($HOST_ARCH)..."
+    mkdir -p "$REPO_DIR/bin"
+    if [ "$HOST_ARCH" = "x86_64" ]; then
+        curl -sL "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/tectonic-0.17.0-x86_64-apple-darwin.tar.gz" | tar -xz -C "$REPO_DIR/bin"
+    else
+        curl -sL "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/tectonic-0.17.0-aarch64-apple-darwin.tar.gz" | tar -xz -C "$REPO_DIR/bin"
+    fi
+    chmod +x "$TECTONIC_BIN"
+fi
+cp "$TECTONIC_BIN" "$APP_BUNDLE/Contents/Resources/bin/tectonic"
+chmod +x "$APP_BUNDLE/Contents/Resources/bin/tectonic"
+
 # 4. Prepare Staging Directory for DMG
 echo "Preparing DMG staging folder..."
 cp -R "$APP_BUNDLE" "$STAGING_DIR/"
