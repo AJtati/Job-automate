@@ -11,6 +11,7 @@ import { createLatexBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, t
 import { parseResumeDeterministically } from "./resume_parser";
 import { SchedulerService, computeNextRun, type ScrapeExecutionResult } from "./scheduler_service";
 import { SponsorRegistry, assessSponsorship, matchesSponsorshipMode, type SponsorshipMode } from "./sponsorship";
+import { NewSponsorsRegistry } from "./new_sponsors";
 import { SearchConfigManager } from "./search_config";
 import {
   detectCandidateCountry, detectJobCountry, type CandidateCountryInfo,
@@ -33,6 +34,9 @@ const LAST_SEARCH_STATUS_FILE = join(ROOT_DIR, "data", "last_search_status.json"
 const profilesManager = new ProfilesManager(ROOT_DIR);
 const aiService = new AIService();
 const sponsorRegistry = new SponsorRegistry(ROOT_DIR);
+const newSponsorsRegistry = new NewSponsorsRegistry(ROOT_DIR);
+// Background refresh new sponsors if cache is empty or stale (>24h)
+newSponsorsRegistry.refresh(false).catch(err => console.error("[NewSponsorsRegistry] Auto-refresh error:", err));
 const searchConfigManager = new SearchConfigManager(ROOT_DIR);
 
 mkdirSync(join(ROOT_DIR, "job_scraper"), { recursive: true });
@@ -202,12 +206,24 @@ function getDistanceFromHartlepool(locationStr: string): { miles: number; tag: s
 
 function checkSponsor(company: string, description = "") {
   const assessment = assessSponsorship(sponsorRegistry, company, description);
+  const newSponsor = newSponsorsRegistry.find(company);
+
+  let badge = assessment.employer.verified ? "Licensed employer" : "Not verified";
+  let label = assessment.employer.verified
+    ? [assessment.employer.rating, assessment.employer.route].filter(Boolean).join(" · ")
+    : "Not found on cached GOV.UK register";
+
+  if (newSponsor) {
+    badge = `✨ New Sponsor (${newSponsor.formattedDate.replace(" 2026", "")})`;
+    label = `✨ Newly Approved Sponsor (${newSponsor.formattedDate}) · ${newSponsor.organisation}`;
+  }
+
   return {
-    verified: assessment.employer.verified,
-    label: assessment.employer.verified
-      ? [assessment.employer.rating, assessment.employer.route].filter(Boolean).join(" · ")
-      : "Not found on cached GOV.UK register",
-    badge: assessment.employer.verified ? "Licensed employer" : "Not verified",
+    verified: assessment.employer.verified || Boolean(newSponsor),
+    isNewSponsor: Boolean(newSponsor),
+    newSponsorDetails: newSponsor || null,
+    label,
+    badge,
     assessment,
   };
 }
@@ -836,8 +852,15 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
     source: "Instant URL Import",
     portal: "external-url",
     sponsor_verified: sponsor.verified,
+    is_new_sponsor: sponsor.isNewSponsor,
+    new_sponsor_date: sponsor.newSponsorDetails?.date || null,
+    new_sponsor_formatted: sponsor.newSponsorDetails?.formattedDate || null,
+    new_sponsor_org: sponsor.newSponsorDetails?.organisation || null,
+    sponsor_badge: sponsor.badge,
+    sponsor_label: sponsor.label,
     sponsorship_status: sponsor.assessment.vacancyStatus,
     sponsorship_evidence: sponsor.assessment.vacancyEvidence,
+    sponsorship_employer: sponsor.isNewSponsor ? (sponsor.newSponsorDetails?.organisation || sponsor.assessment.employer.organisation || "") : (sponsor.assessment.employer.organisation || ""),
     fit_score: analysis?.overallScore || 0
   };
 
@@ -1235,7 +1258,7 @@ serve({
     }
 
     if (url.pathname === "/api/diagnostics" && req.method === "GET") {
-      return Response.json({ runtime: getRuntimeDiagnostics(), lastSearch: readLastSearchStatus(), sponsorRegistry: sponsorRegistry.status() });
+      return Response.json({ runtime: getRuntimeDiagnostics(), lastSearch: readLastSearchStatus(), sponsorRegistry: sponsorRegistry.status(), newSponsors: newSponsorsRegistry.status() });
     }
 
     if (url.pathname === "/api/search/status" && req.method === "GET") {
@@ -1247,6 +1270,7 @@ serve({
       const totalJobsCount = Object.keys(seen).length;
 
       return Response.json({
+        activeProfileId: activeProfile.id,
         lastSearch,
         relevantJobsCount,
         totalJobsCount,
@@ -1339,11 +1363,15 @@ serve({
           full_jd: fullJd,
           key_skills: item.key_skills || analysis.requirements.filter(r => r.category === "technical").map(r => r.requirement),
           sponsor_verified: sponsor.verified,
+          is_new_sponsor: sponsor.isNewSponsor,
+          new_sponsor_date: sponsor.newSponsorDetails?.date || null,
+          new_sponsor_formatted: sponsor.newSponsorDetails?.formattedDate || null,
+          new_sponsor_org: sponsor.newSponsorDetails?.organisation || null,
           sponsor_badge: sponsor.badge,
           sponsor_label: sponsor.label,
           sponsorship_status: sponsor.assessment.vacancyStatus,
           sponsorship_evidence: sponsor.assessment.vacancyEvidence,
-          sponsorship_employer: sponsor.assessment.employer.organisation || "",
+          sponsorship_employer: sponsor.isNewSponsor ? (sponsor.newSponsorDetails?.organisation || sponsor.assessment.employer.organisation || "") : (sponsor.assessment.employer.organisation || ""),
           sponsorship_source: sponsor.assessment.employer.source,
           status,
           cv_file: cvFile,
@@ -1427,7 +1455,20 @@ serve({
       try {
         const body = await req.json();
         const active = profilesManager.setActiveProfile(body.id);
-        return new Response(JSON.stringify({ success: true, activeProfile: active }), {
+        const scheduleStatus = schedulerService.getStatus(active.id);
+        const seen = readSeenJobs();
+        const relevantJobsCount = Object.values(seen).filter((item: any) => isJobRelevantToProfile(item, active)).length;
+        const lastSearch = readLastSearchStatus();
+
+        return new Response(JSON.stringify({
+          success: true,
+          activeProfile: active,
+          activeProfileId: active.id,
+          scheduleStatus: scheduleStatus.activeProfileSchedule,
+          relevantJobsCount,
+          lastSearch,
+          serverTime: new Date().toISOString()
+        }), {
           headers: { "Content-Type": "application/json" }
         });
       } catch (err: any) {
@@ -1796,6 +1837,7 @@ serve({
       return Response.json({
         config: searchConfigManager.getPublic(),
         sponsorRegistry: sponsorRegistry.status(),
+        newSponsors: newSponsorsRegistry.status(),
         providers: {
           linkedin: "Public LinkedIn search",
           freehire: "Direct company ATS boards",
@@ -1831,7 +1873,12 @@ serve({
           ...(typeof body.adzunaAppKey === "string" ? { adzunaAppKey: body.adzunaAppKey.trim() } : {}),
           ...(typeof body.customAtsCompanies === "string" ? { customAtsCompanies: body.customAtsCompanies.trim() } : {}),
         });
-        return Response.json({ success: true, config: searchConfigManager.getPublic(), sponsorRegistry: sponsorRegistry.status() });
+        return Response.json({
+          success: true,
+          config: searchConfigManager.getPublic(),
+          sponsorRegistry: sponsorRegistry.status(),
+          newSponsors: newSponsorsRegistry.status()
+        });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 400 });
       }
@@ -1840,6 +1887,11 @@ serve({
     if (url.pathname === "/api/sponsors/refresh" && req.method === "POST") {
       const result = await sponsorRegistry.refresh(true);
       return Response.json({ success: !result.error, ...result }, { status: result.error && !result.count ? 502 : 200 });
+    }
+
+    if (url.pathname === "/api/sponsors/refresh-new" && req.method === "POST") {
+      const result = await newSponsorsRegistry.refresh(true);
+      return Response.json({ success: !result.error, ...result, status: newSponsorsRegistry.status() }, { status: result.error && !result.count ? 502 : 200 });
     }
 
     // API: POST /api/scrape (Trigger Automated Live Search)
@@ -1956,10 +2008,12 @@ serve({
     if (url.pathname === "/api/tailor" && req.method === "POST") {
       try {
         const body = await req.json();
-        const { jobId, force } = body;
+        const { jobId, force, deepTailor } = body;
         const activeProfile = profilesManager.getActiveProfile();
         const seen = readSeenJobs();
         const storedJob = seen[jobId] || {};
+        const isDeepTailor = Boolean(deepTailor !== undefined ? deepTailor : activeProfile.enableDeepTailor);
+        const deepTailorChanged = storedJob.is_deep_tailored !== undefined && storedJob.is_deep_tailored !== isDeepTailor;
 
         const incomingJob = body.job || {};
         const company = body.company || incomingJob.company || storedJob.company || "Company";
@@ -2009,21 +2063,21 @@ serve({
         let cvContent = "";
         let coverContent = "";
 
-        // Regenerate if force requested, file doesn't exist, or file is a legacy basic stub / wrong language
-        const isCvStale = !existsSync(cvFullPath) || force || (() => {
+        // Regenerate if force requested, file doesn't exist, deep alignment changed, or file is a legacy basic stub / wrong language
+        const isCvStale = !existsSync(cvFullPath) || force || deepTailorChanged || (() => {
           const content = readFileSync(cvFullPath, "utf-8");
           if (content.split("\n").length < 100) return true;
           if (detectedLang === "de" && !/\\section\{Profil\}/i.test(content)) return true;
           return false;
         })();
         if (isCvStale) {
-          cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang);
+          cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang, isDeepTailor);
           writeFileSync(cvFullPath, cvContent);
         } else {
           cvContent = readFileSync(cvFullPath, "utf-8");
         }
 
-        const isCoverStale = !existsSync(coverFullPath) || force || (() => {
+        const isCoverStale = !existsSync(coverFullPath) || force || deepTailorChanged || (() => {
           const content = readFileSync(coverFullPath, "utf-8");
           if (content.split("\n").length < 20) return true;
           if (detectedLang === "de" && /Dear Hiring/i.test(content)) return true;
@@ -2031,7 +2085,7 @@ serve({
           return false;
         })();
         if (isCoverStale) {
-          coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang);
+          coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang, isDeepTailor);
           coverContent = aiService.humanizeText(coverContent);
           writeFileSync(coverFullPath, coverContent);
         } else {
@@ -2050,7 +2104,7 @@ serve({
           const cvEnFull = join(ROOT_DIR, cvEnglishPath);
           const coverEnFull = join(ROOT_DIR, coverEnglishPath);
 
-          const isCvEnStale = !existsSync(cvEnFull) || force || (() => {
+          const isCvEnStale = !existsSync(cvEnFull) || force || deepTailorChanged || (() => {
             const content = readFileSync(cvEnFull, "utf-8");
             if (content.split("\n").length < 100) return true;
             if (/\\resumeItem\{(?:Automatisierung|Konzeption|Entwicklung|Implementierung|Zusammenarbeit|Vorbereitung|Mitarbeit|Durchf\u00fchrung|Anwendung|Master Thesis)/i.test(content)) return true;
@@ -2059,13 +2113,13 @@ serve({
           })();
 
           if (isCvEnStale) {
-            cvEnglishContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, "en");
+            cvEnglishContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, "en", isDeepTailor);
             writeFileSync(cvEnFull, cvEnglishContent);
           } else {
             cvEnglishContent = readFileSync(cvEnFull, "utf-8");
           }
 
-          const isCoverEnStale = !existsSync(coverEnFull) || force || (() => {
+          const isCoverEnStale = !existsSync(coverEnFull) || force || deepTailorChanged || (() => {
             const content = readFileSync(coverEnFull, "utf-8");
             if (content.split("\n").length < 20) return true;
             if (/Sehr geehrte|Mit freundlichen|hiermit bewerbe/i.test(content)) return true;
@@ -2074,7 +2128,7 @@ serve({
           })();
 
           if (isCoverEnStale) {
-            coverEnglishContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, "en");
+            coverEnglishContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, "en", isDeepTailor);
             coverEnglishContent = aiService.humanizeText(coverEnglishContent);
             writeFileSync(coverEnFull, coverEnglishContent);
           } else {
@@ -2097,7 +2151,8 @@ serve({
           status: "drafted",
           cvFile: cvPath,
           coverFile: coverPath,
-          fitRating: String(tailoredAnalysis.overallScore)
+          fitRating: String(tailoredAnalysis.overallScore),
+          notes: isDeepTailor ? "Deep AI Matched" : "Standard Matched"
         });
 
         // Update seen_jobs with tailored analysis and dual scores
@@ -2108,6 +2163,7 @@ serve({
           seen[jobId].fit_score = tailoredAnalysis.overallScore;
           seen[jobId].baseline_score = baselineAnalysis.overallScore;
           seen[jobId].tailored_score = tailoredAnalysis.overallScore;
+          seen[jobId].is_deep_tailored = isDeepTailor;
           seen[jobId].analysis = tailoredAnalysis;
           seen[jobId].baseline_analysis = baselineAnalysis;
           saveSeenJobs(seen);
@@ -2134,6 +2190,7 @@ serve({
           fit_score: tailoredAnalysis.overallScore,
           baseline_score: baselineAnalysis.overallScore,
           tailored_score: tailoredAnalysis.overallScore,
+          is_deep_tailored: isDeepTailor,
           status: "drafted",
           message: isNonEnglish
             ? `Tailored CV & Cover Letter drafted in ${langPack.name} (plus English edition) for ${company}`

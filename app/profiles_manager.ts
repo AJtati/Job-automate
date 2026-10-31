@@ -87,6 +87,7 @@ export interface CandidateProfile {
   }>;
   scenarioHistory?: string[];
   schedule?: ProfileScheduleConfig;
+  enableDeepTailor?: boolean;
 }
 
 export interface ProfileScheduleConfig {
@@ -270,6 +271,7 @@ export class ProfilesManager {
       profileVersion: profile.profileVersion || 1,
       tracker: profile.tracker || {},
       scenarioHistory: profile.scenarioHistory || [],
+      enableDeepTailor: profile.enableDeepTailor ?? false,
     };
   }
 

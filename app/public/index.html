@@ -142,6 +142,14 @@
             <span class="nav-item-left">🚀 Applied & Active</span>
             <span class="nav-badge" id="countApplied">0</span>
           </li>
+        </ul>
+
+        <div class="nav-section-title">Sponsorship & Licence Status</div>
+        <ul class="nav-list" id="navListSponsors">
+          <li class="nav-item" data-filter="sponsor_new">
+            <span class="nav-item-left">✨ Newly Licensed (30d)</span>
+            <span class="nav-badge" id="countNewSponsors">0</span>
+          </li>
           <li class="nav-item" data-filter="sponsor_verified">
             <span class="nav-item-left">🛡️ Licensed Employers</span>
             <span class="nav-badge" id="countSponsors">0</span>
@@ -188,6 +196,9 @@
             <label for="feedSortSelect" class="feed-sort-label">Sort:</label>
             <select id="feedSortSelect" class="feed-sort-select" title="Sort job listings">
               <option value="days" selected>📅 Newest (Days Wise)</option>
+              <option value="sponsor_new_first">✨ Newly Licensed First (30d)</option>
+              <option value="sponsors_first">🛡️ Licensed Sponsors First</option>
+              <option value="sponsors_old_first">⏳ Established Sponsors First</option>
               <option value="score">🎯 Match % (Score Wise)</option>
               <option value="pipeline">📝 Application Pipeline</option>
             </select>
@@ -223,7 +234,14 @@
           </div>
 
           <div class="studio-actions-bar" id="studioActionsBar" style="display: none;">
-            <button class="btn-primary" id="btnTailor">⚡ Tailor CV & Cover Letter</button>
+            <div class="tailor-btn-group">
+              <button class="btn-primary" id="btnTailor">⚡ Tailor CV & Cover Letter</button>
+              <label class="deep-tailor-toggle" title="Adapt work experience bullets & skills to highlight the employer's core technology stack (e.g. Azure/AKS/DevOps) using active-voice humanizer rules">
+                <input type="checkbox" id="chkDeepTailor">
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">🎯 Deep AI Match</span>
+              </label>
+            </div>
             <button class="btn-secondary" id="btnOpenJobChat">💬 Ask AI About Role</button>
             <button class="btn-secondary" id="btnMarkApplied">✅ Mark as Applied</button>
             <button class="btn-secondary" id="btnCopyRecruiterMsg">💬 Copy Outreach Note</button>
@@ -322,6 +340,13 @@
             <label>
               <input type="checkbox" id="formVisaRequired" checked />
               <span>Requires UK Skilled Worker Visa Sponsorship</span>
+            </label>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="formEnableDeepTailor" />
+              <span>🎯 Deep AI Match & Keyword Infusion (Adapt experience bullets & tech stack to employer requirements)</span>
             </label>
           </div>
 
@@ -728,6 +753,7 @@
         <div class="search-verification-note">
           <b>Important:</b> a licensed employer does not guarantee that a specific vacancy offers sponsorship. “Explicit” requires both a register match and positive wording in the job description.
           <div id="sponsorRegistryStatus">Sponsor register not loaded.</div>
+          <div id="newSponsorRegistryStatus" style="margin-top: 4px; color: #34d399; font-weight: 500;">Newly approved sponsors: checking...</div>
         </div>
         <div id="runtimeIssues" class="source-run-status issue" style="display: none;"></div>
         <div id="sourceRunStatus" class="source-run-status">
@@ -735,6 +761,7 @@
           <div>No search has run in this installation yet.</div>
         </div>
         <div class="modal-footer">
+          <button type="button" class="btn-secondary" id="btnRefreshNewSponsors">✨ Refresh New Sponsors (30d)</button>
           <button type="button" class="btn-secondary" id="btnRefreshSponsors">Refresh GOV.UK register</button>
           <button type="button" class="btn-primary" id="btnSaveSearchConfig">Save sources</button>
         </div>

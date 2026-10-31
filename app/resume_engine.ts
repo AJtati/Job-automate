@@ -572,10 +572,14 @@ export function cleanJobTitle(raw: string): string {
   if (!raw) return "";
 
   let title = raw
-    // Strip parenthesized reference numbers, locations, or notes: (Ref: 1234), (Remote), etc.
-    .replace(/\s*\([^)]*(?:ref|id|req|remote|hybrid|onsite|urgent|experience|train|mile|salary|sponsor)[^)]*\)/gi, "")
-    .replace(/\s*\[[^\]]*(?:ref|id|req|remote|hybrid|onsite|urgent|experience|train|mile|salary|sponsor)[^\]]*\]/gi, "")
-    .replace(/\s*\((?:ref:?\s*[\w\d]+|#\d+|\d+)\)/gi, "")
+    // Strip headcounts and vacancy numbers: e.g. "2x ", "3X ", "Multiple ", "Two "
+    .replace(/^\s*\d+\s*[xX]\s+/g, "")
+    .replace(/\b\d+\s*[xX]\b/g, "")
+    .replace(/^\s*(?:two|three|four|five|multiple|several)\s+(?:x\s+)?/gi, "")
+    .replace(/\b\d+\s+(?:positions?|vacanc(?:y|ies)|openings?|roles?|headcount)\b/gi, "")
+    // Strip parenthesized reference numbers, locations, tech tags, or notes: (Ref: 1234), (Remote), (EKS, ArgoCD), etc.
+    .replace(/\s*\([^)]*\)/g, "")
+    .replace(/\s*\[[^\]]*\]/g, "")
     // Strip standalone reference IDs: Ref: 7501, #7501, Req 1234, ID: 12345
     .replace(/\b(?:Ref(?:erence)?|ID|Req(?:uisition)?|Job\s*ID)[:\s#]*[A-Z0-9_-]+/gi, "")
     // Strip salary and compensation figures: £85k, $120,000, 75k - 85k, etc.
@@ -584,7 +588,7 @@ export function cleanJobTitle(raw: string): string {
     .replace(/\b(?:up to|circ?a)\s+[£$€]?\s*\d+/gi, "")
     .replace(/\b(?:per annum|per year|p\.a\.|per day|p\.d\.|per hour|p\.h\.|plus bonus|plus package)\b/gi, "")
     // Strip recruitment marketing / clickbait / urgency riders:
-    .replace(/\b(?:no experience (?:needed|required)|training (?:provided|given)|immediate start|urgent(?:ly)?(?: required)?|apply now|hot job|career change)\b/gi, "")
+    .replace(/\b(?:no experience (?:needed|required)|training (?:provided|given)|immediate start|urgent(?:ly)?(?: required)?|apply now|hot job|career change|we are hiring|hiring now|wanted|seeking|needed)\b/gi, "")
     .replace(/\b(?:outside IR35|inside IR35|perm(?:anent)?|contract(?:or)?|temp(?:orary)?)\b/gi, "");
 
   // Split on delimiters (pipe, em-dash, en-dash, double colon, slash-slash, or hyphen with spaces)
@@ -599,6 +603,43 @@ export function cleanJobTitle(raw: string): string {
     }
   }
 
+  // Strip headcount from chosen segment again in case it was inside a delimiter segment
+  chosen = chosen
+    .replace(/^\s*\d+\s*[xX]\s+/g, "")
+    .replace(/\b\d+\s*[xX]\b/g, "")
+    .replace(/^\s*(?:two|three|four|five|multiple|several)\s+(?:x\s+)?/gi, "");
+
+  // Convert plural role nouns to singular (Engineers -> Engineer, Developers -> Developer, etc.)
+  chosen = chosen
+    .replace(/\bEngineers\b/g, "Engineer")
+    .replace(/\bDevelopers\b/g, "Developer")
+    .replace(/\bArchitects\b/g, "Architect")
+    .replace(/\bConsultants\b/g, "Consultant")
+    .replace(/\bSpecialists\b/g, "Specialist")
+    .replace(/\bAnalysts\b/g, "Analyst")
+    .replace(/\bAdministrators\b/g, "Administrator")
+    .replace(/\bManagers\b/g, "Manager")
+    .replace(/\bScientists\b/g, "Scientist")
+    .replace(/\bDesigners\b/g, "Designer")
+    .replace(/\bTesters\b/g, "Tester")
+    .replace(/\bProgrammers\b/g, "Programmer")
+    .replace(/\bTechnicians\b/g, "Technician")
+    .replace(/\bPractitioners\b/g, "Practitioner")
+    .replace(/\bOfficers\b/g, "Officer")
+    .replace(/\bengineers\b/g, "engineer")
+    .replace(/\bdevelopers\b/g, "developer")
+    .replace(/\barchitects\b/g, "architect")
+    .replace(/\bconsultants\b/g, "consultant")
+    .replace(/\bspecialists\b/g, "specialist")
+    .replace(/\banalysts\b/g, "analyst")
+    .replace(/\badministrators\b/g, "administrator")
+    .replace(/\bmanagers\b/g, "manager")
+    .replace(/\bscientists\b/g, "scientist")
+    .replace(/\bdesigners\b/g, "designer")
+    .replace(/\btesters\b/g, "tester")
+    .replace(/\bprogrammers\b/g, "programmer")
+    .replace(/\btechnicians\b/g, "technician");
+
   // Clean remaining trailing dashes, punctuation, whitespace
   chosen = chosen
     .replace(/^[\s\-–—|/:]+|[\s\-–—|/:]+$/g, "")
@@ -609,7 +650,7 @@ export function cleanJobTitle(raw: string): string {
 }
 
 export function getDisplayRole(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis): string {
-  const fallback = profile.headline || "Senior Professional";
+  const fallback = profile.headline || (profile.targetRoles && profile.targetRoles[0]) || "Senior Professional";
   if (!job?.role) return fallback;
 
   if (analysis && (analysis.verdict === "Poor fit" || analysis.provenance?.includes("Domain incompatibility") || analysis.overallScore <= 30)) {
@@ -621,7 +662,7 @@ export function getDisplayRole(profile: CandidateProfile, job?: JobInput, analys
   const cleanedRole = cleanJobTitle(rawRole);
   const roleLower = cleanedRole.toLowerCase();
 
-  // Incompatible domain guardrails
+  // Incompatible domain guardrails: Never blindly impersonate another profession
   const isDynamics = /dynamics|power\s*platform|dataverse|crm\b/i.test(headline);
   const isDevops = /devops|platform\s*engineer|sre\b|kubernetes|infrastructure/i.test(headline);
   const isQA = /\bqa\b|tester\b|quality\s*assurance|sdet\b/i.test(headline);
@@ -653,7 +694,6 @@ export function getDisplayRole(profile: CandidateProfile, job?: JobInput, analys
       .trim();
   }
 
-  // If after cleaning it's empty or trivial, fallback to profile headline
   if (!calibratedRole || calibratedRole.length < 3) {
     return fallback;
   }

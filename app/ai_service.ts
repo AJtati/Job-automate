@@ -2182,10 +2182,153 @@ Return a valid JSON object ONLY with the following schema:
   });
 }
 
+  public async deepAlignCandidateExperience(
+    profile: CandidateProfile,
+    job: JobInput,
+    analysis: ApplicationAnalysis,
+    targetLanguage: SupportedLanguage = "en"
+  ): Promise<CandidateProfile> {
+    const aligned = JSON.parse(JSON.stringify(profile)) as CandidateProfile;
+    const jdText = ((job.fullJd || "") + " " + (job.role || "")).toLowerCase();
+
+    // 1. Detect target technology focus
+    const isAzure = /\b(?:azure|aks|azure\s*devops|arm|bicep|entra)\b/i.test(jdText);
+    const isAws = /\b(?:aws|eks|lambda|cloudformation|ecs|fargate)\b/i.test(jdText);
+    const isGcp = /\b(?:gcp|google\s*cloud|gke|cloud\s*run|bigquery)\b/i.test(jdText);
+
+    // 2. Align and prioritize technical skills
+    const s = aligned.skills || {};
+    if (isAzure) {
+      const existingCloud = s.cloud || [];
+      const withoutAzure = existingCloud.filter(c => !/azure/i.test(c));
+      s.cloud = ["Azure", ...withoutAzure];
+
+      const existingContainers = s.containers || s.devops || [];
+      const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
+      s.containers = ["Kubernetes (AKS)", ...withoutK8s];
+
+      const existingCicd = s.cicd || [];
+      if (!existingCicd.some(c => /azure\s*devops/i.test(c))) {
+        s.cicd = ["Azure DevOps", ...existingCicd];
+      }
+    } else if (isAws) {
+      const existingCloud = s.cloud || [];
+      const withoutAws = existingCloud.filter(c => !/aws/i.test(c));
+      s.cloud = ["AWS", ...withoutAws];
+
+      const existingContainers = s.containers || s.devops || [];
+      const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
+      s.containers = ["Kubernetes (EKS)", ...withoutK8s];
+    } else if (isGcp) {
+      const existingCloud = s.cloud || [];
+      const withoutGcp = existingCloud.filter(c => !/gcp|google/i.test(c));
+      s.cloud = ["GCP", ...withoutGcp];
+
+      const existingContainers = s.containers || s.devops || [];
+      const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
+      s.containers = ["Kubernetes (GKE)", ...withoutK8s];
+    }
+    aligned.skills = s;
+
+    // Align summary if present
+    if (aligned.summary) {
+      let sum = aligned.summary;
+      if (isAzure) {
+        sum = sum.replace(/\bon AWS and Kubernetes\b/g, "across Azure, AWS, and Kubernetes (AKS)");
+        sum = sum.replace(/\bAWS and Kubernetes\b/g, "Azure and Kubernetes");
+        sum = sum.replace(/\bmulti-cluster EKS infrastructure\b/g, "multi-cluster cloud Kubernetes infrastructure (AKS, EKS)");
+        sum = sum.replace(/\bTerraform and AWS CDK\b/g, "Terraform, Azure DevOps, and cloud");
+      } else if (isAws) {
+        sum = sum.replace(/\bon Azure and Kubernetes\b/g, "across AWS and Kubernetes (EKS)");
+      } else if (isGcp) {
+        sum = sum.replace(/\bon AWS and Kubernetes\b/g, "across GCP, hybrid cloud, and Kubernetes (GKE)");
+      }
+      aligned.summary = sum;
+    }
+
+    // 3. Adapt experience bullets
+    const existingExperience = aligned.experience || [];
+    if (!existingExperience.length) return aligned;
+
+    let llmSuccess = false;
+    if (this.config.provider !== "builtin") {
+      try {
+        const expPayload = existingExperience.map(exp => ({
+          company: exp.company,
+          role: exp.role,
+          location: exp.location,
+          startDate: exp.startDate,
+          endDate: exp.endDate,
+          bullets: exp.bullets || []
+        }));
+
+        const primaryCloud = isAzure ? "Azure (AKS, Azure DevOps, Terraform, Azure Monitor)" : (isAws ? "AWS (EKS, Terraform, Lambda, CloudWatch)" : (isGcp ? "GCP (GKE, Terraform)" : "Cloud Infrastructure"));
+        const targetReqs = analysis.requirements.slice(0, 8).map(r => r.requirement).join(", ");
+
+        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nPrimary Cloud & Tech Focus: ${primaryCloud}\nTarget Requirements: ${targetReqs}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Deeply adapt and sharpen the candidate's existing work experience bullets to showcase alignment with the target role and cloud stack (${primaryCloud}). Contextualize their cloud provisioning, container deployments, and CI/CD pipelines to authentically highlight the employer's core stack (for example, contextualize cloud and pipeline work to Azure/AKS/Azure DevOps when applying for an Azure role).\n\nStrict Humanizer & Integrity Rules:\n- Keep the candidate's authentic companies, job titles, and dates exactly as given.\n- Start EVERY single bullet with a direct, active-voice engineering verb (Architected, Provisioned, Automated, Migrated, Deployed, Engineered, Integrated, Built, Configured).\n- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.\n- Preserve all authentic metrics (>20%, 99.9%, etc.). Do NOT invent fake figures.\n- Return a valid JSON array only with updated experience objects.`;
+
+        const system = "You are an expert technical resume writer. Return a valid JSON array only with work experience entries. Strictly obey humanizer rules.";
+        const resp = await this.generateText(prompt, system);
+        const match = resp.match(/\[[\s\S]*\]/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].bullets?.length > 0) {
+            const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i;
+            aligned.experience = parsed.map((item: any, i: number) => ({
+              company: item.company || existingExperience[i]?.company || "",
+              role: item.role || existingExperience[i]?.role || "",
+              location: item.location || existingExperience[i]?.location || "",
+              startDate: item.startDate || existingExperience[i]?.startDate || "",
+              endDate: item.endDate || existingExperience[i]?.endDate || "",
+              bullets: (Array.isArray(item.bullets) ? item.bullets : []).filter((b: string) => !banned.test(b) && b.trim().length > 0)
+            }));
+            llmSuccess = true;
+          }
+        }
+      } catch (err) {
+        console.warn("LLM deep alignment fallback to deterministic:", err);
+      }
+    }
+
+    if (!llmSuccess) {
+      // Deterministic cloud and scenario alignment
+      aligned.experience = existingExperience.map(exp => {
+        const bullets = (exp.bullets || []).map(bullet => {
+          let b = bullet;
+          if (isAzure) {
+            b = b.replace(/\bmulti-cluster AWS EKS infrastructure and CI\/CD pipelines\b/g, "multi-cluster cloud and hybrid Kubernetes infrastructure (EKS, AKS) and CI/CD pipelines");
+            b = b.replace(/\bmulti-cluster AWS EKS infrastructure\b/g, "multi-cluster cloud Kubernetes infrastructure (EKS, AKS)");
+            b = b.replace(/\bAWS infrastructure including EC2, VPC, S3, IAM, Route 53, and Lambda via Terraform and CloudFormation\b/g,
+                          "cloud infrastructure across Azure (Virtual Machines, VNet, Blob Storage, Entra ID) and hybrid environments using Terraform");
+            b = b.replace(/\bAWS and Kubernetes\b/g, "Azure and Kubernetes");
+            b = b.replace(/\bKubernetes manifests\b/g, "Kubernetes manifests for Azure Kubernetes Service (AKS)");
+            b = b.replace(/\bVSTS and Git pipelines\b/g, "Azure DevOps (VSTS) and Git pipelines");
+            b = b.replace(/\bJenkins to provision build jobs\b/g, "Azure DevOps and Jenkins to automate CI/CD build stages");
+            b = b.replace(/\bSplunk dashboards and alert rules\b/g, "Azure Monitor and Splunk dashboards to track operational health and alert rules");
+            b = b.replace(/\bProvisioned cloud and on-premises infrastructure using Terraform\b/g, "Provisioned Azure and on-premises cloud infrastructure using Terraform");
+            b = b.replace(/\bMigrated worker node groups from legacy EC2 Launch Configurations to Launch Templates running Amazon Linux 2023 \(AL2023\)\b/g,
+                          "Automated Kubernetes cluster node pool upgrades and Linux host provisioning with Terraform");
+          } else if (isAws) {
+            b = b.replace(/\bcloud and on-premises infrastructure using Terraform\b/g, "AWS and on-premises infrastructure using Terraform");
+            b = b.replace(/\bKubernetes manifests\b/g, "Kubernetes (EKS) manifests and Helm charts");
+          } else if (isGcp) {
+            b = b.replace(/\bcloud and on-premises infrastructure using Terraform\b/g, "GCP and cloud infrastructure using Terraform");
+            b = b.replace(/\bKubernetes manifests\b/g, "Kubernetes (GKE) manifests and Helm charts");
+          }
+          return b;
+        });
+        return { ...exp, bullets };
+      });
+    }
+
+    return aligned;
+  }
+
   public async generateTailoredCV(
     profile: CandidateProfile,
     job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string },
-    targetLanguage?: SupportedLanguage
+    targetLanguage?: SupportedLanguage,
+    deepTailor = false
   ): Promise<string> {
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
     let tailoredProfile = { ...profile };
@@ -2276,6 +2419,11 @@ ${JSON.stringify(expPayload, null, 2)}`;
       } catch (err) {
         console.warn("LLM tailored experience synthesis fallback to deterministic:", err);
       }
+    }
+
+    if (deepTailor || tailoredProfile.enableDeepTailor) {
+      const initialAnalysis = analyzeApplication(tailoredProfile, jobInput);
+      tailoredProfile = await this.deepAlignCandidateExperience(tailoredProfile, jobInput, initialAnalysis, resolvedLang);
     }
 
     const analysis = analyzeApplication(tailoredProfile, jobInput);
@@ -2508,11 +2656,19 @@ ${certsTeX}
   public async generateTailoredCoverLetter(
     profile: CandidateProfile,
     job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string },
-    targetLanguage?: SupportedLanguage
+    targetLanguage?: SupportedLanguage,
+    deepTailor = false
   ): Promise<string> {
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
-    const analysis = analyzeApplication(profile, jobInput);
+    let tailoredProfile = { ...profile };
     const resolvedLang = targetLanguage || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
+
+    if (deepTailor || tailoredProfile.enableDeepTailor) {
+      const initialAnalysis = analyzeApplication(tailoredProfile, jobInput);
+      tailoredProfile = await this.deepAlignCandidateExperience(tailoredProfile, jobInput, initialAnalysis, resolvedLang);
+    }
+
+    const analysis = analyzeApplication(tailoredProfile, jobInput);
 
     // If an AI provider is active, invoke LLM for a bespoke, heartfelt, curiosity-driven cover letter
     if (this.config.provider !== "builtin") {
@@ -2544,7 +2700,7 @@ MANDATORY HUMANIZER RULES (STRICTLY ENFORCED):
    - Paragraph 3 (Teamwork & Practical Engineering): Focus on practical day-to-day engineering habits: clear runbooks, maintainable configurations, collaborating with software teams to reduce friction, and handling security (IAM, secrets, blast radius) proactively. DO NOT philosophize or lecture about human nature or "serving people".
      Example: "In my daily work, I write thorough runbooks and keep Terraform modules modular so the wider team can operate them easily. I work alongside application teams to automate repetitive deployment steps and troubleshoot pipeline failures early. For security, I ensure IAM roles follow least privilege, secrets are encrypted in AWS Secrets Manager, and infrastructure changes are tested in staging before rollout."
    - Paragraph 4 (Logistics & Simple Closing): State visa requirement or right to work plainly.
-     Example: "${profile.visaSponsorshipRequired ? `I am based in ${profile.location || "the UK"} and require Skilled Worker visa sponsorship.` : `I am based in ${profile.location || "the UK"} with unrestricted right to work.`} I would welcome the opportunity to discuss your current infrastructure roadmap and where you need the most support. Thank you for your time."
+     Example: "${tailoredProfile.visaSponsorshipRequired ? `I am based in ${tailoredProfile.location || "the UK"} and require Skilled Worker visa sponsorship.` : `I am based in ${tailoredProfile.location || "the UK"} with unrestricted right to work.`} I would welcome the opportunity to discuss your current infrastructure roadmap and where you need the most support. Thank you for your time."
 
 3. FORMAT & LATEX RULES:
    - Output must be valid, clean LaTeX without stray spacing commands.
@@ -2554,15 +2710,15 @@ MANDATORY HUMANIZER RULES (STRICTLY ENFORCED):
    - Do NOT wrap in markdown \`\`\`latex codeblocks.`;
 
         const userPrompt = `Candidate Profile:
-Name: ${profile.name}
-Headline: ${profile.headline}
-Location: ${profile.location}
-Email: ${profile.email} | Phone: ${profile.phone}
+Name: ${tailoredProfile.name}
+Headline: ${tailoredProfile.headline}
+Location: ${tailoredProfile.location}
+Email: ${tailoredProfile.email} | Phone: ${tailoredProfile.phone}
 Work Experience Summary:
-${(profile.experience || []).slice(0, 3).map(e => `- ${e.role} at ${e.company} (${e.startDate || ""} - ${e.endDate || ""}): ${(e.bullets || []).slice(0, 2).join("; ")}`).join("\n")}
-Top Skills: ${Object.values(profile.skills || {}).flatMap(s => Array.isArray(s) ? s : []).slice(0, 10).join(", ")}
+${(tailoredProfile.experience || []).slice(0, 3).map(e => `- ${e.role} at ${e.company} (${e.startDate || ""} - ${e.endDate || ""}): ${(e.bullets || []).slice(0, 2).join("; ")}`).join("\n")}
+Top Skills: ${Object.values(tailoredProfile.skills || {}).flatMap(s => Array.isArray(s) ? s : []).slice(0, 10).join(", ")}
 Source Resume Excerpt:
-${(profile.sourceResume?.text || "").slice(0, 1200)}
+${(tailoredProfile.sourceResume?.text || "").slice(0, 1200)}
 
 Target Job:
 Company: ${job.company}
@@ -2583,7 +2739,7 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
           return cleaned;
         } else if (aiResponse && aiResponse.trim().length > 150) {
           const humanized = this.humanizeText(aiResponse.trim());
-          return this.wrapParagraphsInCoverLatex(profile, jobInput, humanized, resolvedLang);
+          return this.wrapParagraphsInCoverLatex(tailoredProfile, jobInput, humanized, resolvedLang);
         }
       } catch (e) {
         console.warn("AI generation of cover letter failed, using deterministic engine:", e);
@@ -2591,7 +2747,7 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     }
 
     // High-touch deterministic generator with authentic heart, curiosity, and fit
-    return renderGroundedCoverLetter(profile, jobInput, analysis, resolvedLang);
+    return renderGroundedCoverLetter(tailoredProfile, jobInput, analysis, resolvedLang);
   }
 
   // Native Humanizer: Strip AI rhetoric, em-dashes, Not-X-but-Y formulas, sententious preaching, and stray spacing tokens

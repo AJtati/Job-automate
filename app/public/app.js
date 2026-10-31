@@ -90,6 +90,7 @@ const countDrafted = document.getElementById("countDrafted");
 const countApplied = document.getElementById("countApplied");
 const countSponsors = document.getElementById("countSponsors");
 const countExplicitSponsors = document.getElementById("countExplicitSponsors");
+const countNewSponsors = document.getElementById("countNewSponsors");
 const sponsorStatRatio = document.getElementById("sponsorStatRatio");
 
 // Modals
@@ -131,7 +132,9 @@ const searchConfigModal = document.getElementById("searchConfigModal");
 const btnCloseSearchConfig = document.getElementById("btnCloseSearchConfig");
 const btnSaveSearchConfig = document.getElementById("btnSaveSearchConfig");
 const btnRefreshSponsors = document.getElementById("btnRefreshSponsors");
+const btnRefreshNewSponsors = document.getElementById("btnRefreshNewSponsors");
 const sponsorRegistryStatus = document.getElementById("sponsorRegistryStatus");
+const newSponsorRegistryStatus = document.getElementById("newSponsorRegistryStatus");
 const runtimeIssues = document.getElementById("runtimeIssues");
 const sourceRunStatus = document.getElementById("sourceRunStatus");
 
@@ -210,6 +213,7 @@ function setupEventListeners() {
   btnCloseSearchConfig?.addEventListener("click", () => searchConfigModal.style.display = "none");
   btnSaveSearchConfig?.addEventListener("click", saveSearchConfig);
   btnRefreshSponsors?.addEventListener("click", refreshSponsorRegister);
+  btnRefreshNewSponsors?.addEventListener("click", refreshNewSponsors);
 
   // Schedule button and modal triggers
   btnSchedule?.addEventListener("click", () => openScheduleModal());
@@ -269,6 +273,7 @@ function setupEventListeners() {
 
   // Tailor action
   btnTailor.addEventListener("click", tailorCurrentJob);
+  document.getElementById("chkDeepTailor")?.addEventListener("change", updateTailorBtnLabel);
 
   // Mark applied
   btnMarkApplied.addEventListener("click", markCurrentJobApplied);
@@ -576,6 +581,9 @@ async function fetchProfiles() {
 
     updateProfileUI();
     renderProfileDropdownList();
+    if (activeProfile?.schedule) {
+      applyScheduleUI(activeProfile.schedule);
+    }
   } catch (err) {
     console.error("Failed to load candidate profiles:", err);
   }
@@ -690,6 +698,27 @@ function renderProfileDropdownList() {
 
 async function switchActiveProfile(profileId) {
   profileDropdownMenu.style.display = "none";
+  const targetProfile = allProfiles.find(p => p.id === profileId);
+
+  // 1. Instant optimistic UI switch (0ms latency)
+  if (targetProfile) {
+    activeProfile = targetProfile;
+    updateProfileUI();
+    renderProfileDropdownList();
+    if (targetProfile.schedule) {
+      applyScheduleUI(targetProfile.schedule);
+      updateFeedSyncStatus({
+        scheduleStatus: targetProfile.schedule,
+        lastSearch: targetProfile.schedule.lastRunResult ? {
+          completedAt: targetProfile.schedule.lastRunAt,
+          addedCount: targetProfile.schedule.lastRunResult.addedCount
+        } : null
+      });
+    } else {
+      applyScheduleUI(null);
+    }
+  }
+
   try {
     const res = await fetch("/api/profiles/active", {
       method: "POST",
@@ -702,7 +731,22 @@ async function switchActiveProfile(profileId) {
       updateProfileUI();
       renderProfileDropdownList();
       showToast(`Switched active profile to ${activeProfile.name}`);
+
+      // 2. Authoritative schedule and sync status from server
+      if (data.scheduleStatus) {
+        applyScheduleUI(data.scheduleStatus);
+      } else if (activeProfile.schedule) {
+        applyScheduleUI(activeProfile.schedule);
+      }
+      updateFeedSyncStatus(data);
+
+      // 3. Reset sync baseline to prevent cross-profile count diff notifications
+      lastKnownProfileId = activeProfile.id;
+      lastKnownSearchCompletedAt = data.lastSearch?.completedAt || data.scheduleStatus?.lastRunAt || null;
+      lastKnownJobsCount = data.relevantJobsCount !== undefined ? data.relevantJobsCount : 0;
+
       await fetchJobs();
+      await fetchDiagnostics();
     }
   } catch (err) {
     console.error("Failed to switch profile:", err);
@@ -802,6 +846,7 @@ async function handleProfileModalAutofill(file) {
       if (p.preferredRadiusMiles) document.getElementById("formRadius").value = p.preferredRadiusMiles;
       if (p.minSalary) document.getElementById("formMinSalary").value = p.minSalary;
       if (typeof p.visaSponsorshipRequired === "boolean") document.getElementById("formVisaRequired").checked = p.visaSponsorshipRequired;
+      if (typeof p.enableDeepTailor === "boolean") document.getElementById("formEnableDeepTailor").checked = p.enableDeepTailor;
 
       const roles = (p.targetRoles && p.targetRoles.length) ? p.targetRoles : (p.headline ? [p.headline] : []);
       if (roles.length) document.getElementById("formTargetRoles").value = roles.join(", ");
@@ -864,6 +909,7 @@ function openProfileModal(profileToEdit) {
     document.getElementById("formRadius").value = profileToEdit.preferredRadiusMiles || 70;
     document.getElementById("formMinSalary").value = profileToEdit.minSalary || 75000;
     document.getElementById("formVisaRequired").checked = profileToEdit.visaSponsorshipRequired;
+    document.getElementById("formEnableDeepTailor").checked = Boolean(profileToEdit.enableDeepTailor);
     document.getElementById("formTargetRoles").value = (profileToEdit.targetRoles || []).join(", ");
     document.getElementById("formTargetLocations").value = (profileToEdit.targetLocations || []).join(", ");
 
@@ -876,6 +922,7 @@ function openProfileModal(profileToEdit) {
     document.getElementById("formRadius").value = "70";
     document.getElementById("formMinSalary").value = "75000";
     document.getElementById("formVisaRequired").checked = true;
+    document.getElementById("formEnableDeepTailor").checked = false;
   }
   profileModal.style.display = "flex";
 }
@@ -933,6 +980,7 @@ async function handleSaveProfileForm(e) {
     preferredRadiusMiles,
     minSalary,
     visaSponsorshipRequired,
+    enableDeepTailor: Boolean(document.getElementById("formEnableDeepTailor")?.checked),
     targetRoles: targetRoles.length > 0 ? targetRoles : [headline],
     targetLocations: targetLocations.length > 0 ? targetLocations : ["Remote", location],
     skills: finalSkills,
@@ -1799,6 +1847,9 @@ function updateBadgeCounts() {
   if (countAppliedEl) countAppliedEl.textContent = applied;
   if (countSponsorsEl) countSponsorsEl.textContent = sponsors;
   if (countExplicitSponsorsEl) countExplicitSponsorsEl.textContent = explicitSponsors;
+  const countNewSponsorsEl = document.getElementById("countNewSponsors");
+  const newSponsors = allJobs.filter(j => j.is_new_sponsor).length;
+  if (countNewSponsorsEl) countNewSponsorsEl.textContent = newSponsors;
 
   // Update dynamic target location counts
   const cityName = (activeProfile?.location || "").split(",")[0].trim().toLowerCase();
@@ -1823,11 +1874,14 @@ function filterJobsList() {
   const radius = activeProfile?.preferredRadiusMiles || 50;
 
   const matched = allJobs.filter(j => {
-    // Search match
+    // Search match: title, trading company, registered sponsor entity, location, and key skills
     const matchSearch = !query ||
-      j.title.toLowerCase().includes(query) ||
-      j.company.toLowerCase().includes(query) ||
-      j.location.toLowerCase().includes(query) ||
+      (j.title && j.title.toLowerCase().includes(query)) ||
+      (j.company && j.company.toLowerCase().includes(query)) ||
+      (j.location && j.location.toLowerCase().includes(query)) ||
+      (j.sponsorship_employer && j.sponsorship_employer.toLowerCase().includes(query)) ||
+      (j.new_sponsor_org && j.new_sponsor_org.toLowerCase().includes(query)) ||
+      (j.sponsor_label && j.sponsor_label.toLowerCase().includes(query)) ||
       (j.key_skills || []).some(s => s.toLowerCase().includes(query));
 
     if (!matchSearch) return false;
@@ -1858,12 +1912,55 @@ function filterJobsList() {
     if (currentFilter === "applied") return j.status === "applied";
     if (currentFilter === "sponsor_verified") return j.sponsor_verified;
     if (currentFilter === "sponsorship_explicit") return j.sponsor_verified && j.sponsorship_status === "offered";
+    if (currentFilter === "sponsor_new") return Boolean(j.is_new_sponsor);
 
     return true;
   });
 
   return matched.sort((a, b) => {
-    if (currentSortMode === "days") {
+    if (currentSortMode === "sponsor_new_first") {
+      // 1. Newly licensed sponsors (last 30d) first, ordered by license date descending
+      const isNewA = a.is_new_sponsor ? 1 : 0;
+      const isNewB = b.is_new_sponsor ? 1 : 0;
+      if (isNewB !== isNewA) return isNewB - isNewA;
+
+      if (isNewA && isNewB) {
+        const dateA = a.new_sponsor_date || "";
+        const dateB = b.new_sponsor_date || "";
+        if (dateB !== dateA) return dateB.localeCompare(dateA);
+      }
+
+      // 2. Then regular verified sponsors
+      const isVerA = a.sponsor_verified ? 1 : 0;
+      const isVerB = b.sponsor_verified ? 1 : 0;
+      if (isVerB !== isVerA) return isVerB - isVerA;
+
+      // 3. Fallback to newest posted date then fit score
+      const dateA = a.posted_date || "2026-01-01";
+      const dateB = b.posted_date || "2026-01-01";
+      if (dateB !== dateA) return dateB.localeCompare(dateA);
+      return (b.fit_score || 0) - (a.fit_score || 0);
+    } else if (currentSortMode === "sponsors_first") {
+      // All verified sponsors first (with newly licensed at the top)
+      const rankA = a.is_new_sponsor ? 3 : a.sponsor_verified ? 2 : 1;
+      const rankB = b.is_new_sponsor ? 3 : b.sponsor_verified ? 2 : 1;
+      if (rankB !== rankA) return rankB - rankA;
+
+      const dateA = a.posted_date || "2026-01-01";
+      const dateB = b.posted_date || "2026-01-01";
+      if (dateB !== dateA) return dateB.localeCompare(dateA);
+      return (b.fit_score || 0) - (a.fit_score || 0);
+    } else if (currentSortMode === "sponsors_old_first") {
+      // Established/older licensed sponsors first, then newly licensed, then unverified
+      const rankA = (a.sponsor_verified && !a.is_new_sponsor) ? 3 : a.is_new_sponsor ? 2 : 1;
+      const rankB = (b.sponsor_verified && !b.is_new_sponsor) ? 3 : b.is_new_sponsor ? 2 : 1;
+      if (rankB !== rankA) return rankB - rankA;
+
+      const dateA = a.posted_date || "2026-01-01";
+      const dateB = b.posted_date || "2026-01-01";
+      if (dateB !== dateA) return dateB.localeCompare(dateA);
+      return (b.fit_score || 0) - (a.fit_score || 0);
+    } else if (currentSortMode === "days") {
       // Days wise: newest posted_date first, then fit_score
       const dateA = a.posted_date || "2026-01-01";
       const dateB = b.posted_date || "2026-01-01";
@@ -1910,7 +2007,8 @@ function renderJobs() {
     drafted: "Drafted Applications",
     applied: "Applied & Active",
     sponsor_verified: "Licensed Employers",
-    sponsorship_explicit: "Vacancies Stating Sponsorship"
+    sponsorship_explicit: "Vacancies Stating Sponsorship",
+    sponsor_new: "✨ Newly Licensed Sponsors (Last 30 Days)"
   };
 
   let titleText = filterNames[currentFilter];
@@ -1932,9 +2030,10 @@ function renderJobs() {
     return;
   }
 
-  filtered.forEach(job => {
+  filtered.forEach((job, index) => {
     const card = document.createElement("div");
     card.className = `job-card ${selectedJob && selectedJob.id === job.id ? 'active' : ''}`;
+    if (index < 10) card.style.setProperty("--i", index);
     
     // Status Badge
     let statusBadge = "";
@@ -1961,12 +2060,16 @@ function renderJobs() {
         <div class="job-card-title">${escapeHtml(job.title)}</div>
         <div class="job-card-fit">${scoreLabel}</div>
       </div>
-      <div class="job-card-company">${escapeHtml(job.company)}</div>
+      <div class="job-card-company">${escapeHtml(job.company)}${job.is_new_sponsor && job.sponsorship_employer && job.sponsorship_employer.toLowerCase() !== job.company.toLowerCase() ? ` <span style="font-size: 11px; opacity: 0.7; font-weight: normal;">(Reg: ${escapeHtml(job.sponsorship_employer)})</span>` : ''}</div>
       <div class="job-card-meta">
         ${relativeDateBadge}
         ${portalTag}
         <span class="meta-pill">${escapeHtml(job.commute_tag)}</span>
-        ${job.sponsorship_status === "offered" && job.sponsor_verified ? '<span class="meta-pill sponsor">✓ Sponsorship stated</span>' : job.sponsor_verified ? '<span class="meta-pill sponsor">🛡️ Licensed employer</span>' : ''}
+        ${job.is_new_sponsor
+          ? `<span class="meta-pill pill-new-sponsor" title="Approved sponsor on ${escapeHtml(job.new_sponsor_formatted || '')}: ${escapeHtml(job.sponsorship_employer || job.company)}">✨ New Sponsor (${escapeHtml(job.new_sponsor_formatted ? job.new_sponsor_formatted.replace(/ \d{4}$/, '') : 'Recent')})</span>`
+          : (job.sponsorship_status === "offered" && job.sponsor_verified
+            ? '<span class="meta-pill sponsor">✓ Sponsorship stated</span>'
+            : (job.sponsor_verified ? '<span class="meta-pill sponsor">🛡️ Licensed employer</span>' : ''))}
         ${statusBadge}
       </div>
     `;
@@ -2027,9 +2130,16 @@ function selectJob(job) {
   // Sponsor Banner
   if (job.sponsor_verified) {
     studioSponsorBanner.style.display = "flex";
-    studioSponsorText.textContent = job.sponsorship_status === "offered"
-      ? `Licensed employer · this vacancy states sponsorship is offered`
-      : `Licensed employer · this vacancy does not confirm sponsorship`;
+    if (job.is_new_sponsor) {
+      studioSponsorBanner.className = "sponsor-banner new-sponsor-banner";
+      const matchedOrg = job.sponsorship_employer || job.new_sponsor_org || job.company;
+      studioSponsorText.innerHTML = `<strong>✨ Newly Approved UK Sponsor (${escapeHtml(job.new_sponsor_formatted || 'Last 30 Days')})</strong> · Licensed Skilled Worker employer: <strong>${escapeHtml(matchedOrg)}</strong>`;
+    } else {
+      studioSponsorBanner.className = "sponsor-banner";
+      studioSponsorText.textContent = job.sponsorship_status === "offered"
+        ? `Licensed employer · this vacancy states sponsorship is offered`
+        : `Licensed employer · this vacancy does not confirm sponsorship`;
+    }
   } else {
     studioSponsorBanner.style.display = "none";
   }
@@ -2037,6 +2147,12 @@ function selectJob(job) {
   // Actions Bar
   studioActionsBar.style.display = "flex";
   studioTabs.style.display = "flex";
+
+  const chkDeep = document.getElementById("chkDeepTailor");
+  if (chkDeep) {
+    chkDeep.checked = Boolean(job.is_deep_tailored !== undefined ? job.is_deep_tailored : activeProfile?.enableDeepTailor);
+    updateTailorBtnLabel();
+  }
 
   if (job.status === "applied") {
     btnMarkApplied.textContent = "✅ Applied";
@@ -2116,8 +2232,9 @@ async function renderCVTab() {
 
   studioContent.innerHTML = `
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto; flex-wrap: wrap; gap: 8px;">
-      <div style="font-size: 13px; color: var(--text-secondary);">
-        <b>Format:</b> Jake Gutierrez ATS Single-Page (100% Parsable Unicode)
+      <div style="font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;">
+        <span><b>Format:</b> Jake Gutierrez ATS Single-Page (100% Parsable Unicode)</span>
+        ${(selectedJob.is_deep_tailored || activeTailoredData?.is_deep_tailored) ? '<span class="badge badge-emerald" style="font-size: 11px; padding: 2px 8px; border-radius: 999px;">🎯 Deep Aligned (Target Stack)</span>' : ''}
       </div>
       <div style="display: flex; gap: 8px; align-items: center;">
         ${langPills}
@@ -2192,7 +2309,8 @@ async function renderCVTab() {
   const parsed = parseLatexCV(texCode);
   const isGermanDoc = (currentDocLang === "native" && (activeTailoredData?.language === "de" || /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) || parsed.language === "de")) || /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) || /\\section\{Profil\}/i.test(texCode);
   const latexRoleMatch = texCode.match(/\\textbf\{\\large\s*([^}]+)\}/i) || texCode.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
-  const headlineRole = latexRoleMatch ? latexRoleMatch[1].replace(/\\&/g, "&").trim() : cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
+  const rawHeadline = latexRoleMatch ? latexRoleMatch[1].replace(/\\&/g, "&").trim() : (selectedJob.title || activeProfile?.headline);
+  const headlineRole = cleanCandidateHeadline(rawHeadline, activeProfile?.headline);
   const expToRender = (parsed.experience && parsed.experience.length > 0)
     ? parsed.experience
     : (activeProfile?.experience || []).map(exp => ({
@@ -2356,8 +2474,9 @@ async function renderCoverTab() {
 
   studioContent.innerHTML = `
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto; flex-wrap: wrap; gap: 8px;">
-      <div style="font-size: 13px; color: var(--text-secondary);">
-        <b>Format:</b> Executive Formal Letterhead (Targeted to ${escapeHtml(selectedJob.company)})
+      <div style="font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;">
+        <span><b>Format:</b> Executive Formal Letterhead (Targeted to ${escapeHtml(selectedJob.company)})</span>
+        ${(selectedJob.is_deep_tailored || activeTailoredData?.is_deep_tailored) ? '<span class="badge badge-emerald" style="font-size: 11px; padding: 2px 8px; border-radius: 999px;">🎯 Deep Aligned</span>' : ''}
       </div>
       <div style="display: flex; gap: 8px; align-items: center;">
         ${langPills}
@@ -3092,11 +3211,24 @@ async function sendJobChatMessage(text) {
   }
 }
 
+function updateTailorBtnLabel() {
+  const chk = document.getElementById("chkDeepTailor");
+  if (!btnTailor) return;
+  if (chk && chk.checked) {
+    btnTailor.innerHTML = "🎯 Deep Tailor CV & Cover Letter";
+  } else {
+    btnTailor.innerHTML = "⚡ Tailor CV & Cover Letter";
+  }
+}
+
 async function tailorCurrentJob() {
   if (!selectedJob) return;
 
+  const chkDeep = document.getElementById("chkDeepTailor");
+  const isDeepTailor = chkDeep ? chkDeep.checked : Boolean(activeProfile?.enableDeepTailor);
+
   btnTailor.disabled = true;
-  btnTailor.textContent = "⏳ Tailoring...";
+  btnTailor.textContent = isDeepTailor ? "⏳ Deep Tailoring..." : "⏳ Tailoring...";
 
   try {
     const res = await fetch("/api/tailor", {
@@ -3109,7 +3241,8 @@ async function tailorCurrentJob() {
         location: selectedJob.location,
         fullJd: selectedJob.full_jd || selectedJob.summary || "",
         keySkills: selectedJob.key_skills || [],
-        force: true
+        force: true,
+        deepTailor: isDeepTailor
       })
     });
 
@@ -3121,6 +3254,7 @@ async function tailorCurrentJob() {
       selectedJob.fit_score = data.tailored_score || data.fit_score;
       selectedJob.baseline_score = data.baseline_score;
       selectedJob.tailored_score = data.tailored_score;
+      selectedJob.is_deep_tailored = data.is_deep_tailored ?? isDeepTailor;
       if (data.analysis) {
         selectedJob.analysis = data.analysis;
       }
@@ -3134,7 +3268,8 @@ async function tailorCurrentJob() {
       const scoreNote = data.baseline_score && data.tailored_score
         ? ` (${data.baseline_score}% Baseline ➔ ${data.tailored_score}% Tailored ATS)`
         : ` (${selectedJob.fit_score}% Match)`;
-      showToast(`✨ Tailored ATS CV & Cover Letter generated for ${selectedJob.company}${scoreNote}!`);
+      const deepTag = selectedJob.is_deep_tailored ? "🎯 Deep AI Matched " : "";
+      showToast(`✨ ${deepTag}ATS CV & Cover Letter generated for ${selectedJob.company}${scoreNote}!`);
     } else {
       showToast(data.error || "Failed to tailor application");
     }
@@ -3143,7 +3278,7 @@ async function tailorCurrentJob() {
     showToast("Error during tailoring");
   } finally {
     btnTailor.disabled = false;
-    btnTailor.textContent = "⚡ Tailor CV & Cover Letter";
+    updateTailorBtnLabel();
   }
 }
 
@@ -3371,6 +3506,16 @@ function renderSponsorRegistryStatus(status = {}) {
   sponsorRegistryStatus.textContent = `${Number(status.count || 0).toLocaleString()} register rows · updated ${fetched}`;
 }
 
+function renderNewSponsorRegistryStatus(status = {}) {
+  if (!newSponsorRegistryStatus) return;
+  if (!status || !status.count) {
+    newSponsorRegistryStatus.textContent = "Newly approved sponsors (30d): none loaded.";
+    return;
+  }
+  const fetched = status.fetchedAt ? new Date(status.fetchedAt).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "just now";
+  newSponsorRegistryStatus.textContent = `✨ ${Number(status.count || 0).toLocaleString()} newly approved UK sponsors (last 30 days) · updated ${fetched}`;
+}
+
 function renderSourceStatus(search) {
   if (!sourceRunStatus || !search) return;
   const reports = search.sources || [];
@@ -3401,6 +3546,8 @@ async function fetchDiagnostics() {
         : "";
     }
     if (data.lastSearch) renderSourceStatus(data.lastSearch);
+    if (data.sponsorRegistry) renderSponsorRegistryStatus(data.sponsorRegistry);
+    if (data.newSponsors) renderNewSponsorRegistryStatus(data.newSponsors);
   } catch {
     if (runtimeIssues) {
       runtimeIssues.style.display = "block";
@@ -3450,8 +3597,27 @@ async function fetchSearchConfig() {
     updateKeyIndicator("adzunaKeyStatus", "adzunaAppKey", Boolean(searchConfig.hasAdzunaCredentials), "Adzuna App Key");
 
     renderSponsorRegistryStatus(data.sponsorRegistry);
+    renderNewSponsorRegistryStatus(data.newSponsors);
   } catch {
     searchConfig = { sponsorshipMode: "all", sources: { linkedin: true, freehire: true, jobicy: true, arbeitnow: false, remotive: true } };
+  }
+}
+
+async function refreshNewSponsors() {
+  if (!btnRefreshNewSponsors) return;
+  btnRefreshNewSponsors.disabled = true;
+  btnRefreshNewSponsors.textContent = "Refreshing 30d sponsors...";
+  try {
+    const res = await fetch("/api/sponsors/refresh-new", { method: "POST" });
+    const data = await res.json();
+    renderNewSponsorRegistryStatus(data.status || data);
+    showToast(data.success ? `✨ Loaded ${Number(data.count || 0).toLocaleString()} newly approved UK sponsors from last 30 days` : (data.error || "New sponsor refresh failed"));
+    if (data.success) await fetchJobs();
+  } catch (err) {
+    showToast("Failed to refresh new sponsors");
+  } finally {
+    btnRefreshNewSponsors.disabled = false;
+    btnRefreshNewSponsors.textContent = "✨ Refresh New Sponsors (30d)";
   }
 }
 
@@ -3646,6 +3812,9 @@ async function saveSchedule() {
       activeProfile.schedule = data.schedule;
     }
 
+    applyScheduleUI(data.schedule);
+    await checkBackgroundSync();
+
     scheduleModal.style.display = "none";
     showToast(applyToAll
       ? "⏰ Automated schedule saved and synchronized across ALL profiles!"
@@ -3693,6 +3862,8 @@ async function runScheduleTestNow() {
     if (data.success) {
       showToast(`⚡ Search complete: ${data.foundCount} roles found (${data.addedCount} newly added)`);
       await fetchJobs();
+      await checkBackgroundSync();
+      await fetchDiagnostics();
       // Re-populate modal status
       schedLastRunText.textContent = "Just now";
       schedResultRow.style.display = "flex";
@@ -3717,10 +3888,50 @@ async function runScheduleTestNow() {
   }
 }
 
+let lastKnownProfileId = null;
 let lastKnownSearchCompletedAt = null;
 let lastKnownJobsCount = 0;
 let isSyncing = false;
 let autoSyncInterval = null;
+
+function formatClientCountdown(nextRunIso) {
+  if (!nextRunIso) return null;
+  const next = new Date(nextRunIso).getTime();
+  if (isNaN(next)) return null;
+  const diffMs = next - Date.now();
+  if (diffMs <= 0) return "Due now";
+  const diffMinutes = Math.floor(diffMs / 60000);
+  const hours = Math.floor(diffMinutes / 60);
+  const mins = diffMinutes % 60;
+  if (hours > 24) {
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    return `in ${days}d ${remHours}h`;
+  }
+  if (hours > 0) {
+    return mins > 0 ? `in ${hours}h ${mins}m` : `in ${hours}h`;
+  }
+  return `in ${Math.max(1, mins)}m`;
+}
+
+function applyScheduleUI(schedule) {
+  const btnScheduleDot = document.getElementById("btnScheduleDot");
+  const btnScheduleText = document.getElementById("btnScheduleText");
+  if (!btnScheduleText) return;
+
+  if (schedule && schedule.enabled) {
+    if (btnScheduleDot) btnScheduleDot.style.display = "inline-block";
+    if (schedule.isRunningNow) {
+      btnScheduleText.textContent = "⏳ Scraping...";
+    } else {
+      const countdown = schedule.countdown || formatClientCountdown(schedule.nextRunAt);
+      btnScheduleText.textContent = countdown ? `⏰ ${countdown}` : "⏰ Scheduled";
+    }
+  } else {
+    if (btnScheduleDot) btnScheduleDot.style.display = "none";
+    btnScheduleText.textContent = "⏰ Schedule";
+  }
+}
 
 async function checkBackgroundSync() {
   if (isSyncing) return;
@@ -3729,25 +3940,24 @@ async function checkBackgroundSync() {
     if (!res.ok) return;
     const data = await res.json();
 
-    // 1. Update Schedule button UI & Countdown
+    const activeId = data.activeProfileId || (activeProfile ? activeProfile.id : null);
     const schedule = data.scheduleStatus;
-    const btnScheduleDot = document.getElementById("btnScheduleDot");
-    const btnScheduleText = document.getElementById("btnScheduleText");
-    if (schedule && schedule.enabled) {
-      if (btnScheduleDot) btnScheduleDot.style.display = "inline-block";
-      if (btnScheduleText) {
-        if (schedule.isRunningNow) {
-          btnScheduleText.textContent = "⏳ Scraping...";
-        } else if (schedule.countdown) {
-          btnScheduleText.textContent = `⏰ ${schedule.countdown}`;
-        }
-      }
-    } else {
-      if (btnScheduleDot) btnScheduleDot.style.display = "none";
-      if (btnScheduleText) btnScheduleText.textContent = "⏰ Schedule";
+
+    // 1. Update Schedule button UI & Countdown
+    applyScheduleUI(schedule);
+
+    // 2. Check if active profile changed externally
+    if (activeId && lastKnownProfileId && activeId !== lastKnownProfileId) {
+      lastKnownProfileId = activeId;
+      lastKnownSearchCompletedAt = data.lastSearch?.completedAt || schedule?.lastRunAt || null;
+      lastKnownJobsCount = data.relevantJobsCount !== undefined ? data.relevantJobsCount : (data.totalJobsCount || 0);
+      updateFeedSyncStatus(data);
+      return;
     }
 
-    // 2. Check if a new background scrape completed or job count changed
+    if (activeId) lastKnownProfileId = activeId;
+
+    // 3. Check if a new background scrape completed or job count changed
     const searchCompletedAt = data.lastSearch?.completedAt || schedule?.lastRunAt || null;
     const currentJobsCount = data.relevantJobsCount !== undefined ? data.relevantJobsCount : (data.totalJobsCount || 0);
 
@@ -3894,6 +4104,7 @@ async function triggerScrape(request = {}) {
 
 function showToast(message) {
   const container = document.getElementById("toastContainer");
+  if (!container) return;
   const toast = document.createElement("div");
   toast.className = "toast";
   const status = document.createElement("span");
@@ -3904,11 +4115,30 @@ function showToast(message) {
   toast.append(status, copy);
   container.appendChild(toast);
 
-  setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transform = "translateY(10px)";
-    setTimeout(() => toast.remove(), 250);
-  }, 3200);
+  // Emil Kowalski Sonner Principle: Enter animation with requestAnimationFrame
+  requestAnimationFrame(() => {
+    toast.classList.add("toast-visible");
+  });
+
+  let dismissTimeout = null;
+  const scheduleDismiss = (delay = 3200) => {
+    if (dismissTimeout) clearTimeout(dismissTimeout);
+    dismissTimeout = setTimeout(() => {
+      toast.classList.remove("toast-visible");
+      toast.classList.add("toast-leaving");
+      setTimeout(() => toast.remove(), 180);
+    }, delay);
+  };
+
+  // Sonner Principle: Pause toast timers when hovering over them
+  toast.addEventListener("mouseenter", () => {
+    if (dismissTimeout) clearTimeout(dismissTimeout);
+  });
+  toast.addEventListener("mouseleave", () => {
+    scheduleDismiss(1600);
+  });
+
+  scheduleDismiss(3200);
 }
 
 function escapeHtml(text) {
@@ -3920,28 +4150,58 @@ function escapeHtml(text) {
 function cleanCandidateHeadline(role, fallback = "Professional Candidate") {
   if (!role) return fallback;
 
-  // Purge reference numbers, salary, clickbait, locations
+  // Purge headcounts, reference numbers, salary, clickbait, locations
   let clean = role
-    .replace(/\s*\([^)]*(?:ref|id|req|remote|hybrid|onsite|urgent|experience|train|mile|salary|sponsor)[^)]*\)/gi, "")
-    .replace(/\s*\[[^\]]*(?:ref|id|req|remote|hybrid|onsite|urgent|experience|train|mile|salary|sponsor)[^\]]*\]/gi, "")
-    .replace(/\s*\((?:ref:?\s*[\w\d]+|#\d+|\d+)\)/gi, "")
+    .replace(/^\s*\d+\s*[xX]\s+/g, "")
+    .replace(/\b\d+\s*[xX]\b/g, "")
+    .replace(/^\s*(?:two|three|four|five|multiple|several)\s+(?:x\s+)?/gi, "")
+    .replace(/\b\d+\s+(?:positions?|vacanc(?:y|ies)|openings?|roles?|headcount)\b/gi, "")
+    .replace(/\s*\([^)]*\)/g, "")
+    .replace(/\s*\[[^\]]*\]/g, "")
     .replace(/\b(?:Ref(?:erence)?|ID|Req(?:uisition)?|Job\s*ID)[:\s#]*[A-Z0-9_-]+/gi, "")
     .replace(/[£$€]\s*\d+[\d,]*(?:\s*k|\s*K)?(?:\s*-\s*[£$€]?\s*\d+[\d,]*(?:\s*k|\s*K)?)?/g, "")
     .replace(/\b\d+k\b/gi, "")
     .replace(/\b(?:up to|circ?a)\s+[£$€]?\s*\d+/gi, "")
     .replace(/\b(?:per annum|per year|p\.a\.|per day|p\.d\.|per hour|p\.h\.|plus bonus|plus package)\b/gi, "")
-    .replace(/\b(?:no experience (?:needed|required)|training (?:provided|given)|immediate start|urgent(?:ly)?(?: required)?|apply now|hot job|career change)\b/gi, "")
+    .replace(/\b(?:no experience (?:needed|required)|training (?:provided|given)|immediate start|urgent(?:ly)?(?: required)?|apply now|hot job|career change|we are hiring|hiring now|wanted|seeking|needed)\b/gi, "")
     .replace(/\b(?:outside IR35|inside IR35|perm(?:anent)?|contract(?:or)?|temp(?:orary)?)\b/gi, "");
 
   const segments = clean.split(/\s*[\u2013\u2014|::]\s*|\s+-\s+|\s*\/\/\s*/);
   let chosen = segments[0]?.trim() || "";
   for (const seg of segments) {
     const s = seg.trim();
-    if (/engineer|developer|architect|consultant|specialist|analyst|manager|lead|administrator|sre|qa|tester|scientist/i.test(s)) {
+    if (/engineer|developer|architect|consultant|specialist|analyst|manager|lead|administrator|sre|qa|tester|scientist|practitioner/i.test(s)) {
       chosen = s;
       break;
     }
   }
+
+  // Strip headcount from chosen segment again
+  chosen = chosen
+    .replace(/^\s*\d+\s*[xX]\s+/g, "")
+    .replace(/\b\d+\s*[xX]\b/g, "")
+    .replace(/^\s*(?:two|three|four|five|multiple|several)\s+(?:x\s+)?/gi, "");
+
+  // Convert plural role nouns to singular
+  chosen = chosen
+    .replace(/\bEngineers\b/g, "Engineer")
+    .replace(/\bDevelopers\b/g, "Developer")
+    .replace(/\bArchitects\b/g, "Architect")
+    .replace(/\bConsultants\b/g, "Consultant")
+    .replace(/\bSpecialists\b/g, "Specialist")
+    .replace(/\bAnalysts\b/g, "Analyst")
+    .replace(/\bAdministrators\b/g, "Administrator")
+    .replace(/\bManagers\b/g, "Manager")
+    .replace(/\bScientists\b/g, "Scientist")
+    .replace(/\bDesigners\b/g, "Designer")
+    .replace(/\bTesters\b/g, "Tester")
+    .replace(/\bProgrammers\b/g, "Programmer")
+    .replace(/\bTechnicians\b/g, "Technician")
+    .replace(/\bPractitioners\b/g, "Practitioner")
+    .replace(/\bOfficers\b/g, "Officer")
+    .replace(/\bengineers\b/g, "engineer")
+    .replace(/\bdevelopers\b/g, "developer")
+    .replace(/\barchitects\b/g, "architect");
 
   // Seniority protection: strip trainee/junior if candidate is experienced
   const expCount = (activeProfile?.experience || []).length;

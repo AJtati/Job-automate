@@ -3,6 +3,7 @@ import { analyzeApplication } from "../application_engine";
 import { parseResumeDeterministically } from "../resume_parser";
 import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole } from "../resume_engine";
 import type { CandidateProfile } from "../profiles_manager";
+import { AIService } from "../ai_service";
 
 const latex = String.raw`\textbf{\Huge Jordan Patel} \\
 Platform Engineer \\
@@ -239,6 +240,27 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     expect(coverLatex).not.toContain("Trainee DevOps Engineer");
     expect(coverLatex).not.toContain("Ref: 7501");
 
+    // 3. Headcount, tech laundry list, and plural noun purge
+    const headcountRole = "2x Senior DevOps Engineers - Remote - AWS, Terraform, Lambda";
+    expect(cleanJobTitle(headcountRole)).toBe("Senior DevOps Engineer");
+
+    const headcountJob = {
+      company: "Areti Group | B Corp",
+      role: headcountRole,
+      location: "Manchester Area, United Kingdom",
+      fullJd: "We are seeking 2 Senior DevOps Engineers with strong AWS, Terraform, and Lambda."
+    };
+    const headcountAnalysis = analyzeApplication(experiencedCandidate, headcountJob);
+    const headcountDisplayRole = getDisplayRole(experiencedCandidate, headcountJob, headcountAnalysis);
+    expect(headcountDisplayRole).toBe("Senior DevOps Engineer");
+    expect(headcountDisplayRole).not.toContain("2x");
+    expect(headcountDisplayRole).not.toContain("Engineers");
+    expect(headcountDisplayRole).not.toContain("AWS, Terraform, Lambda");
+
+    const headcountResumeLatex = renderTailoredResume(experiencedCandidate, headcountJob, headcountAnalysis);
+    expect(headcountResumeLatex).toContain("\\textbf{\\large Senior DevOps Engineer}");
+    expect(headcountResumeLatex).not.toContain("2x Senior DevOps Engineers");
+
     // 3. Multi-Track: Dynamics 365 profile protection
     const dynamicsCandidate: CandidateProfile = {
       id: "jordan-test",
@@ -311,6 +333,99 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     expect(qaRole).toContain("QA");
     expect(qaRole).not.toContain("Trainee");
     expect(qaRole).not.toContain("Ref: QA-101");
+  });
+
+  test("Deep AI Match & Keyword Infusion adapts work experience and skills to target stack", async () => {
+    const aiService = new AIService({ provider: "builtin" });
+    const awsCandidate: CandidateProfile = {
+      id: "alex-test",
+      name: "Alex Taylor",
+      headline: "DevOps Engineer / Platform Engineer",
+      email: "alex.taylor@example.com",
+      phone: "+44 7700 900123",
+      location: "Hartlepool",
+      postcode: "TS25",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: true,
+      targetRoles: ["DevOps Engineer", "Platform Engineer", "Cloud Engineer"],
+      targetLocations: ["Leeds", "Manchester", "Remote"],
+      preferredRadiusMiles: 70,
+      minSalary: 75000,
+      skills: {
+        cloud: ["AWS"],
+        containers: ["Docker", "Kubernetes"],
+        cicd: ["Jenkins", "GitHub Actions"],
+        iac: ["Terraform"]
+      },
+      experience: [
+        {
+          company: "Betting Tech Services",
+          role: "Platform Engineer",
+          location: "Leeds, UK",
+          startDate: "2023",
+          endDate: "Present",
+          bullets: [
+            "Maintained and supported multi-cluster AWS EKS infrastructure and CI/CD pipelines (Jenkins, GoCD, Concourse, GitHub Actions) for Free to Play betting services.",
+            "Automated GitOps deployments with ArgoCD and Helm across staging and production clusters."
+          ]
+        },
+        {
+          company: "HealthTech Solutions",
+          role: "DevOps Consultant",
+          location: "Leeds, UK",
+          startDate: "2021",
+          endDate: "2023",
+          bullets: [
+            "Built microservice onboarding tools in Python and Jenkins to provision build jobs and Kubernetes manifests.",
+            "Provisioned cloud and on-premises infrastructure using Terraform and Ansible Tower playbooks.",
+            "Automated release workflows using Bash scripts and JSON templates across VSTS and Git pipelines."
+          ]
+        }
+      ],
+      education: [],
+      certifications: []
+    };
+
+    const azureJob = {
+      company: "Myn",
+      role: "Azure DevOps Engineer – Hybrid (Lancaster, UK)",
+      location: "Lancashire, United Kingdom",
+      keySkills: ["aks", "azure", "azure-devops", "ci-cd", "docker", "kubernetes", "terraform"],
+      fullJd: "Myn in Lancaster, UK, seeks an Azure DevOps Engineer to strengthen internal DevOps capabilities across cloud, automation and security. You will build secure Azure environments, design and implement CI/CD pipelines, manage AKS and Docker workflows."
+    };
+
+    const initialAnalysis = analyzeApplication(awsCandidate, azureJob);
+
+    // 1. Test deepAlignCandidateExperience
+    const alignedProfile = await aiService.deepAlignCandidateExperience(awsCandidate, azureJob, initialAnalysis, "en");
+
+    expect(alignedProfile.skills.cloud).toContain("Azure");
+    expect(alignedProfile.skills.cloud?.[0]).toBe("Azure");
+    expect(alignedProfile.skills.containers).toContain("Kubernetes (AKS)");
+    expect(alignedProfile.skills.cicd).toContain("Azure DevOps");
+
+    const allAlignedBullets = alignedProfile.experience.flatMap(e => e.bullets || []);
+    expect(allAlignedBullets.some(b => b.includes("Azure") || b.includes("AKS"))).toBe(true);
+    expect(allAlignedBullets.some(b => b.includes("Azure DevOps"))).toBe(true);
+
+    // Verify Humanizer rules: no AI marketing clichés in aligned bullets
+    const bannedCliches = /proven track record|mission-critical|seamlessly|leveraging|testament to|foster|spearheaded/i;
+    for (const b of allAlignedBullets) {
+      expect(bannedCliches.test(b)).toBe(false);
+    }
+
+    // 2. Test generateTailoredCV with deepTailor = true vs deepTailor = false
+    const standardCV = await aiService.generateTailoredCV(awsCandidate, azureJob, "en", false);
+    const deepCV = await aiService.generateTailoredCV(awsCandidate, azureJob, "en", true);
+
+    // Deep tailored CV must contain Azure, AKS, and Azure DevOps in skills & experience
+    expect(deepCV).toContain("Azure");
+    expect(deepCV).toContain("AKS");
+    expect(deepCV).toContain("Azure DevOps");
+
+    // Standard CV should not force AKS into bullets
+    expect(standardCV).not.toContain("Kubernetes manifests for Azure Kubernetes Service (AKS)");
   });
 });
 
