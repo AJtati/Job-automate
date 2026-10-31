@@ -2197,13 +2197,17 @@ serve({
         );
 
         // Update Tracker with tailored fit rating
+        const tailorReport = aiService.getLastTailorReport();
+
         updateTracker(company, role, "drafted", cvPath, coverPath, tailoredAnalysis.overallScore);
         profilesManager.updateActiveProfileTracker(jobId || `${cleanCompany}_${cleanRole}`, {
           status: "drafted",
           cvFile: cvPath,
           coverFile: coverPath,
           fitRating: String(tailoredAnalysis.overallScore),
-          notes: isDeepTailor ? "Deep AI Matched" : "Standard Matched"
+          notes: isDeepTailor 
+            ? (tailorReport?.isAiSuccess ? `Deep AI Matched (${tailorReport.engineModel})` : "Deep Local Matched (AI Offline)")
+            : "Standard Matched"
         });
 
         // Update seen_jobs with tailored analysis and dual scores
@@ -2217,6 +2221,7 @@ serve({
           seen[jobId].is_deep_tailored = isDeepTailor;
           seen[jobId].analysis = tailoredAnalysis;
           seen[jobId].baseline_analysis = baselineAnalysis;
+          seen[jobId].tailor_report = tailorReport;
           saveSeenJobs(seen);
         }
 
@@ -2242,6 +2247,7 @@ serve({
           baseline_score: baselineAnalysis.overallScore,
           tailored_score: tailoredAnalysis.overallScore,
           is_deep_tailored: isDeepTailor,
+          tailorReport,
           status: "drafted",
           message: isNonEnglish
             ? `Tailored CV & Cover Letter drafted in ${langPack.name} (plus English edition) for ${company}`

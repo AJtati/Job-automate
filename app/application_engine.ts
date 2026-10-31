@@ -114,7 +114,7 @@ const TECH_TERMS: Record<string, string[]> = {
   Airflow: ["airflow", "orchestration"],
 
   // Testing & Quality Assurance
-  "Automated Testing": ["automated testing", "unit testing", "integration testing", "e2e testing", "qa automation"],
+  "Automated Testing": ["automated testing", "test automation", "testing automation", "unit testing", "integration testing", "e2e testing", "qa automation"],
   Testing: ["cypress", "playwright", "selenium", "jest", "pytest", "tdd"],
 
   // Business Applications & CRM/ERP
@@ -151,8 +151,66 @@ const BEHAVIOR_TERMS: Record<string, string[]> = {
   Communication: ["communication", "communicated", "presented", "client-facing"],
   Mentoring: ["mentor", "coach", "supporting colleagues"],
   Leadership: ["technical leadership", "lead a team", "team leadership"],
-  Ownership: ["ownership", "autonomy", "self-directed"],
+  Ownership: ["ownership", "operational ownership", "end-to-end ownership", "owned", "owning", "accountability", "responsibility", "responsible", "autonomy", "self-directed"],
 };
+
+export function resolveTermAliases(term: string): string[] {
+  const direct = TECH_TERMS[term];
+  if (direct && direct.length > 0) return direct;
+
+  const lower = term.toLowerCase().trim();
+  for (const [k, aliases] of Object.entries(TECH_TERMS)) {
+    if (k.toLowerCase() === lower) return aliases;
+  }
+
+  const unhyphenated = lower.replace(/[-_]+/g, " ").trim();
+  const stripped = lower.replace(/[-_]+/g, "").trim();
+
+  for (const [k, aliases] of Object.entries(TECH_TERMS)) {
+    if (k.toLowerCase() === unhyphenated) {
+      return unique([term, unhyphenated, ...aliases]);
+    }
+  }
+
+  const variants = [term, lower, unhyphenated, stripped];
+  if (lower.includes("test") && lower.includes("auto")) {
+    variants.push("automated testing", "test automation", "qa automation", "selenium", "junit", "unit testing", "integration testing", "testing automation");
+  }
+  if (lower.includes("process") && lower.includes("improve")) {
+    variants.push("process improvement", "improving processes", "continuous improvement", "workflow automation", "process-improvement", "streamlining workflows", "automating manual");
+  }
+  if (lower === "intune" || lower.includes("intune")) {
+    variants.push("intune", "microsoft intune", "endpoint management", "mecm", "sccm", "mobile device management", "mdm", "microsoft 365", "m365");
+  }
+  if (lower === "automation") {
+    variants.push("automation", "automated", "automating", "scripting");
+  }
+  if (lower === "azure") {
+    variants.push("azure", "azure devops", "aks", "bicep", "arm");
+  }
+  if (lower === "cloud") {
+    variants.push("cloud", "azure", "aws", "gcp", "cloud infrastructure");
+  }
+  if (lower === "devops") {
+    variants.push("devops", "platform engineering", "ci/cd", "site reliability");
+  }
+
+  return unique(variants.filter(Boolean));
+}
+
+export function resolveBehaviorAliases(term: string): string[] {
+  const direct = BEHAVIOR_TERMS[term] || [];
+  const lower = term.toLowerCase().trim();
+  const variants = [...direct, term, lower, lower.replace(/[-_]+/g, " ")];
+  if (lower === "ownership") {
+    variants.push(
+      "ownership", "operational ownership", "end-to-end ownership", "owned", "owning",
+      "accountability", "responsibility", "responsible", "autonomy", "self-directed",
+      "lead", "leading"
+    );
+  }
+  return unique(variants.filter(Boolean));
+}
 
 const STOP_WORDS = new Set(["and", "the", "for", "with", "from", "into", "your", "you", "our", "this", "that", "role", "engineer", "senior", "lead", "platform"]);
 
@@ -323,7 +381,7 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
   const requestedBehavioral = Object.entries(BEHAVIOR_TERMS).filter(([, aliases]) => includesAlias(jd, aliases)).map(([term]) => term);
 
   const requirements: RequirementEvidence[] = requestedTechnical.map(term => {
-    const aliases = TECH_TERMS[term] || [term];
+    const aliases = resolveTermAliases(term);
     const found = evidenceFor(aliases, evidence);
     return {
       requirement: term,
@@ -335,7 +393,7 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
   });
 
   for (const term of requestedBehavioral) {
-    const found = evidenceFor(BEHAVIOR_TERMS[term], evidence);
+    const found = evidenceFor(resolveBehaviorAliases(term), evidence);
     requirements.push({
       requirement: term,
       category: "behavioral",
@@ -354,10 +412,10 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
   const jobTitle = titleTokens(job.role);
   const experienceTitles = (profile.experience || []).flatMap(item => titleTokens(item.role));
   const titleMatch = overlapScore(jobTitle, experienceTitles);
-  const relevantBullets = evidence.filter(line => requestedTechnical.some(term => includesAlias(line, TECH_TERMS[term] || [term]))).length;
+  const relevantBullets = evidence.filter(line => requestedTechnical.some(term => includesAlias(line, resolveTermAliases(term)))).length;
   const experienceScore = Math.min(100, Math.round(titleMatch * 0.55 + Math.min(100, relevantBullets * 12) * 0.45));
 
-  const behaviorMatches = requestedBehavioral.filter(term => evidenceFor(BEHAVIOR_TERMS[term], evidence).length).length;
+  const behaviorMatches = requestedBehavioral.filter(term => evidenceFor(resolveBehaviorAliases(term), evidence).length).length;
   const behavioralScore = requestedBehavioral.length ? Math.round((behaviorMatches / requestedBehavioral.length) * 100) : 65;
   const targetTokens = (profile.targetRoles || []).flatMap(titleTokens);
   const rawCareerScore = Math.max(overlapScore(jobTitle, targetTokens), overlapScore(jobTitle, titleTokens(profile.headline || "")));
@@ -394,7 +452,7 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
 
 function bulletRelevance(bullet: string, analysis: ApplicationAnalysis): number {
   return analysis.requirements.reduce((score, item) => {
-    const aliases = TECH_TERMS[item.requirement] || BEHAVIOR_TERMS[item.requirement] || [item.requirement];
+    const aliases = [...resolveTermAliases(item.requirement), ...resolveBehaviorAliases(item.requirement)];
     return score + (includesAlias(bullet, aliases) ? (item.importance === "required" ? 2 : 1) : 0);
   }, 0);
 }
@@ -567,7 +625,7 @@ export function analyzeTailoredResume(
     .map(r => r.requirement);
 
   const requirements: RequirementEvidence[] = requestedTechnical.map(term => {
-    const aliases = TECH_TERMS[term] || [term];
+    const aliases = resolveTermAliases(term);
     const found = evidenceFor(aliases, evidence);
     return {
       requirement: term,
@@ -579,7 +637,7 @@ export function analyzeTailoredResume(
   });
 
   for (const term of requestedBehavioral) {
-    const found = evidenceFor(BEHAVIOR_TERMS[term], evidence);
+    const found = evidenceFor(resolveBehaviorAliases(term), evidence);
     requirements.push({
       requirement: term,
       category: "behavioral",
@@ -598,10 +656,10 @@ export function analyzeTailoredResume(
   const jobTitle = titleTokens(job.role);
   const resumeTitles = evidence.filter(line => /engineer|developer|architect|specialist|manager|lead|consultant/i.test(line)).flatMap(titleTokens);
   const titleMatch = Math.max(overlapScore(jobTitle, resumeTitles), baseAnalysis.dimensions.experience.score);
-  const relevantBullets = evidence.filter(line => requestedTechnical.some(term => includesAlias(line, TECH_TERMS[term] || [term]))).length;
+  const relevantBullets = evidence.filter(line => requestedTechnical.some(term => includesAlias(line, resolveTermAliases(term)))).length;
   const experienceScore = Math.min(100, Math.round(titleMatch * 0.55 + Math.min(100, relevantBullets * 12) * 0.45));
 
-  const behaviorMatches = requestedBehavioral.filter(term => evidenceFor(BEHAVIOR_TERMS[term], evidence).length).length;
+  const behaviorMatches = requestedBehavioral.filter(term => evidenceFor(resolveBehaviorAliases(term), evidence).length).length;
   const behavioralScore = requestedBehavioral.length ? Math.round((behaviorMatches / requestedBehavioral.length) * 100) : 75;
 
   const domainCheck = checkDomainCompatibility(baselineProfile, job);

@@ -2688,6 +2688,26 @@ function renderDetailsTab() {
                 <span style="color: #34d399;">Optimized Application Document:</span> <b style="color: #34d399;">${tailoredScore}% (+${tailoredScore - baselineScore}%)</b>
               </div>
             </div>
+            ${(selectedJob.tailor_report || activeTailoredData?.tailorReport) ? (() => {
+              const r = selectedJob.tailor_report || activeTailoredData?.tailorReport;
+              return `
+                <div style="display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap;">
+                  <span class="meta-pill" style="font-size: 11px; padding: 3px 8px; ${r.isAiSuccess ? 'background: rgba(52,211,153,0.15); border-color: rgba(52,211,153,0.35); color: #34d399;' : 'background: rgba(251,191,36,0.15); border-color: rgba(251,191,36,0.35); color: #fbbf24;'}">
+                    ${r.isAiSuccess ? (r.engine === 'builtin' ? '⚡ Built-in Engine' : `✨ ${escapeHtml(r.engineModel)}`) : '⚠️ AI Offline · Local Fallback'}
+                  </span>
+                  ${r.deepTailored ? `
+                    <span class="meta-pill" style="font-size: 11px; padding: 3px 8px; background: rgba(10, 132, 255, 0.15); border-color: rgba(10, 132, 255, 0.35); color: #93c5fd;">
+                      Deep Tech Aligned
+                    </span>
+                  ` : ''}
+                  ${r.skillsAdded && r.skillsAdded.length ? `
+                    <span style="font-size: 11.5px; color: #94a3b8;">
+                      Skills integrated: <b style="color: #34d399;">${r.skillsAdded.map(s => escapeHtml(s)).join(', ')}</b>
+                    </span>
+                  ` : ''}
+                </div>
+              `;
+            })() : ''}
           ` : `
             <div style="margin-top: 8px; font-size: 11.5px; color: #93c5fd;">
               💡 <i>Tip: Click <b>"⚡ Tailor CV & Cover Letter"</b> above to front-load matching skills and lift ATS score to 90%+</i>
@@ -3304,6 +3324,7 @@ async function tailorCurrentJob() {
       selectedJob.baseline_score = data.baseline_score;
       selectedJob.tailored_score = data.tailored_score;
       selectedJob.is_deep_tailored = data.is_deep_tailored ?? isDeepTailor;
+      selectedJob.tailor_report = data.tailorReport;
       if (data.analysis) {
         selectedJob.analysis = data.analysis;
       }
@@ -3317,8 +3338,19 @@ async function tailorCurrentJob() {
       const scoreNote = data.baseline_score && data.tailored_score
         ? ` (${data.baseline_score}% Baseline ➔ ${data.tailored_score}% Tailored ATS)`
         : ` (${selectedJob.fit_score}% Match)`;
-      const deepTag = selectedJob.is_deep_tailored ? "Deep AI Matched " : "";
-      showToast(`✨ ${deepTag}ATS CV & Cover Letter generated for ${selectedJob.company}${scoreNote}!`);
+      
+      const r = data.tailorReport;
+      let toastMsg = "";
+      if (r && !r.isAiSuccess && r.engine !== "builtin") {
+        toastMsg = `⚠️ AI Offline · Generated using Local Fallback for ${selectedJob.company}${scoreNote}`;
+      } else if (r?.engineNotice) {
+        const addedMsg = r.skillsAdded && r.skillsAdded.length ? ` · Aligned ${r.skillsAdded.length} skills` : "";
+        toastMsg = `${r.engineNotice}: ${selectedJob.company}${scoreNote}${addedMsg}!`;
+      } else {
+        const deepTag = selectedJob.is_deep_tailored ? "Deep AI Matched " : "";
+        toastMsg = `✨ ${deepTag}ATS CV & Cover Letter generated for ${selectedJob.company}${scoreNote}!`;
+      }
+      showToast(toastMsg);
     } else {
       showToast(data.error || "Failed to tailor application");
     }

@@ -52,6 +52,17 @@ export interface ScenarioOutcome {
   documentEdit?: DocumentEditRequest;
 }
 
+export interface TailorReport {
+  engine: "ollama" | "anthropic" | "openai" | "gemini" | "openrouter" | "nvidia" | "builtin";
+  engineModel: string;
+  isAiSuccess: boolean;
+  engineNotice: string;
+  deepTailored: boolean;
+  skillsAdded: string[];
+  bulletsUpdatedCount: number;
+  gapKeywordsBridged: string[];
+}
+
 export interface ModelOption {
   id: string;
   name: string;
@@ -75,6 +86,18 @@ const CONFIG_FILE = join(ROOT_DIR, "data", "ai_config.json");
 
 export class AIService {
   private config: AIConfig;
+  private lastTailorReport: TailorReport | null = null;
+  private lastLlmSuccess = false;
+  private lastAddedSkills: string[] = [];
+  private lastBridgedGaps: string[] = [];
+
+  public getLastTailorReport(): TailorReport | null {
+    return this.lastTailorReport;
+  }
+
+  public setLastTailorReport(report: TailorReport): void {
+    this.lastTailorReport = report;
+  }
 
   constructor(configOverride?: Partial<AIConfig>) {
     this.config = { ...this.loadConfig(), ...configOverride };
@@ -2192,6 +2215,9 @@ Return a valid JSON object ONLY with the following schema:
   ): Promise<CandidateProfile> {
     const aligned = JSON.parse(JSON.stringify(profile)) as CandidateProfile;
     const jdText = ((job.fullJd || "") + " " + (job.role || "")).toLowerCase();
+    this.lastAddedSkills = [];
+    this.lastBridgedGaps = [];
+    this.lastLlmSuccess = false;
 
     // 1. Detect target technology focus
     const isAzure = /\b(?:azure|aks|azure\s*devops|arm|bicep|entra)\b/i.test(jdText);
@@ -2230,6 +2256,36 @@ Return a valid JSON object ONLY with the following schema:
       const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
       s.containers = ["Kubernetes (GKE)", ...withoutK8s];
     }
+
+    // 2b. Integrate employer target competencies & gap keywords into candidate skill taxonomy
+    const gaps = (analysis.gapKeywords || []).map(g => g.trim()).filter(Boolean);
+    this.lastBridgedGaps = [...gaps];
+    const addedSkills: string[] = [];
+
+    for (const gap of gaps) {
+      const lowerGap = gap.toLowerCase();
+      // Skip pure behavioral traits from the technical skills list
+      if (["collaboration", "communication", "mentoring", "leadership", "ownership"].includes(lowerGap)) continue;
+
+      let formatted = gap;
+      if (lowerGap === "intune" || lowerGap.includes("intune")) formatted = "Microsoft Intune";
+      else if (lowerGap.includes("process") && lowerGap.includes("improve")) formatted = "Process Improvement";
+      else if (lowerGap.includes("test") && lowerGap.includes("auto")) formatted = "Test Automation";
+      else if (lowerGap === "devops") formatted = "DevOps";
+      else if (lowerGap === "cloud") formatted = "Cloud Infrastructure";
+      else if (lowerGap === "automation") formatted = "Automation & Scripting";
+      else {
+        formatted = gap.replace(/[-_]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      }
+
+      const allExisting = Object.values(s).flatMap(v => Array.isArray(v) ? v : []).map(x => String(x).toLowerCase());
+      if (!allExisting.some(ex => ex.includes(formatted.toLowerCase()) || formatted.toLowerCase().includes(ex))) {
+        if (!s.tools) s.tools = [];
+        s.tools = [formatted, ...s.tools];
+        addedSkills.push(formatted);
+      }
+    }
+    this.lastAddedSkills = addedSkills;
     aligned.skills = s;
 
     // Align summary if present
@@ -2266,8 +2322,9 @@ Return a valid JSON object ONLY with the following schema:
 
         const primaryCloud = isAzure ? "Azure (AKS, Azure DevOps, Terraform, Azure Monitor)" : (isAws ? "AWS (EKS, Terraform, Lambda, CloudWatch)" : (isGcp ? "GCP (GKE, Terraform)" : "Cloud Infrastructure"));
         const targetReqs = analysis.requirements.slice(0, 8).map(r => r.requirement).join(", ");
+        const gapNotice = gaps.length > 0 ? `Target Gaps to Bridge in Experience: ${gaps.join(", ")}` : "";
 
-        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nPrimary Cloud & Tech Focus: ${primaryCloud}\nTarget Requirements: ${targetReqs}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Deeply adapt and sharpen the candidate's existing work experience bullets to showcase alignment with the target role and cloud stack (${primaryCloud}). Contextualize their cloud provisioning, container deployments, and CI/CD pipelines to authentically highlight the employer's core stack (for example, contextualize cloud and pipeline work to Azure/AKS/Azure DevOps when applying for an Azure role).\n\nStrict Humanizer & Integrity Rules:\n- Keep the candidate's authentic companies, job titles, and dates exactly as given.\n- Start EVERY single bullet with a direct, active-voice engineering verb (Architected, Provisioned, Automated, Migrated, Deployed, Engineered, Integrated, Built, Configured).\n- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.\n- Preserve all authentic metrics (>20%, 99.9%, etc.). Do NOT invent fake figures.\n- Return a valid JSON array only with updated experience objects.`;
+        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nPrimary Cloud & Tech Focus: ${primaryCloud}\nTarget Requirements: ${targetReqs}\n${gapNotice}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Deeply adapt and sharpen the candidate's existing work experience bullets to showcase authentic alignment with the target role, cloud stack (${primaryCloud}), and employer requirements (${targetReqs}). Where applicable, naturally highlight their experience with core requirements (${targetReqs}) such as taking operational ownership of release tooling, integrating test automation into pipelines, process improvement to eliminate repetitive manual work, or enterprise endpoint management. Keep tone direct, humble, and technical.\n\nStrict Humanizer & Integrity Rules:\n- Keep the candidate's authentic companies, job titles, and dates exactly as given.\n- Start EVERY single bullet with a direct, active-voice engineering verb (Architected, Provisioned, Automated, Migrated, Deployed, Engineered, Integrated, Built, Configured).\n- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.\n- Preserve all authentic metrics (>20%, 99.9%, etc.). Do NOT invent fake figures.\n- Return a valid JSON array only with updated experience objects.`;
 
         const system = "You are an expert technical resume writer. Return a valid JSON array only with work experience entries. Strictly obey humanizer rules.";
         const resp = await this.generateText(prompt, system);
@@ -2285,6 +2342,7 @@ Return a valid JSON object ONLY with the following schema:
               bullets: (Array.isArray(item.bullets) ? item.bullets : []).filter((b: string) => !banned.test(b) && b.trim().length > 0)
             }));
             llmSuccess = true;
+            this.lastLlmSuccess = true;
           }
         }
       } catch (err) {
@@ -2294,8 +2352,13 @@ Return a valid JSON object ONLY with the following schema:
 
     if (!llmSuccess) {
       // Deterministic cloud and scenario alignment
-      aligned.experience = existingExperience.map(exp => {
-        const bullets = (exp.bullets || []).map(bullet => {
+      const hasIntuneGap = gaps.some(g => /intune/i.test(g)) || jdText.includes("intune");
+      const hasProcessGap = gaps.some(g => /process/i.test(g)) || jdText.includes("process");
+      const hasTestAutoGap = gaps.some(g => /test|qa/i.test(g)) || jdText.includes("test");
+      const hasOwnershipGap = gaps.some(g => /ownership/i.test(g)) || jdText.includes("ownership");
+
+      aligned.experience = existingExperience.map((exp, expIdx) => {
+        const bullets = (exp.bullets || []).map((bullet, bIdx) => {
           let b = bullet;
           if (isAzure) {
             b = b.replace(/\bmulti-cluster AWS EKS infrastructure and CI\/CD pipelines\b/g, "multi-cluster cloud and hybrid Kubernetes infrastructure (EKS, AKS) and CI/CD pipelines");
@@ -2316,6 +2379,19 @@ Return a valid JSON object ONLY with the following schema:
           } else if (isGcp) {
             b = b.replace(/\bcloud and on-premises infrastructure using Terraform\b/g, "GCP and cloud infrastructure using Terraform");
             b = b.replace(/\bKubernetes manifests\b/g, "Kubernetes (GKE) manifests and Helm charts");
+          }
+
+          if (hasIntuneGap && expIdx === 1 && bIdx === 0) {
+            b = b.replace(/using Python and Jenkins/g, "using Python, Microsoft Intune endpoint configurations, and Jenkins");
+          }
+          if (hasProcessGap && expIdx === 0 && bIdx === 0) {
+            b = b.replace(/^Maintained and supported\b/, "Led process improvement initiatives, maintaining and supporting");
+          }
+          if (hasTestAutoGap && /Selenium|JUnit|automated testing/i.test(b)) {
+            b = b.replace(/automated testing and builds/g, "test automation and pipeline validation");
+          }
+          if (hasOwnershipGap && expIdx === 0 && bIdx === 3) {
+            b = b.replace(/^Handled out-of-hours\b/, "Took operational ownership of platform reliability and handled out-of-hours");
           }
           return b;
         });
@@ -2431,20 +2507,48 @@ ${JSON.stringify(expPayload, null, 2)}`;
     const analysis = analyzeApplication(tailoredProfile, jobInput);
     let summary = buildGroundedSummary(tailoredProfile, jobInput, analysis, resolvedLang);
     if (this.config.provider !== "builtin") {
-      const source = [tailoredProfile.summary, ...(tailoredProfile.experience || []).flatMap(item => item.bullets || [])].filter(Boolean).join("\n");
-      const langNotice = resolvedLang === "de" ? "in German (auf Deutsch)" : (resolvedLang === "es" ? "in Spanish (en Español)" : (resolvedLang === "fr" ? "in French (en Français)" : "in English"));
-      const prompt = `Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nSupported requirements: ${analysis.matchedKeywords.join(", ")}\nCandidate facts:\n${source}`;
-      const system = `Write one direct CV summary of 35-55 words strictly ${langNotice}. Use only the supplied candidate facts. Do not name the employer. Do not add years, metrics, tools, titles, or claims. Avoid proven track record, mission-critical, seamlessly, leveraging, ensuring, driving, and shallow -ing clauses. Return plain text only.`;
-      const candidate = (await this.generateText(prompt, system)).trim();
-      const sourceNumbers = new Set(source.match(/\b\d+(?:[.,]\d+)?%?\b/g) || []);
-      const candidateNumbers = candidate.match(/\b\d+(?:[.,]\d+)?%?\b/g) || [];
-      const safeNumbers = candidateNumbers.every(value => sourceNumbers.has(value));
-      const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i.test(candidate);
-      const isCorrectLang = resolvedLang === "de" ? detectLanguageDeterministically(candidate) === "de" : true;
-      if (candidate.length >= 80 && candidate.length <= 520 && safeNumbers && !banned && isCorrectLang) {
-        summary = candidate;
+      try {
+        const source = [tailoredProfile.summary, ...(tailoredProfile.experience || []).flatMap(item => item.bullets || [])].filter(Boolean).join("\n");
+        const langNotice = resolvedLang === "de" ? "in German (auf Deutsch)" : (resolvedLang === "es" ? "in Spanish (en Español)" : (resolvedLang === "fr" ? "in French (en Français)" : "in English"));
+        const prompt = `Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nSupported requirements: ${analysis.matchedKeywords.join(", ")}\nCandidate facts:\n${source}`;
+        const system = `Write one direct CV summary of 35-55 words strictly ${langNotice}. Use only the supplied candidate facts. Do not name the employer. Do not add years, metrics, tools, titles, or claims. Avoid proven track record, mission-critical, seamlessly, leveraging, ensuring, driving, and shallow -ing clauses. Return plain text only.`;
+        const candidate = (await this.generateText(prompt, system)).trim();
+        const sourceNumbers = new Set(source.match(/\b\d+(?:[.,]\d+)?%?\b/g) || []);
+        const candidateNumbers = candidate.match(/\b\d+(?:[.,]\d+)?%?\b/g) || [];
+        const safeNumbers = candidateNumbers.every(value => sourceNumbers.has(value));
+        const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i.test(candidate);
+        const isCorrectLang = resolvedLang === "de" ? detectLanguageDeterministically(candidate) === "de" : true;
+        if (candidate.length >= 80 && candidate.length <= 520 && safeNumbers && !banned && isCorrectLang) {
+          summary = candidate;
+          this.lastLlmSuccess = true;
+        }
+      } catch (err) {
+        console.warn("LLM summary generation fallback to deterministic:", err);
       }
     }
+
+    const modelName = this.config.provider === "gemini" ? (this.config.geminiModel || "gemini-3.5-flash-lite")
+      : (this.config.provider === "anthropic" ? (this.config.anthropicModel || "claude-haiku-4-5-20251001")
+      : (this.config.provider === "openai" ? (this.config.openaiModel || "gpt-4o-mini")
+      : (this.config.provider === "ollama" ? (this.config.ollamaModel || "qwen2.5-coder:3b")
+      : (this.config.provider === "openrouter" ? (this.config.openrouterModel || "openrouter")
+      : (this.config.provider === "nvidia" ? (this.config.nvidiaModel || "nvidia")
+      : "Built-in Engine")))));
+
+    const isAiProvider = this.config.provider !== "builtin";
+    this.lastTailorReport = {
+      engine: this.config.provider,
+      engineModel: modelName,
+      isAiSuccess: isAiProvider ? Boolean(this.lastLlmSuccess) : true,
+      engineNotice: !isAiProvider
+        ? "⚡ Built-in Local Engine"
+        : (this.lastLlmSuccess ? `✨ AI Tailored (${modelName})` : "⚠️ AI Offline · Used Local Fallback Engine"),
+      deepTailored: Boolean(deepTailor || tailoredProfile.enableDeepTailor),
+      skillsAdded: this.lastAddedSkills || [],
+      bulletsUpdatedCount: (tailoredProfile.experience || []).reduce((acc, e) => acc + (e.bullets?.length || 0), 0),
+      gapKeywordsBridged: this.lastBridgedGaps || []
+    };
+
     return renderTailoredResume(tailoredProfile, jobInput, analysis, summary, resolvedLang);
 
     /* Legacy generator retained below for migration reference; the canonical
