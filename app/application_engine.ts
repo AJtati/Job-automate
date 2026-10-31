@@ -365,7 +365,20 @@ function gateLocation(profile: CandidateProfile, job: JobInput): ApplicationAnal
   return { verdict: "FLAG", note: "The job location is outside the candidate's named preferences; confirm commute or relocation expectations." };
 }
 
+const analysisCache = new Map<string, ApplicationAnalysis>();
+const tailoredAnalysisCache = new Map<string, ApplicationAnalysis>();
+const MAX_ANALYSIS_CACHE = 5000;
+
+export function clearAnalysisCache(): void {
+  analysisCache.clear();
+  tailoredAnalysisCache.clear();
+}
+
 export function analyzeApplication(profile: CandidateProfile, job: JobInput): ApplicationAnalysis {
+  const cacheKey = `${profile.id || profile.name}::${job.role}::${job.company}::${job.location || ""}::${(job.fullJd || "").length}::${(job.keySkills || []).join(",")}`;
+  const cached = analysisCache.get(cacheKey);
+  if (cached) return cached;
+
   const jd = job.fullJd || "";
   const evidence = profileEvidence(profile);
   const combinedEvidence = evidence.join("\n");
@@ -429,7 +442,7 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
   const matchedKeywords = requirements.filter(item => item.status === "matched").map(item => item.requirement);
   const gapKeywords = requirements.filter(item => item.status !== "matched").map(item => item.requirement);
 
-  return {
+  const result: ApplicationAnalysis = {
     overallScore,
     verdict: scoreVerdict(overallScore),
     dimensions: {
@@ -448,6 +461,10 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
     gapKeywords,
     provenance: "Deterministic evidence match using the active candidate profile and complete job description. Location is a gate and is not included in the weighted score.",
   };
+
+  if (analysisCache.size >= MAX_ANALYSIS_CACHE) analysisCache.clear();
+  analysisCache.set(cacheKey, result);
+  return result;
 }
 
 function bulletRelevance(bullet: string, analysis: ApplicationAnalysis): number {
@@ -471,7 +488,7 @@ export function buildGroundedSummary(
   targetLang: string = "en"
 ): string {
   const profileSummary = (profile.summary || "").trim();
-  const summaryLang = profileSummary ? detectLanguageDeterministically(profileSummary) : "en";
+  const summaryLang = profileSummary ? detectLanguageDeterministically(profileSummary, profile.country) : "en";
 
   // If candidate's stored summary matches the target language, use it
   if (profileSummary.length >= 80 && summaryLang === targetLang) {
@@ -611,6 +628,10 @@ export function analyzeTailoredResume(
   baselineProfile: CandidateProfile,
   baselineAnalysis?: ApplicationAnalysis
 ): ApplicationAnalysis {
+  const cacheKey = `${baselineProfile.id || baselineProfile.name}::${cvTextOrLatex.length}::${job.role}::${job.company}::${(job.fullJd || "").length}`;
+  const cached = tailoredAnalysisCache.get(cacheKey);
+  if (cached) return cached;
+
   const jd = job.fullJd || "";
   const baseAnalysis = baselineAnalysis || analyzeApplication(baselineProfile, job);
   const evidence = extractResumeEvidence(cvTextOrLatex);
@@ -675,7 +696,7 @@ export function analyzeTailoredResume(
   const matchedKeywords = requirements.filter(item => item.status === "matched").map(item => item.requirement);
   const gapKeywords = requirements.filter(item => item.status !== "matched").map(item => item.requirement);
 
-  return {
+  const result: ApplicationAnalysis = {
     overallScore,
     verdict: scoreVerdict(overallScore),
     dimensions: {
@@ -690,4 +711,8 @@ export function analyzeTailoredResume(
     gapKeywords,
     provenance: "Tailored ATS document analysis: Scans the generated, humanized CV document against the complete job description, measuring keyword density, role alignment, and technical qualification coverage.",
   };
+
+  if (tailoredAnalysisCache.size >= MAX_ANALYSIS_CACHE) tailoredAnalysisCache.clear();
+  tailoredAnalysisCache.set(cacheKey, result);
+  return result;
 }

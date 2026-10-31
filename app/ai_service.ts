@@ -1794,6 +1794,8 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
 
   // Intelligently detect candidate country and language using AI with deterministic fallback
   public async detectCountryAndLanguage(input: {
+    country?: string;
+    postcode?: string;
     location?: string;
     targetLocations?: string[];
     text?: string;
@@ -1801,14 +1803,18 @@ Analyze the user prompt and return a JSON object ONLY with the following schema:
     if (this.config.provider !== "builtin") {
       try {
         const systemPrompt = `You are an expert localization and resume analyst.
-Given candidate location and text details, determine:
-1. Home country name in English (e.g. Germany, India, United States, France, Spain, United Kingdom, Netherlands, Canada, Australia)
-2. ISO 3166-1 alpha-2 country code (DE, IN, US, FR, ES, GB, NL, CA, AU)
-3. Adzuna portal code ("de", "in", "us", "fr", "gb", "ca", "au", "nl", or "gb")
-4. Standard currency symbol ("€", "₹", "$", "£", etc.)
+Given candidate country, postcode, location, and resume text details, determine:
+1. Home country name in English (e.g. United Kingdom, Germany, India, United States, France, Spain, Netherlands, Canada, Australia)
+2. ISO 3166-1 alpha-2 country code (GB, DE, IN, US, FR, ES, NL, CA, AU)
+3. Adzuna portal code ("gb", "de", "in", "us", "fr", "ca", "au", "nl")
+4. Standard currency symbol ("£", "€", "₹", "$", etc.)
 5. Is candidate in the United Kingdom? (true/false)
-6. Language code ("de", "es", "en", "fr", "it", "nl")
-7. Language name ("German", "Spanish", "English", "French", "Italian", "Dutch")
+6. Language code ("en", "de", "es", "fr", "it", "nl")
+7. Language name ("English", "German", "Spanish", "French", "Italian", "Dutch")
+
+CRITICAL LOCALIZATION RULES:
+- If Candidate Country is "United Kingdom" or location/postcode is in the UK (e.g. London, Manchester, TS postcodes, EC postcodes, M postcodes), Country is United Kingdom, isUk is true, and Language is English ("en").
+- Only classify language as German ("de"), Spanish ("es"), French ("fr") if the resume text itself is actually written in that non-English language. Do NOT classify English text as German.
 
 Return valid JSON ONLY with this schema:
 {
@@ -1821,7 +1827,9 @@ Return valid JSON ONLY with this schema:
   "languageName": string
 }`;
 
-        const userPrompt = `Candidate Location: ${input.location || "None"}
+        const userPrompt = `Candidate Country: ${input.country || "Not specified"}
+Candidate Postcode: ${input.postcode || "Not specified"}
+Candidate Location: ${input.location || "None"}
 Target Locations: ${(input.targetLocations || []).join(", ") || "None"}
 Text Sample:
 ${(input.text || "").slice(0, 1500)}`;
@@ -1850,8 +1858,8 @@ ${(input.text || "").slice(0, 1500)}`;
     }
 
     // Heuristic fallback
-    const country = detectCandidateCountry(input.location, input.targetLocations);
-    const detectedLang = detectLanguageDeterministically(input.text || input.location || "");
+    const country = detectCandidateCountry(input.location, input.targetLocations, input.postcode, input.country);
+    const detectedLang = detectLanguageDeterministically(input.text || input.location || "", country.countryName);
     const langNames: Record<SupportedLanguage, string> = {
       en: "English",
       de: "German",
@@ -1887,6 +1895,7 @@ Return a valid JSON object ONLY with the following schema:
   "phone": string,
   "location": string,
   "postcode": string,
+  "country": string,
   "visaSponsorshipRequired": boolean,
   "targetRoles": string[],
   "targetLocations": string[],
@@ -1992,8 +2001,12 @@ Return a valid JSON object ONLY with the following schema:
           ])].filter(Boolean).slice(0, 5);
 
           const cleanStr = (val: unknown, fallbackVal: string = "") => (typeof val === "string" && val.trim()) ? val.trim() : fallbackVal;
+          const candidateCountry = cleanStr(parsed.country, fallback.country || "");
+          const candidatePostcode = cleanStr(parsed.postcode, fallback.postcode || "");
 
           const countryAndLang = await this.detectCountryAndLanguage({
+            country: candidateCountry,
+            postcode: candidatePostcode,
             location: candidateLocation,
             targetLocations: combinedLocations,
             text: rawText
@@ -2007,11 +2020,12 @@ Return a valid JSON object ONLY with the following schema:
             email: cleanStr(parsed.email, fallback.email || ""),
             phone: cleanStr(parsed.phone, fallback.phone || ""),
             location: candidateLocation,
-            postcode: cleanStr(parsed.postcode, fallback.postcode || ""),
+            postcode: candidatePostcode,
+            country: candidateCountry || (candidateLocation || candidatePostcode ? countryAndLang.countryName : ""),
             visaSponsorshipRequired: (typeof parsed.visaSponsorshipRequired === "boolean")
               ? parsed.visaSponsorshipRequired
               : (fallback.visaSponsorshipRequired ?? false),
-            minSalary: (typeof parsed.minSalary === "number" && parsed.minSalary > 0) ? parsed.minSalary : (fallback.minSalary || 0),
+            minSalary: (typeof parsed.minSalary === "number") ? parsed.minSalary : 0,
             linkedin: cleanStr(parsed.linkedin, fallback.linkedin || ""),
             github: cleanStr(parsed.github, fallback.github || ""),
             targetRoles: combinedTargetRoles.length ? combinedTargetRoles : (fallback.targetRoles || []),
@@ -2047,8 +2061,9 @@ Return a valid JSON object ONLY with the following schema:
 
     // Heuristic fallback
     const fallbackParsed = parseResumeDeterministically(rawText).profile;
-    const detCountry = detectCandidateCountry(fallbackParsed.location, fallbackParsed.targetLocations);
-    const detLang = detectLanguageDeterministically(rawText);
+    const detCountry = detectCandidateCountry(fallbackParsed.location, fallbackParsed.targetLocations, fallbackParsed.postcode, fallbackParsed.country);
+    const detLang = detectLanguageDeterministically(rawText, detCountry.countryName);
+    const derivedFallbackCountry = fallbackParsed.country || (fallbackParsed.location || fallbackParsed.postcode ? detCountry.countryName : "");
     const detCountryInfo: DetectedCountryAndLanguage = {
       ...detCountry,
       countryCode: detCountry.freehireCode,
@@ -2058,6 +2073,7 @@ Return a valid JSON object ONLY with the following schema:
 
     return {
       ...fallbackParsed,
+      country: derivedFallbackCountry,
       countryInfo: detCountryInfo,
       preferredLanguage: detLang,
       sourceResume: {
@@ -3017,7 +3033,7 @@ CANDIDATE PROFILE:
 Name: ${profile.name}
 Headline: ${profile.headline}
 Location: ${profile.location} (${profile.visaSponsorshipRequired ? "Requires Skilled Worker Visa Sponsorship" : "Unrestricted Right to Work"})
-Target Salary: ≥£${(profile.minSalary || 75000).toLocaleString()}
+Target Salary: ${profile.minSalary && profile.minSalary > 0 ? `≥£${profile.minSalary.toLocaleString()}` : "Open / Flexible"}
 Core Skills: ${Object.values(profile.skills || {}).flatMap(s => Array.isArray(s) ? s : []).join(", ")}
 Work History Summary:
 ${(profile.experience || []).slice(0, 4).map(e => `• ${e.role} at ${e.company} (${e.startDate || ""} - ${e.endDate || ""}): ${(e.bullets || []).join(" ")}`).join("\n")}
@@ -3109,9 +3125,11 @@ ${gaps.map((g: string) => `• **${g}**`).join("\n")}
       const visaAns = profile.visaSponsorshipRequired
         ? "Yes, I require Skilled Worker visa sponsorship to work in the UK. I am fully eligible and hold the required qualifications."
         : "No, I hold unrestricted right to work and do not require visa sponsorship.";
-      const salaryAns = job.salary
-        ? `The advertised compensation is ${job.salary}. My target expectation is in line with this range (benchmarked around £${(profile.minSalary || 75000).toLocaleString()}+ depending on total compensation and responsibilities).`
-        : `My expectation is based on market rates for a ${headline} with my track record, around £${(profile.minSalary || 75000).toLocaleString()} (open to discussion based on equity, benefits, and team scope).`;
+      const salaryAns = (profile.minSalary && profile.minSalary > 0)
+        ? (job.salary
+            ? `The advertised compensation is ${job.salary}. My target expectation is in line with this range (benchmarked around £${profile.minSalary.toLocaleString()}+ depending on total compensation and responsibilities).`
+            : `My expectation is based on market rates for a ${headline} with my track record, around £${profile.minSalary.toLocaleString()} (open to discussion based on equity, benefits, and team scope).`)
+        : `My compensation expectation is flexible and open to discussion based on the role responsibilities, benefits, and total compensation package.`;
 
       return `### Ready-to-Paste Screening Questionnaire Answers for ${company}
 
@@ -3160,11 +3178,11 @@ ${profile.email} | ${profile.phone}
       return `### Salary & Compensation Strategy for ${role} at ${company}
 
 - **Advertised Compensation:** ${job.salary || "Not explicitly stated (market rate)"}
-- **Candidate Benchmark:** £${(profile.minSalary || 75000).toLocaleString()} base
+- **Candidate Benchmark:** ${profile.minSalary && profile.minSalary > 0 ? `£${profile.minSalary.toLocaleString()} base` : "Open / Flexible (aligned with market rates)"}
 - **Location Context:** ${location}
 
 **Strategic Negotiation Script:**
-> *"Thank you for bringing up compensation. Based on current industry benchmarks for a ${headline} delivering hands-on results with ${matched.slice(0, 2).join(" and ") || "these technologies"}, and the scope of responsibilities for ${role}, my target is in the range of £${(profile.minSalary || 75000).toLocaleString()} to £${((profile.minSalary || 75000) * 1.15).toFixed(0)}. However, my priority is finding the right long-term mutual fit with ${company}, and I am very open to looking at the entire package including bonus, pension, equity, and professional growth opportunities."*`;
+> *"Thank you for bringing up compensation. Based on current industry benchmarks for a ${headline} delivering hands-on results with ${matched.slice(0, 2).join(" and ") || "these technologies"}, and the scope of responsibilities for ${role}, my target is ${profile.minSalary && profile.minSalary > 0 ? `in the range of £${profile.minSalary.toLocaleString()} to £${(profile.minSalary * 1.15).toFixed(0)}` : "competitive and flexible with market rates"}. However, my priority is finding the right long-term mutual fit with ${company}, and I am very open to looking at the entire package including bonus, pension, equity, and professional growth opportunities."*`;
     }
 
     // 5. Why I Want This Job / Authentic Motivation / Heart & Curiosity
@@ -3217,11 +3235,11 @@ I value engineering cultures where teams communicate openly, document their arch
       return `### Salary & Compensation Strategy for ${role} at ${company}
 
 - **Advertised Compensation:** ${job.salary || "Not explicitly stated (market rate)"}
-- **Candidate Benchmark:** £${(profile.minSalary || 75000).toLocaleString()} base
+- **Candidate Benchmark:** ${profile.minSalary && profile.minSalary > 0 ? `£${profile.minSalary.toLocaleString()} base` : "Open / Flexible (aligned with market rates)"}
 - **Location Context:** ${location}
 
 **Strategic Negotiation Script:**
-> *"Thank you for bringing up compensation. Based on current industry benchmarks for a ${headline} delivering hands-on results with ${(analysis.matchedKeywords || []).slice(0, 2).join(" and ") || "these technologies"}, and the scope of responsibilities for ${role}, my target is in the range of £${(profile.minSalary || 75000).toLocaleString()} to £${((profile.minSalary || 75000) * 1.15).toFixed(0)}. However, my priority is finding the right long-term mutual fit with ${company}, and I am very open to looking at the entire package including bonus, pension, equity, and professional growth opportunities."*`;
+> *"Thank you for bringing up compensation. Based on current industry benchmarks for a ${headline} delivering hands-on results with ${(analysis.matchedKeywords || []).slice(0, 2).join(" and ") || "these technologies"}, and the scope of responsibilities for ${role}, my target is ${profile.minSalary && profile.minSalary > 0 ? `in the range of £${profile.minSalary.toLocaleString()} to £${(profile.minSalary * 1.15).toFixed(0)}` : "competitive and flexible with market rates"}. However, my priority is finding the right long-term mutual fit with ${company}, and I am very open to looking at the entire package including bonus, pension, equity, and professional growth opportunities."*`;
     }
 
     // Default: General Job & Profile Contextual Insight

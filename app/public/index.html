@@ -343,12 +343,16 @@
               <input type="text" id="formPhone" placeholder="e.g. +44 7123 456789" />
             </div>
             <div class="form-group">
-              <label>Home Base Location</label>
-              <input type="text" id="formLocation" required placeholder="e.g. Manchester, United Kingdom" />
+              <label>Home Base Location / City</label>
+              <input type="text" id="formLocation" required placeholder="e.g. Manchester" />
             </div>
             <div class="form-group">
               <label>Postcode Area</label>
               <input type="text" id="formPostcode" placeholder="e.g. EC1A or M1" />
+            </div>
+            <div class="form-group">
+              <label>Country / Region</label>
+              <input type="text" id="formCountry" placeholder="e.g. United Kingdom, Germany, United States" />
             </div>
             <div class="form-group">
               <label>LinkedIn URL</label>
@@ -363,8 +367,8 @@
               <input type="number" id="formRadius" value="70" />
             </div>
             <div class="form-group">
-              <label>Minimum Target Salary (£)</label>
-              <input type="number" id="formMinSalary" value="75000" />
+              <label>Minimum Target Salary (£ / local) (0 = Open / Flexible)</label>
+              <input type="number" id="formMinSalary" placeholder="e.g. 0 (Open / Flexible)" />
             </div>
           </div>
 
@@ -476,14 +480,18 @@
         </p>
 
         <form id="locationPrefsForm">
-          <div class="form-grid-2">
+          <div class="form-grid-3">
             <div class="form-group">
               <label>Home Base City / Town</label>
-              <input type="text" id="locFormHomeCity" required placeholder="e.g. Manchester, United Kingdom" />
+              <input type="text" id="locFormHomeCity" required placeholder="e.g. Manchester" />
             </div>
             <div class="form-group">
               <label>Home Postcode Area</label>
               <input type="text" id="locFormPostcode" placeholder="e.g. M1, LS1, NE1, EC1A" />
+            </div>
+            <div class="form-group">
+              <label>Country / Region</label>
+              <input type="text" id="locFormCountry" placeholder="e.g. United Kingdom" />
             </div>
           </div>
 

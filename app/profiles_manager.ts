@@ -42,6 +42,7 @@ export interface CandidateProfile {
   phone: string;
   location: string;
   postcode: string;
+  country?: string;
   linkedin: string;
   github: string;
   portfolio?: string;
@@ -119,6 +120,7 @@ export const EMPTY_PROFILE: CandidateProfile = {
   phone: "",
   location: "",
   postcode: "",
+  country: "",
   linkedin: "",
   github: "",
   portfolio: "",
@@ -246,8 +248,14 @@ export class ProfilesManager {
   }
 
   private normalizeProfile(profile: CandidateProfile): CandidateProfile {
+    let derivedCountry = profile.country?.trim();
+    if (!derivedCountry && (profile.location?.trim() || profile.postcode?.trim() || (profile.targetLocations && profile.targetLocations.length))) {
+      derivedCountry = detectCandidateCountry(profile.location, profile.targetLocations, profile.postcode).countryName;
+    }
     return {
       ...profile,
+      country: derivedCountry || "",
+      minSalary: (typeof profile.minSalary === "number") ? profile.minSalary : 0,
       targetRoles: profile.targetRoles || [],
       targetLocations: profile.targetLocations || [],
       skills: {
@@ -365,7 +373,7 @@ export class ProfilesManager {
     const profile = activeProfile || this.getActiveProfile();
     const loc = (locationStr || "").toLowerCase();
     const profileCity = (profile.location || "").toLowerCase();
-    const countryInfo = detectCandidateCountry(profile.location, profile.targetLocations);
+    const countryInfo = detectCandidateCountry(profile.location, profile.targetLocations, profile.postcode, profile.country);
 
     if (loc.includes("remote") || loc.includes("worldwide") || loc.includes("anywhere") || loc.includes("telecommute")) {
       const remoteTag = countryInfo.isUk ? "Remote (UK)" : `Remote (${countryInfo.countryName})`;

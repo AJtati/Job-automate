@@ -52,6 +52,31 @@ describe("International Multi-Country Detection", () => {
     expect(res2.countryName).toBe("United Kingdom");
     expect(res2.freehireCode).toBe("GB");
     expect(res2.isUk).toBe(true);
+
+    // Explicit country field support
+    const resCountry = detectCandidateCountry("Some City", [], undefined, "United Kingdom");
+    expect(resCountry.countryName).toBe("United Kingdom");
+    expect(resCountry.isUk).toBe(true);
+
+    // UK postcode detection
+    const resPostcode1 = detectCandidateCountry("Hartlepool", [], "TS25 1AB");
+    expect(resPostcode1.countryName).toBe("United Kingdom");
+    expect(resPostcode1.isUk).toBe(true);
+
+    const resPostcode2 = detectCandidateCountry("London", [], "EC1A");
+    expect(resPostcode2.countryName).toBe("United Kingdom");
+    expect(resPostcode2.isUk).toBe(true);
+  });
+
+  test("detects Ireland, Denmark, Sweden, and allows manual country overrides", () => {
+    expect(detectCandidateCountry("Dublin, Ireland").countryName).toBe("Ireland");
+    expect(detectCandidateCountry("Copenhagen, Denmark").countryName).toBe("Denmark");
+    expect(detectCandidateCountry("Stockholm, Sweden").countryName).toBe("Sweden");
+
+    // User can manually override country regardless of city name
+    const overridden = detectCandidateCountry("Berlin", [], undefined, "Denmark");
+    expect(overridden.countryName).toBe("Denmark");
+    expect(overridden.freehireCode).toBe("DK");
   });
 });
 
@@ -71,6 +96,13 @@ describe("Multilingual Language Detection and Localized Resumes", () => {
 
     const enText = "Work experience: Senior Cloud Infrastructure Engineer based in London, UK. Core technical skills.";
     expect(detectLanguageDeterministically(enText)).toBe("en");
+
+    // UK resume with common English prepositions ('in', 'die', 'war', 'den') must NEVER be misdetected as German
+    const ukResume = "DevOps Engineer in London. Worked in AWS, Terraform, Kubernetes. Designed pipelines in GitHub Actions.";
+    expect(detectLanguageDeterministically(ukResume)).toBe("en");
+
+    const ukResumeWithEnglishHomographs = "Senior Cloud Architect in Manchester. Experienced in high-availability systems during war-room incidents.";
+    expect(detectLanguageDeterministically(ukResumeWithEnglishHomographs, "United Kingdom")).toBe("en");
   });
 
   test("generates localized LaTeX backbones with proper babel and section titles", () => {

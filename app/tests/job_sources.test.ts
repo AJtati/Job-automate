@@ -60,4 +60,67 @@ describe("job source normalization", () => {
     expect(detectAdzunaCountry("Amsterdam, Netherlands")).toBe("nl");
     expect(detectAdzunaCountry("London, United Kingdom")).toBe("gb");
   });
+
+  test("parseJobDateAndTimestamp extracts exact ISO timestamp and date", () => {
+    const { parseJobDateAndTimestamp } = require("../job_sources");
+    const res1 = parseJobDateAndTimestamp("2026-10-31T14:35:00Z");
+    expect(res1.date).toBe("2026-10-31");
+    expect(res1.timestamp).toBe("2026-10-31T14:35:00.000Z");
+
+    const res2 = parseJobDateAndTimestamp("2026-10-31");
+    expect(res2.date).toBe("2026-10-31");
+    expect(res2.timestamp).toBe("2026-10-31T00:00:00.000Z");
+
+    const res3 = parseJobDateAndTimestamp(1793450000000);
+    expect(res3.date).toBeDefined();
+    expect(res3.timestamp).toBeDefined();
+  });
+
+  test("same-day sorting puts latest time and higher discovery order first", () => {
+    function getJobTimestamp(j: any) {
+      if (!j) return 0;
+      if (j.posted_at) {
+        const t = new Date(j.posted_at).getTime();
+        if (!isNaN(t)) return t;
+      }
+      if (j.posted_date && j.posted_date.includes("T")) {
+        const t = new Date(j.posted_date).getTime();
+        if (!isNaN(t)) return t;
+      }
+      if (j.first_seen_at) {
+        const t = new Date(j.first_seen_at).getTime();
+        if (!isNaN(t)) return t;
+      }
+      const dateStr = j.posted_date || j.first_seen || "2026-01-01";
+      const baseDay = dateStr.slice(0, 10);
+      const baseTime = new Date(`${baseDay}T00:00:00Z`).getTime();
+      const orderOffset = typeof j.seen_order === "number" ? j.seen_order * 1000 : 0;
+      return (isNaN(baseTime) ? 0 : baseTime) + orderOffset;
+    }
+
+    function compareJobsByNewest(a: any, b: any) {
+      const dateA = a.posted_date || a.first_seen || "2026-01-01";
+      const dateB = b.posted_date || b.first_seen || "2026-01-01";
+      const dayA = dateA.slice(0, 10);
+      const dayB = dateB.slice(0, 10);
+      if (dayB !== dayA) {
+        return dayB.localeCompare(dayA);
+      }
+      const tsA = getJobTimestamp(a);
+      const tsB = getJobTimestamp(b);
+      if (tsB !== tsA && !isNaN(tsA) && !isNaN(tsB)) {
+        return tsB - tsA;
+      }
+      return (b.fit_score || 0) - (a.fit_score || 0);
+    }
+
+    const jobMorning = { id: "1", title: "Job Morning", posted_date: "2026-10-31", posted_at: "2026-10-31T09:00:00Z", fit_score: 99 };
+    const jobAfternoon = { id: "2", title: "Job Afternoon", posted_date: "2026-10-31", posted_at: "2026-10-31T15:30:00Z", fit_score: 80 };
+    const jobEvening = { id: "3", title: "Job Evening", posted_date: "2026-10-31", posted_at: "2026-10-31T20:15:00Z", fit_score: 75 };
+    const jobYesterday = { id: "4", title: "Job Yesterday", posted_date: "2026-10-30", posted_at: "2026-10-30T23:59:00Z", fit_score: 100 };
+
+    const sorted = [jobYesterday, jobMorning, jobEvening, jobAfternoon].sort(compareJobsByNewest);
+    // Evening (20:15) should be first, then Afternoon (15:30), then Morning (09:00), then Yesterday
+    expect(sorted.map(j => j.id)).toEqual(["3", "2", "1", "4"]);
+  });
 });

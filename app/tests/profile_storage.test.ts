@@ -133,6 +133,7 @@ describe("uploaded resume persistence", () => {
       expect(match?.name).toBe(c.name);
       expect(match?.headline).toBe(c.headline);
       expect(match?.location).toBe(c.location);
+      expect(match?.minSalary).toBe(0);
       expect(match?.targetRoles).toEqual(c.targetRoles);
       // Verify tracker only contains this profile's jobs
       expect(match?.tracker?.[`custom_job_${c.id}`]?.status).toBe("drafted");

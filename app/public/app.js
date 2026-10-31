@@ -212,17 +212,33 @@ function setupEventListeners() {
   });
 
   // Refresh
-  btnRefresh.addEventListener("click", () => {
-    fetchJobs();
-    showToast("Feed refreshed");
+  let isRefreshingFeed = false;
+  btnRefresh.addEventListener("click", async () => {
+    if (isRefreshingFeed) return;
+    isRefreshingFeed = true;
+    btnRefresh.disabled = true;
+    btnRefresh.style.opacity = "0.5";
+    btnRefresh.style.pointerEvents = "none";
+    try {
+      await fetchJobs();
+      showToast("Feed refreshed");
+    } catch (err) {
+      console.error(err);
+      showToast("Error refreshing feed");
+    } finally {
+      isRefreshingFeed = false;
+      btnRefresh.disabled = false;
+      btnRefresh.style.opacity = "1";
+      btnRefresh.style.pointerEvents = "auto";
+    }
   });
 
   // Scrape button
   btnScrape.addEventListener("click", triggerScrape);
-  btnSearchSettings?.addEventListener("click", async () => {
-    await fetchDiagnostics();
-    await fetchSearchConfig();
+  btnSearchSettings?.addEventListener("click", () => {
     searchConfigModal.style.display = "flex";
+    fetchDiagnostics().catch(console.error);
+    fetchSearchConfig().catch(console.error);
   });
   btnCloseSearchConfig?.addEventListener("click", () => searchConfigModal.style.display = "none");
   btnSaveSearchConfig?.addEventListener("click", saveSearchConfig);
@@ -324,7 +340,7 @@ function setupEventListeners() {
   });
 
   document.addEventListener("click", (e) => {
-    if (!profileDropdownMenu.contains(e.target) && e.target !== btnProfileDropdown) {
+    if (!profileDropdownMenu.contains(e.target) && !btnProfileDropdown.contains(e.target)) {
       profileDropdownMenu.style.display = "none";
     }
   });
@@ -478,6 +494,7 @@ function setupEventListeners() {
   const locRadiusDisplay = document.getElementById("locRadiusDisplay");
   const locFormHomeCity = document.getElementById("locFormHomeCity");
   const locFormPostcode = document.getElementById("locFormPostcode");
+  const locFormCountry = document.getElementById("locFormCountry");
   const locFormTargetLocations = document.getElementById("locFormTargetLocations");
   const locFormVisaRequired = document.getElementById("locFormVisaRequired");
 
@@ -486,6 +503,7 @@ function setupEventListeners() {
       if (!activeProfile) return;
       locFormHomeCity.value = activeProfile.location || "";
       locFormPostcode.value = activeProfile.postcode || "";
+      if (locFormCountry) locFormCountry.value = activeProfile.country || "";
       locFormRadiusSlider.value = activeProfile.preferredRadiusMiles || 50;
       locRadiusDisplay.textContent = `${activeProfile.preferredRadiusMiles || 50} miles`;
       locFormTargetLocations.value = (activeProfile.targetLocations || []).join(", ");
@@ -515,6 +533,7 @@ function setupEventListeners() {
       ...activeProfile,
       location: locFormHomeCity.value.trim(),
       postcode: locFormPostcode.value.trim(),
+      country: locFormCountry ? locFormCountry.value.trim() : activeProfile.country,
       preferredRadiusMiles: parseInt(locFormRadiusSlider.value) || 50,
       targetLocations: targets.length > 0 ? targets : ["Remote"],
       visaSponsorshipRequired: locFormVisaRequired.checked
@@ -652,7 +671,8 @@ function updateProfileUI() {
   const currencySymbol = isDe ? "€" : (isIndia ? "₹" : (isUs ? "$" : "£"));
   sidebarStatBase.textContent = `${activeProfile.location.split(",")[0]}${activeProfile.postcode ? ` (${activeProfile.postcode})` : ''}`;
   sidebarStatRadius.textContent = `${activeProfile.preferredRadiusMiles || 50} miles`;
-  sidebarStatSalary.textContent = `${currencySymbol}${(activeProfile.minSalary || (isDe ? 65000 : 75000)).toLocaleString()}`;
+  const minSal = (typeof activeProfile.minSalary === "number") ? activeProfile.minSalary : 0;
+  sidebarStatSalary.textContent = minSal > 0 ? `${currencySymbol}${minSal.toLocaleString()}` : "Open / Flexible";
 
   renderLocationNavFilters();
 }
@@ -720,8 +740,30 @@ function renderProfileDropdownList() {
   btnDeleteCurrentProfile.style.display = allProfiles.length > 1 ? "flex" : "none";
 }
 
+function clearStudioView() {
+  activeTailoredData = null;
+  selectedJob = null;
+  studioJobTitle.textContent = "Selecting opportunity...";
+  studioCompanyName.textContent = "";
+  studioLocation.textContent = "";
+  const atsBadge = document.getElementById("studioAtsBadge");
+  if (atsBadge) atsBadge.style.display = "none";
+  studioLinkBtn.style.display = "none";
+  studioSponsorBanner.style.display = "none";
+  studioActionsBar.style.display = "none";
+  studioTabs.style.display = "none";
+  studioContent.innerHTML = `
+    <div style="text-align: center; color: var(--text-tertiary); padding: 60px 20px;">
+      <div style="font-size: 32px; margin-bottom: 12px; opacity: 0.6;">🎯</div>
+      <div style="font-weight: 600; font-size: 14px; margin-bottom: 6px; color: var(--text-secondary);">Select an opportunity from the feed</div>
+      <div style="font-size: 12px; max-width: 360px; margin: 0 auto; line-height: 1.5;">Choose any vacancy on the left to inspect the grounded multi-dimensional ATS evaluation, tailored CV, and cover letter.</div>
+    </div>
+  `;
+}
+
 async function switchActiveProfile(profileId) {
   profileDropdownMenu.style.display = "none";
+  clearStudioView();
   const targetProfile = allProfiles.find(p => p.id === profileId);
 
   // 1. Instant optimistic UI switch (0ms latency)
@@ -865,10 +907,11 @@ async function handleProfileModalAutofill(file) {
       if (p.phone) document.getElementById("formPhone").value = p.phone;
       if (p.location) document.getElementById("formLocation").value = p.location;
       if (p.postcode) document.getElementById("formPostcode").value = p.postcode;
+      if (p.country && document.getElementById("formCountry")) document.getElementById("formCountry").value = p.country;
       if (p.linkedin) document.getElementById("formLinkedin").value = p.linkedin;
       if (p.github || p.portfolio) document.getElementById("formGithub").value = p.github || p.portfolio;
       if (p.preferredRadiusMiles) document.getElementById("formRadius").value = p.preferredRadiusMiles;
-      if (p.minSalary) document.getElementById("formMinSalary").value = p.minSalary;
+      if (typeof p.minSalary === "number") document.getElementById("formMinSalary").value = p.minSalary;
       if (typeof p.visaSponsorshipRequired === "boolean") document.getElementById("formVisaRequired").checked = p.visaSponsorshipRequired;
       if (typeof p.enableDeepTailor === "boolean") document.getElementById("formEnableDeepTailor").checked = p.enableDeepTailor;
 
@@ -928,10 +971,11 @@ function openProfileModal(profileToEdit) {
     document.getElementById("formPhone").value = profileToEdit.phone || "";
     document.getElementById("formLocation").value = profileToEdit.location;
     document.getElementById("formPostcode").value = profileToEdit.postcode || "";
+    if (document.getElementById("formCountry")) document.getElementById("formCountry").value = profileToEdit.country || "";
     document.getElementById("formLinkedin").value = profileToEdit.linkedin || "";
     document.getElementById("formGithub").value = profileToEdit.github || "";
     document.getElementById("formRadius").value = profileToEdit.preferredRadiusMiles || 70;
-    document.getElementById("formMinSalary").value = profileToEdit.minSalary || 75000;
+    document.getElementById("formMinSalary").value = (profileToEdit.minSalary !== undefined && profileToEdit.minSalary !== null) ? profileToEdit.minSalary : 0;
     document.getElementById("formVisaRequired").checked = profileToEdit.visaSponsorshipRequired;
     document.getElementById("formEnableDeepTailor").checked = Boolean(profileToEdit.enableDeepTailor);
     document.getElementById("formTargetRoles").value = (profileToEdit.targetRoles || []).join(", ");
@@ -943,8 +987,9 @@ function openProfileModal(profileToEdit) {
     profileModalTitle.textContent = "Create New Candidate Profile";
     profileForm.reset();
     document.getElementById("formProfileId").value = "";
+    if (document.getElementById("formCountry")) document.getElementById("formCountry").value = "";
     document.getElementById("formRadius").value = "70";
-    document.getElementById("formMinSalary").value = "75000";
+    document.getElementById("formMinSalary").value = "0";
     document.getElementById("formVisaRequired").checked = true;
     document.getElementById("formEnableDeepTailor").checked = false;
   }
@@ -960,14 +1005,22 @@ async function handleSaveProfileForm(e) {
   const phone = document.getElementById("formPhone").value.trim();
   const location = document.getElementById("formLocation").value.trim();
   const postcode = document.getElementById("formPostcode").value.trim();
+  let country = document.getElementById("formCountry") ? document.getElementById("formCountry").value.trim() : "";
   const linkedin = document.getElementById("formLinkedin").value.trim();
   const github = document.getElementById("formGithub").value.trim();
   const preferredRadiusMiles = parseInt(document.getElementById("formRadius").value) || 70;
-  const minSalary = parseInt(document.getElementById("formMinSalary").value) || 75000;
+  const rawSalary = document.getElementById("formMinSalary").value.trim();
+  const parsedSalary = parseInt(rawSalary, 10);
+  const minSalary = (!rawSalary || isNaN(parsedSalary) || parsedSalary < 0) ? 0 : parsedSalary;
   const visaSponsorshipRequired = document.getElementById("formVisaRequired").checked;
   const targetRoles = document.getElementById("formTargetRoles").value.split(",").map(s => s.trim()).filter(Boolean);
   const targetLocations = document.getElementById("formTargetLocations").value.split(",").map(s => s.trim()).filter(Boolean);
   const rawSkills = document.getElementById("formSkills").value.split(",").map(s => s.trim()).filter(Boolean);
+
+  // If country was not explicitly specified, derive it from the location and postcode provided:
+  if (!country && (location || postcode || targetLocations.length)) {
+    country = detectCandidateCountry(location, targetLocations, postcode).countryName;
+  }
 
   const existing = id ? allProfiles.find(p => p.id === id) : null;
   let resolvedId = id;
@@ -999,6 +1052,7 @@ async function handleSaveProfileForm(e) {
     phone,
     location,
     postcode,
+    country: country || undefined,
     linkedin,
     github,
     preferredRadiusMiles,
@@ -1243,7 +1297,8 @@ async function runScenarioPrompt() {
         selectedJob.fit_score = data.fit_score ?? selectedJob.fit_score;
         if (data.tailored_score) selectedJob.tailored_score = data.tailored_score;
         if (data.baseline_score) selectedJob.baseline_score = data.baseline_score;
-        activeTailoredData = data;
+        data.jobId = selectedJob.id;
+      activeTailoredData = data;
         renderJobs();
         renderStudioTabContent();
         showToast(data.explanation);
@@ -1545,7 +1600,19 @@ function useRecommendedModel(provider) {
 }
 
 function openAiModal() {
-  if (!aiConfig) return;
+  if (!aiConfig) {
+    aiConfig = {
+      provider: "builtin",
+      ollamaHost: "http://localhost:11434",
+      ollamaModel: "qwen2.5-coder:3b",
+      anthropicModel: "claude-haiku-4-5-20251001",
+      openaiModel: "gpt-4o-mini",
+      geminiModel: "gemini-2.0-flash",
+      openrouterModel: "google/gemini-2.0-flash-001",
+      nvidiaModel: "meta/llama-3.3-70b-instruct"
+    };
+    fetchAiConfig().catch(console.error);
+  }
   const radio = document.querySelector(`input[name="aiProvider"][value="${aiConfig.provider}"]`);
   if (radio) radio.checked = true;
 
@@ -1893,6 +1960,47 @@ function updateBadgeCounts() {
   if (sponsorStatRatio) sponsorStatRatio.textContent = `${ratio}%`;
 }
 
+function getJobTimestamp(j) {
+  if (!j) return 0;
+  if (j.posted_at) {
+    const t = new Date(j.posted_at).getTime();
+    if (!isNaN(t)) return t;
+  }
+  if (j.posted_date && j.posted_date.includes("T")) {
+    const t = new Date(j.posted_date).getTime();
+    if (!isNaN(t)) return t;
+  }
+  if (j.first_seen_at) {
+    const t = new Date(j.first_seen_at).getTime();
+    if (!isNaN(t)) return t;
+  }
+  const dateStr = j.posted_date || j.first_seen || "2026-01-01";
+  const baseDay = dateStr.slice(0, 10);
+  const baseTime = new Date(`${baseDay}T00:00:00Z`).getTime();
+  const orderOffset = typeof j.seen_order === "number" ? j.seen_order * 1000 : 0;
+  return (isNaN(baseTime) ? 0 : baseTime) + orderOffset;
+}
+
+function compareJobsByNewest(a, b) {
+  const dateA = a.posted_date || a.first_seen || "2026-01-01";
+  const dateB = b.posted_date || b.first_seen || "2026-01-01";
+  const dayA = dateA.slice(0, 10);
+  const dayB = dateB.slice(0, 10);
+  if (dayB !== dayA) {
+    return dayB.localeCompare(dayA);
+  }
+
+  // Same day: latest posted/discovered timestamp first
+  const tsA = getJobTimestamp(a);
+  const tsB = getJobTimestamp(b);
+  if (tsB !== tsA && !isNaN(tsA) && !isNaN(tsB)) {
+    return tsB - tsA;
+  }
+
+  // Final tiebreaker on same day and same time: fit score
+  return (b.fit_score || 0) - (a.fit_score || 0);
+}
+
 function filterJobsList() {
   const query = (searchInput.value || "").toLowerCase().trim();
   const radius = activeProfile?.preferredRadiusMiles || 50;
@@ -1959,53 +2067,36 @@ function filterJobsList() {
       const isVerB = b.sponsor_verified ? 1 : 0;
       if (isVerB !== isVerA) return isVerB - isVerA;
 
-      // 3. Fallback to newest posted date then fit score
-      const dateA = a.posted_date || "2026-01-01";
-      const dateB = b.posted_date || "2026-01-01";
-      if (dateB !== dateA) return dateB.localeCompare(dateA);
-      return (b.fit_score || 0) - (a.fit_score || 0);
+      // 3. Fallback to newest date and same-day time
+      return compareJobsByNewest(a, b);
     } else if (currentSortMode === "sponsors_first") {
       // All verified sponsors first (with newly licensed at the top)
       const rankA = a.is_new_sponsor ? 3 : a.sponsor_verified ? 2 : 1;
       const rankB = b.is_new_sponsor ? 3 : b.sponsor_verified ? 2 : 1;
       if (rankB !== rankA) return rankB - rankA;
 
-      const dateA = a.posted_date || "2026-01-01";
-      const dateB = b.posted_date || "2026-01-01";
-      if (dateB !== dateA) return dateB.localeCompare(dateA);
-      return (b.fit_score || 0) - (a.fit_score || 0);
+      return compareJobsByNewest(a, b);
     } else if (currentSortMode === "sponsors_old_first") {
       // Established/older licensed sponsors first, then newly licensed, then unverified
       const rankA = (a.sponsor_verified && !a.is_new_sponsor) ? 3 : a.is_new_sponsor ? 2 : 1;
       const rankB = (b.sponsor_verified && !b.is_new_sponsor) ? 3 : b.is_new_sponsor ? 2 : 1;
       if (rankB !== rankA) return rankB - rankA;
 
-      const dateA = a.posted_date || "2026-01-01";
-      const dateB = b.posted_date || "2026-01-01";
-      if (dateB !== dateA) return dateB.localeCompare(dateA);
-      return (b.fit_score || 0) - (a.fit_score || 0);
+      return compareJobsByNewest(a, b);
     } else if (currentSortMode === "days") {
-      // Days wise: newest posted_date first, then fit_score
-      const dateA = a.posted_date || "2026-01-01";
-      const dateB = b.posted_date || "2026-01-01";
-      if (dateB !== dateA) return dateB.localeCompare(dateA);
-      return (b.fit_score || 0) - (a.fit_score || 0);
+      // Days wise: newest date first, with latest time on the same day first, then discovery order
+      return compareJobsByNewest(a, b);
     } else if (currentSortMode === "score") {
-      // Percentage score wise: highest fit_score first, then newest date
+      // Percentage score wise: highest fit_score first, then newest date and same-day time
       const scoreDiff = (b.fit_score || 0) - (a.fit_score || 0);
       if (scoreDiff !== 0) return scoreDiff;
-      const dateA = a.posted_date || "2026-01-01";
-      const dateB = b.posted_date || "2026-01-01";
-      return dateB.localeCompare(dateA);
+      return compareJobsByNewest(a, b);
     } else if (currentSortMode === "pipeline") {
-      // Status priority (applied > drafted > unapplied), then date, then score
+      // Status priority (applied > drafted > unapplied), then newest date/time, then score
       const statusRank = (s) => s === "applied" ? 3 : s === "drafted" ? 2 : 1;
       const rankDiff = statusRank(b.status) - statusRank(a.status);
       if (rankDiff !== 0) return rankDiff;
-      const dateA = a.posted_date || "2026-01-01";
-      const dateB = b.posted_date || "2026-01-01";
-      if (dateB !== dateA) return dateB.localeCompare(dateA);
-      return (b.fit_score || 0) - (a.fit_score || 0);
+      return compareJobsByNewest(a, b);
     }
     return 0;
   });
@@ -2056,6 +2147,7 @@ function renderJobs() {
 
   filtered.forEach((job, index) => {
     const card = document.createElement("div");
+    card.dataset.jobId = job.id;
     card.className = `job-card ${selectedJob && selectedJob.id === job.id ? 'active' : ''}`;
     if (index < 10) card.style.setProperty("--i", index);
     
@@ -2067,7 +2159,7 @@ function renderJobs() {
       statusBadge = '<span class="meta-pill status-tailored">✓ Tailored</span>';
     }
 
-    const relativeDateBadge = formatRelativeDate(job.posted_date);
+    const relativeDateBadge = formatRelativeDate(job.posted_date, job.posted_at || job.first_seen_at);
     const portalNames = {
       "freehire-ats": "Direct ATS", "linkedin-search": "LinkedIn", "cv-library": "CV-Library",
       reed: "Reed", "google-jobs": "Google Jobs", adzuna: "Adzuna", jobicy: "Jobicy",
@@ -2103,12 +2195,33 @@ function renderJobs() {
   });
 }
 
-function formatRelativeDate(dateStr) {
-  if (!dateStr) return "";
+function formatRelativeDate(dateStr, timeStr) {
+  if (!dateStr && !timeStr) return "";
   try {
     const today = new Date();
-    const parts = dateStr.split("-");
-    if (parts.length < 3) return `<span class="meta-pill">${dateStr}</span>`;
+    // If timeStr or full ISO is provided and valid, compute hour/minute granularity for today
+    const fullTimeStr = timeStr || (dateStr && dateStr.includes("T") ? dateStr : null);
+    if (fullTimeStr) {
+      const postedTime = new Date(fullTimeStr);
+      if (!isNaN(postedTime.getTime())) {
+        const diffMs = today.getTime() - postedTime.getTime();
+        if (diffMs >= 0) {
+          const diffMins = Math.floor(diffMs / (1000 * 60));
+          const diffHours = Math.floor(diffMins / 60);
+          if (diffMins < 60) {
+            const m = Math.max(1, diffMins);
+            return `<span class="meta-pill" style="color: var(--apple-green); border-color: rgba(48, 209, 88, 0.4); font-weight: 600;">🔥 ${m}m ago</span>`;
+          }
+          if (diffHours < 24 && postedTime.getDate() === today.getDate() && postedTime.getMonth() === today.getMonth() && postedTime.getFullYear() === today.getFullYear()) {
+            return `<span class="meta-pill" style="color: var(--apple-green); border-color: rgba(48, 209, 88, 0.4); font-weight: 600;">🔥 ${diffHours}h ago</span>`;
+          }
+        }
+      }
+    }
+
+    const cleanDate = (dateStr || "").split("T")[0];
+    const parts = cleanDate.split("-");
+    if (parts.length < 3) return `<span class="meta-pill">${escapeHtml(dateStr || "")}</span>`;
     const posted = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
     const diffMs = today.getTime() - posted.getTime();
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
@@ -2116,17 +2229,26 @@ function formatRelativeDate(dateStr) {
     if (diffDays === 1) return `<span class="meta-pill" style="color: #ffd60a; border-color: rgba(255, 214, 10, 0.4); font-weight: 600;">⚡ 1d ago</span>`;
     if (diffDays <= 3) return `<span class="meta-pill" style="color: #64d2ff; border-color: rgba(100, 210, 255, 0.35); font-weight: 500;">${diffDays}d ago</span>`;
     if (diffDays <= 7) return `<span class="meta-pill" style="font-weight: 500;">${diffDays}d ago</span>`;
-    return `<span class="meta-pill" style="opacity: 0.65;">${dateStr}</span>`;
+    return `<span class="meta-pill" style="opacity: 0.65;">${parts.join("-")}</span>`;
   } catch {
-    return `<span class="meta-pill">${dateStr}</span>`;
+    return `<span class="meta-pill">${escapeHtml(dateStr || "")}</span>`;
   }
 }
 
 function selectJob(job) {
   selectedJob = job;
 
-  document.querySelectorAll(".job-card").forEach(c => c.classList.remove("active"));
-  renderJobs();
+  // Clear stale tailored cache if it belonged to another job
+  if (activeTailoredData && activeTailoredData.jobId && activeTailoredData.jobId !== job.id) {
+    activeTailoredData = null;
+  }
+
+  // Fast DOM active-toggle: do NOT wipe and re-render hundreds of cards!
+  document.querySelectorAll(".job-card.active").forEach(c => c.classList.remove("active"));
+  const activeCard = document.querySelector(`.job-card[data-job-id="${job.id}"]`);
+  if (activeCard) {
+    activeCard.classList.add("active");
+  }
 
   // Update Studio Header
   studioJobTitle.textContent = job.title;
@@ -2246,32 +2368,67 @@ function renderStudioTabContent() {
 let currentCVViewMode = "visual";
 let currentCoverViewMode = "visual";
 let currentDocLang = "native"; // "native" (original language) or "english"
+let currentRenderJobId = null;
 
 async function renderCVTab() {
-  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  const targetJob = selectedJob;
+  if (!targetJob) return;
+  const thisJobId = targetJob.id;
+  currentRenderJobId = thisJobId;
+
+  const isDual = activeTailoredData && activeTailoredData.jobId === targetJob.id && activeTailoredData.hasDualLanguage;
   const cvPath = (isDual && currentDocLang === "english" && activeTailoredData.cvEnglishPath)
     ? activeTailoredData.cvEnglishPath
-    : (selectedJob.cv_file || "");
+    : (targetJob.cv_file || "");
+
+  if (!cvPath) {
+    studioContent.innerHTML = `
+      <div class="empty-doc-card">
+        <div class="empty-card-icon">📄</div>
+        <h3 class="empty-card-title">Tailored CV Not Yet Generated</h3>
+        <p class="empty-card-subtitle">Generate a bespoke ATS-optimized resume tailored to <b>${escapeHtml(targetJob.company)}</b>'s requirements for candidate <b>${escapeHtml(activeProfile?.name || 'Candidate')}</b>.</p>
+        <button class="btn-primary btn-action" onclick="tailorCurrentJob()">
+          <span class="btn-icon">✦</span>
+          <span>Tailor Application Now</span>
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  // Fast loading skeleton to prevent showing previous job's resume during fetch
+  studioContent.innerHTML = `
+    <div style="padding: 24px; display: flex; flex-direction: column; gap: 14px; opacity: 0.85;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="height: 20px; width: 35%; background: rgba(255,255,255,0.08); border-radius: 6px;"></div>
+        <div style="height: 28px; width: 120px; background: rgba(255,255,255,0.06); border-radius: 6px;"></div>
+      </div>
+      <div style="height: 14px; width: 55%; background: rgba(255,255,255,0.05); border-radius: 4px;"></div>
+      <div style="height: 480px; width: 100%; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 13px;">
+        <span class="spinner" style="margin-right: 8px;"></span> Loading tailored CV...
+      </div>
+    </div>
+  `;
 
   let texCode = "";
-  if (cvPath) {
-    try {
-      const res = await fetch(`/api/document?path=${encodeURIComponent(cvPath)}`);
-      if (res.ok) {
-        const data = await res.json();
-        texCode = data.content || "";
-      }
-    } catch (e) {
-      console.error(e);
+  try {
+    const res = await fetch(`/api/document?path=${encodeURIComponent(cvPath)}`);
+    if (res.ok) {
+      const data = await res.json();
+      texCode = data.content || "";
     }
+  } catch (e) {
+    console.error(e);
   }
+
+  if (selectedJob?.id !== thisJobId) return;
 
   if (!texCode) {
     studioContent.innerHTML = `
       <div class="empty-doc-card">
         <div class="empty-card-icon">📄</div>
         <h3 class="empty-card-title">Tailored CV Not Yet Generated</h3>
-        <p class="empty-card-subtitle">Generate a bespoke ATS-optimized resume tailored to <b>${escapeHtml(selectedJob.company)}</b>'s requirements for candidate <b>${escapeHtml(activeProfile?.name || 'Candidate')}</b>.</p>
+        <p class="empty-card-subtitle">Generate a bespoke ATS-optimized resume tailored to <b>${escapeHtml(targetJob.company)}</b>'s requirements for candidate <b>${escapeHtml(activeProfile?.name || 'Candidate')}</b>.</p>
         <button class="btn-primary btn-action" onclick="tailorCurrentJob()">
           <span class="btn-icon">✦</span>
           <span>Tailor Application Now</span>
@@ -2340,7 +2497,14 @@ async function renderCVTab() {
 
   // Visual Parsing
   const parsed = parseLatexCV(texCode);
-  const isGermanDoc = (currentDocLang === "native" && (activeTailoredData?.language === "de" || /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) || parsed.language === "de")) || /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) || /\\section\{Profil\}/i.test(texCode);
+  const isGermanDoc = currentDocLang === "english"
+    ? false
+    : Boolean(
+        activeTailoredData?.language === "de" ||
+        parsed.language === "de" ||
+        /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) ||
+        /\\section\{Profil\}/i.test(texCode)
+      );
   const latexRoleMatch = texCode.match(/\\textbf\{\\large\s*([^}]+)\}/i) || texCode.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
   const rawHeadline = latexRoleMatch ? latexRoleMatch[1].replace(/\\&/g, "&").trim() : (selectedJob.title || activeProfile?.headline);
   const headlineRole = cleanCandidateHeadline(rawHeadline, activeProfile?.headline);
@@ -2492,30 +2656,64 @@ function extractCoverParagraphs(texCode) {
 }
 
 async function renderCoverTab() {
-  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  const targetJob = selectedJob;
+  if (!targetJob) return;
+  const thisJobId = targetJob.id;
+  currentRenderJobId = thisJobId;
+
+  const isDual = activeTailoredData && activeTailoredData.jobId === targetJob.id && activeTailoredData.hasDualLanguage;
   const coverPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
     ? activeTailoredData.coverEnglishPath
-    : (selectedJob.cover_file || "");
+    : (targetJob.cover_file || "");
+
+  if (!coverPath) {
+    studioContent.innerHTML = `
+      <div class="empty-doc-card">
+        <div class="empty-card-icon">✉️</div>
+        <h3 class="empty-card-title">Cover Letter Not Yet Generated</h3>
+        <p class="empty-card-subtitle">Generate bespoke, humanized cover letter materials tailored directly to <b>${escapeHtml(targetJob.company)}</b>.</p>
+        <button class="btn-primary btn-action" onclick="tailorCurrentJob()">
+          <span class="btn-icon">✦</span>
+          <span>Tailor Application Now</span>
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  // Fast loading skeleton to prevent showing previous job's cover letter during fetch
+  studioContent.innerHTML = `
+    <div style="padding: 24px; display: flex; flex-direction: column; gap: 14px; opacity: 0.85;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="height: 20px; width: 35%; background: rgba(255,255,255,0.08); border-radius: 6px;"></div>
+        <div style="height: 28px; width: 120px; background: rgba(255,255,255,0.06); border-radius: 6px;"></div>
+      </div>
+      <div style="height: 14px; width: 55%; background: rgba(255,255,255,0.05); border-radius: 4px;"></div>
+      <div style="height: 480px; width: 100%; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 13px;">
+        <span class="spinner" style="margin-right: 8px;"></span> Loading tailored cover letter...
+      </div>
+    </div>
+  `;
 
   let texCode = "";
-  if (coverPath) {
-    try {
-      const res = await fetch(`/api/document?path=${encodeURIComponent(coverPath)}`);
-      if (res.ok) {
-        const data = await res.json();
-        texCode = data.content || "";
-      }
-    } catch (e) {
-      console.error(e);
+  try {
+    const res = await fetch(`/api/document?path=${encodeURIComponent(coverPath)}`);
+    if (res.ok) {
+      const data = await res.json();
+      texCode = data.content || "";
     }
+  } catch (e) {
+    console.error(e);
   }
+
+  if (selectedJob?.id !== thisJobId) return;
 
   if (!texCode) {
     studioContent.innerHTML = `
       <div class="empty-doc-card">
         <div class="empty-card-icon">✉️</div>
         <h3 class="empty-card-title">Cover Letter Not Yet Generated</h3>
-        <p class="empty-card-subtitle">Generate bespoke, humanized cover letter materials tailored directly to <b>${escapeHtml(selectedJob.company)}</b>.</p>
+        <p class="empty-card-subtitle">Generate bespoke, humanized cover letter materials tailored directly to <b>${escapeHtml(targetJob.company)}</b>.</p>
         <button class="btn-primary btn-action" onclick="tailorCurrentJob()">
           <span class="btn-icon">✦</span>
           <span>Tailor Application Now</span>
@@ -2847,7 +3045,7 @@ function renderDetailsTab() {
           <h4 style="font-size: 13px; margin-bottom: 8px; color: #fff;">💰 Compensation & Portal</h4>
           <p style="font-size: 12px; color: var(--text-secondary); line-height: 1.6; margin: 0;">
             <b>Advertised Compensation:</b> ${escapeHtml(selectedJob.salary)}<br>
-            <b>Candidate Target:</b> ≥£${(activeProfile?.minSalary || 75000).toLocaleString()}<br>
+            <b>Candidate Target:</b> ${(activeProfile?.minSalary && activeProfile.minSalary > 0) ? `≥${currencySymbol}${activeProfile.minSalary.toLocaleString()}` : "Open / Flexible"}<br>
             <b>Job Sourcing Portal:</b> ${escapeHtml(selectedJob.portal)}<br>
             <b>Current Application Status:</b> <span class="status-badge ${selectedJob.status}">${selectedJob.status.toUpperCase()}</span>
           </p>
@@ -3331,6 +3529,7 @@ async function tailorCurrentJob() {
       if (data.baselineAnalysis) {
         selectedJob.baseline_analysis = data.baselineAnalysis;
       }
+      data.jobId = selectedJob.id;
       activeTailoredData = data;
       renderJobs();
       selectJob(selectedJob);
@@ -3366,7 +3565,7 @@ async function tailorCurrentJob() {
 async function downloadPDF(type) {
   if (!selectedJob) return;
 
-  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
   if (type === "cover") {
     docPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
@@ -3449,7 +3648,7 @@ async function downloadPDF(type) {
 
 async function openInPreview(type) {
   if (!selectedJob) return;
-  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
   if (type === "cover") {
     docPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
@@ -3491,7 +3690,7 @@ async function openInPreview(type) {
 
 async function revealInFinder(type) {
   if (!selectedJob) return;
-  const isDual = activeTailoredData && activeTailoredData.hasDualLanguage;
+  const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
   if (type === "cover") {
     docPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
@@ -3761,8 +3960,34 @@ async function openScheduleModal() {
     scheduleCandidateSubtitle.textContent = "Candidate Profile";
   }
 
+  // Populate optimistic UI immediately so modal opens with 0ms lag
+  if (activeProfile?.schedule) {
+    const s = activeProfile.schedule;
+    const isEn = Boolean(s.enabled);
+    schedEnabledToggle.checked = isEn;
+    scheduleOptionsContainer.style.opacity = isEn ? "1" : "0.5";
+    scheduleOptionsContainer.style.pointerEvents = isEn ? "auto" : "none";
+    const m = s.mode || "interval";
+    const r = document.querySelector(`input[name="schedMode"][value="${m}"]`);
+    if (r) r.checked = true;
+    if (m === "daily") {
+      schedIntervalSection.style.display = "none";
+      schedDailySection.style.display = "block";
+    } else {
+      schedIntervalSection.style.display = "block";
+      schedDailySection.style.display = "none";
+    }
+    schedIntervalSelect.value = String(s.intervalHours || 4);
+    schedDailyTimeInput.value = s.dailyTime || "08:00";
+    schedStatusBadge.textContent = isEn ? "Active" : "Paused";
+    schedStatusBadge.className = isEn ? "schedule-status-pill" : "schedule-status-pill paused";
+  }
+
   // Reset unchecked apply to all
   schedApplyToAll.checked = false;
+
+  // Open modal instantly
+  scheduleModal.style.display = "flex";
 
   try {
     const profileId = activeProfile ? activeProfile.id : "";
@@ -3828,8 +4053,6 @@ async function openScheduleModal() {
   } catch (err) {
     console.error("Failed to load schedule status:", err);
   }
-
-  scheduleModal.style.display = "flex";
 }
 
 let activeSaveScheduleAbortController = null;

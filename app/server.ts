@@ -6,7 +6,7 @@ import { spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { ProfilesManager, CandidateProfile, type ProfileScheduleConfig } from "./profiles_manager";
 import { AIService } from "./ai_service";
-import { analyzeApplication, analyzeTailoredResume } from "./application_engine";
+import { analyzeApplication, analyzeTailoredResume, clearAnalysisCache } from "./application_engine";
 import { createLatexBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, type SupportedLanguage } from "./resume_engine";
 import { parseResumeDeterministically } from "./resume_parser";
 import { SchedulerService, computeNextRun, type ScrapeExecutionResult } from "./scheduler_service";
@@ -18,6 +18,7 @@ import {
   searchAdzuna, searchArbeitnow, searchCvLibrary, searchGoogleJobs,
   searchJobicy, searchReed, searchRemotive, searchTheMuse,
   searchGreenhouse, searchLever, searchAshby,
+  parseJobDateAndTimestamp,
   type SourceJob, type SourceReport,
 } from "./job_sources";
 
@@ -204,7 +205,20 @@ function getDistanceFromHartlepool(locationStr: string): { miles: number; tag: s
   return { miles: 50, tag: locationStr || "United Kingdom", isRemote: false };
 }
 
+const sponsorCheckCache = new Map<string, any>();
+const MAX_SPONSOR_CACHE = 5000;
+
+function clearSponsorCheckCache() {
+  sponsorCheckCache.clear();
+}
+
 function checkSponsor(company: string, description = "") {
+  const normComp = (company || "").toLowerCase().trim();
+  const descPrefix = (description || "").slice(0, 150).toLowerCase();
+  const cacheKey = `${normComp}::${descPrefix}`;
+  const cached = sponsorCheckCache.get(cacheKey);
+  if (cached) return cached;
+
   const assessment = assessSponsorship(sponsorRegistry, company, description);
   const newSponsor = newSponsorsRegistry.find(company);
 
@@ -218,7 +232,7 @@ function checkSponsor(company: string, description = "") {
     label = `✨ Newly Approved Sponsor (${newSponsor.formattedDate}) · ${newSponsor.organisation}`;
   }
 
-  return {
+  const result = {
     verified: assessment.employer.verified || Boolean(newSponsor),
     isNewSponsor: Boolean(newSponsor),
     newSponsorDetails: newSponsor || null,
@@ -226,6 +240,9 @@ function checkSponsor(company: string, description = "") {
     badge,
     assessment,
   };
+  if (sponsorCheckCache.size >= MAX_SPONSOR_CACHE) sponsorCheckCache.clear();
+  sponsorCheckCache.set(cacheKey, result);
+  return result;
 }
 
 interface DiscoveredJob {
@@ -235,6 +252,7 @@ interface DiscoveredJob {
   url: string;
   location: string;
   postedDate?: string;
+  postedAt?: string;
   description?: string;
   summary?: string;
   skills?: string[];
@@ -253,7 +271,7 @@ function isJobRelevantToProfile(item: any, profile: CandidateProfile): boolean {
 
   // Geographic / Country Filter:
   // Isolate cross-country non-remote jobs unless candidate explicitly targeted that country/city
-  const candidateCountry = detectCandidateCountry(profile.location, profile.targetLocations);
+  const candidateCountry = detectCandidateCountry(profile.location, profile.targetLocations, profile.postcode, profile.country);
   const targetLocationsCombined = (profile.targetLocations || []).join(" ").toLowerCase();
   const jobCountry = detectJobCountry(item);
 
@@ -429,14 +447,18 @@ function ingestDiscoveredJob(
   const analysis = description.length >= 80
     ? analyzeApplication(profile, { company: job.company, role: job.title, location: job.location, fullJd: description, keySkills: job.skills || [] })
     : null;
+  const now = new Date();
+  const dateInfo = parseJobDateAndTimestamp(job.postedDate || job.postedAt);
   seen[job.id] = {
     ...(job.source === "manual" ? { profileId: profile.id } : {}),
     title: job.title,
     company: job.company,
     url: job.url,
     location: job.location,
-    posted_date: job.postedDate || new Date().toISOString().slice(0, 10),
-    first_seen: new Date().toISOString().slice(0, 10),
+    posted_date: dateInfo.date,
+    posted_at: job.postedAt || dateInfo.timestamp || null,
+    first_seen: now.toISOString().slice(0, 10),
+    first_seen_at: now.toISOString(),
     fit: analysis?.verdict === "strong" ? "high" : analysis?.verdict === "possible" ? "medium" : "unscored",
     fit_score: analysis?.overallScore || 0,
     summary: job.summary || description.slice(0, 280),
@@ -1083,7 +1105,7 @@ export async function runScrapeForProfile(
     ? profile.targetRoles.slice(0, 4)
     : [profile?.headline || "Software Engineer"];
 
-  const countryInfo = detectCandidateCountry(profile?.location, options?.location ? [options.location] : profile?.targetLocations);
+  const countryInfo = detectCandidateCountry(profile?.location, options?.location ? [options.location] : profile?.targetLocations, profile?.postcode, profile?.country);
   const defaultFallbackLoc = profile?.location || countryInfo.countryName;
   const targetLocations = options?.location
     ? [options.location]
@@ -1151,7 +1173,10 @@ export async function runScrapeForProfile(
             totalFoundCount++;
             countResult(ingestDiscoveredJob(seen, {
               id: `li_${item.id}`, title: item.title, company: item.company, url: item.url,
-              location: item.location || "United Kingdom", postedDate: item.date, description: item.snippet || item.summary || "",
+              location: item.location || "United Kingdom",
+              postedDate: item.date,
+              postedAt: item.posted_at || item.postedAt || (item.date && item.date.includes("T") ? item.date : undefined),
+              description: item.snippet || item.summary || "",
               skills: activeSkills, portal: "linkedin-search", source: "cli",
             }, profile, sponsorshipMode));
           }
@@ -1201,7 +1226,9 @@ export async function runScrapeForProfile(
                 countResult(ingestDiscoveredJob(seen, {
                   id: `fh_${cleanSlug}`, title: job.title, company: compName, url: job.url,
                   location: job.location || (job.work_mode === "remote" ? `Remote (${countryInfo.countryName})` : countryInfo.countryName),
-                  postedDate: job.date || job.posted_at?.split("T")[0], description: job.description || "",
+                  postedDate: job.date || job.posted_at?.split("T")[0],
+                  postedAt: job.posted_at || (job.date && job.date.includes("T") ? job.date : undefined),
+                  description: job.description || "",
                   summary: job.summary || "", skills: job.skills || [],
                   salary: job.salary_min ? `£${job.salary_min.toLocaleString()} - £${(job.salary_max || job.salary_min).toLocaleString()}` : undefined,
                   portal: "freehire-ats", source: "cli",
@@ -1248,7 +1275,7 @@ export async function runScrapeForProfile(
         totalFoundCount++;
         countResult(ingestDiscoveredJob(seen, {
           id: `${job.portal}_${job.externalId}`, title: job.title, company: job.company, url: job.url,
-          location: job.location, postedDate: job.postedDate, description: job.description,
+          location: job.location, postedDate: job.postedDate, postedAt: job.postedAt, description: job.description,
           salary: job.salary, portal: job.portal, source: "api",
         }, profile, sponsorshipMode));
       }
@@ -1325,9 +1352,10 @@ serve({
       const activeProfile = profilesManager.getActiveProfile();
       const tracker = readTracker(activeProfile);
 
-      const jobsList = Object.entries(seen)
+      const seenEntries = Object.entries(seen);
+      const jobsList = seenEntries
         .filter(([id, item]: [string, any]) => isJobRelevantToProfile(item, activeProfile))
-        .map(([id, item]: [string, any]) => {
+        .map(([id, item]: [string, any], index: number) => {
           const dist = profilesManager.calculateDistance(item.location || "", activeProfile);
           const fullJd = item.full_jd || item.summary || "";
           const sponsor = checkSponsor(item.company || "", fullJd);
@@ -1393,6 +1421,10 @@ serve({
           salary: item.salary || "Competitive Market Rate",
           url: item.url,
           posted_date: item.posted_date || item.first_seen,
+          posted_at: item.posted_at || (item.posted_date && item.posted_date.includes("T") ? item.posted_date : null),
+          first_seen: item.first_seen,
+          first_seen_at: item.first_seen_at || null,
+          seen_order: index,
           fit_score: tailoredScore ?? analysis.overallScore,
           baseline_score: baselineScore,
           tailored_score: tailoredScore,
@@ -1474,6 +1506,7 @@ serve({
           headline: activeProfile.headline,
           location: activeProfile.location,
           postcode: activeProfile.postcode,
+          country: activeProfile.country,
           visaSponsorshipRequired: activeProfile.visaSponsorshipRequired,
           targetLocations: activeProfile.targetLocations,
           preferredRadiusMiles: activeProfile.preferredRadiusMiles
@@ -1521,6 +1554,7 @@ serve({
       try {
         const body = await req.json();
         const saved = profilesManager.saveProfile(body);
+        clearAnalysisCache();
         return new Response(JSON.stringify({ success: true, profile: saved }), {
           headers: { "Content-Type": "application/json" }
         });
@@ -1619,7 +1653,7 @@ serve({
             ? parsed.targetLocations.filter(Boolean)
             : (deterministic.profile.targetLocations?.length ? deterministic.profile.targetLocations : (existingRecord?.targetLocations?.length ? existingRecord.targetLocations : ["Remote", parsed.location || deterministic.profile.location].filter(Boolean))),
           preferredRadiusMiles: parsed.preferredRadiusMiles || deterministic.profile.preferredRadiusMiles || existingRecord?.preferredRadiusMiles || 50,
-          minSalary: parsed.minSalary || deterministic.profile.minSalary || existingRecord?.minSalary || 0,
+          minSalary: (typeof parsed.minSalary === "number") ? parsed.minSalary : (existingRecord?.minSalary !== undefined ? existingRecord.minSalary : 0),
           skills: (parsed.skills && Object.keys(parsed.skills).length > 0)
             ? parsed.skills
             : (deterministic.profile.skills || existingRecord?.skills || { cloud: [], devops: [], languages: [], tools: [] }),
@@ -1926,11 +1960,13 @@ serve({
 
     if (url.pathname === "/api/sponsors/refresh" && req.method === "POST") {
       const result = await sponsorRegistry.refresh(true);
+      clearSponsorCheckCache();
       return Response.json({ success: !result.error, ...result }, { status: result.error && !result.count ? 502 : 200 });
     }
 
     if (url.pathname === "/api/sponsors/refresh-new" && req.method === "POST") {
       const result = await newSponsorsRegistry.refresh(true);
+      clearSponsorCheckCache();
       return Response.json({ success: !result.error, ...result, status: newSponsorsRegistry.status() }, { status: result.error && !result.count ? 502 : 200 });
     }
 
@@ -2094,10 +2130,20 @@ serve({
         const cleanCompany = (company || "Company").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         const cleanRole = (role || "Role").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         
-        const detectedLang = (activeProfile.preferredLanguage as SupportedLanguage) ||
-                             detectLanguageDeterministically(activeProfile.sourceResume?.text) ||
-                             detectLanguageDeterministically(fullJd) ||
-                             "en";
+        let detectedLang = (activeProfile.preferredLanguage as SupportedLanguage);
+        // Guard against legacy corrupted "de" language on UK/English profiles:
+        if (detectedLang === "de") {
+          const isCandidateUk = /united kingdom|\buk\b|\bgb\b|england|scotland|wales/i.test([activeProfile.country || "", activeProfile.location || "", activeProfile.postcode || ""].join(" "));
+          const resumeIsEnglish = activeProfile.sourceResume?.text && detectLanguageDeterministically(activeProfile.sourceResume.text, activeProfile.country) === "en";
+          if (isCandidateUk && resumeIsEnglish) {
+            detectedLang = "en";
+          }
+        }
+        if (!detectedLang) {
+          detectedLang = detectLanguageDeterministically(activeProfile.sourceResume?.text, activeProfile.country) ||
+                         detectLanguageDeterministically(fullJd, activeProfile.country) ||
+                         "en";
+        }
         const isNonEnglish = detectedLang !== "en";
         const langPack = LANGUAGE_PACKS[detectedLang] || LANGUAGE_PACKS.en;
 

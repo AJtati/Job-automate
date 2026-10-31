@@ -216,43 +216,49 @@ export const LANGUAGE_PACKS: Record<SupportedLanguage, LanguagePack> = {
   }
 };
 
-export function detectLanguageDeterministically(text?: string): SupportedLanguage {
+export function detectLanguageDeterministically(text?: string, candidateCountry?: string): SupportedLanguage {
   if (!text) return "en";
   const t = text.toLowerCase();
 
-  // German detection: check section headers OR common German action verbs / connectors / umlauts
-  const deHeaderMatch = /\b(berufserfahrung|ausbildung|kenntnisse|lebenslauf|weiterbildung|zertifikate|f[äa]higkeiten|deutschland|abschluss)\b/i.test(t);
-  const deWords = (t.match(/\b(und|der|die|das|den|dem|des|ein|eine|einer|einem|einen|eines|für|mit|von|im|in|auf|aus|durch|nach|zur|zum|unter|über|bei|sowie|wodurch|wurde|wurden|wird|werden|nicht|als|auch|sich|sind|ist|war|waren|oder|entwicklung|optimierung|unterstützung|erstellung|umsetzung|durchführung|automatisierung|konzeption|anwendung|sicherstellung|erfahrung)\b/g) || []).length;
+  const isEnglishCountry = candidateCountry && /united kingdom|\buk\b|\bgb\b|england|scotland|wales|united states|\busa\b|\bus\b|canada|australia|india/i.test(candidateCountry);
+
+  const enWords = (t.match(/\b(the|and|with|for|from|that|this|have|has|had|experience|skills|education|projects|summary|responsibilities|developer|engineer|management|development|cloud|infrastructure|software|architecture)\b/g) || []).length;
+
+  // German detection: require strong structural German header OR distinctive German vocabulary words (WITHOUT English homographs: no "in", "die", "den", "war", "als", "ist", "das")
+  const deHeaderMatch = /\b(berufserfahrung|ausbildung|kenntnisse\s+und\s+f[äa]higkeiten|lebenslauf|weiterbildung|zertifikate|f[äa]higkeiten|schulbildung|studium|deutschland|abschluss)\b/i.test(t);
+  const deWords = (t.match(/\b(und|der|dem|des|einer|einem|einen|eines|für|mit|von|im|auf|aus|durch|nach|zur|zum|unter|über|bei|sowie|wodurch|wurde|wurden|wird|werden|nicht|auch|sich|sind|waren|entwicklung|optimierung|unterstützung|erstellung|umsetzung|durchführung|automatisierung|konzeption|anwendung|sicherstellung|erfahrung)\b/g) || []).length;
   const deUmlauts = (t.match(/[äöüß]/g) || []).length;
-  if (deHeaderMatch || deWords >= 2 || (deWords >= 1 && deUmlauts >= 1)) {
+
+  const isGerman = deHeaderMatch || (deWords >= 4 && deWords > enWords) || (deWords >= 2 && deUmlauts >= 2 && deWords > enWords);
+  if (isGerman && (!isEnglishCountry || deHeaderMatch)) {
     return "de";
   }
 
-  // Spanish detection
+  // Spanish detection (no "en" homograph)
   const esHeaderMatch = /\b(experiencia\s+laboral|educaci[oó]n|habilidades\s+t[eé]cnicas|curr[ií]culum|formaci[oó]n\s+acad[eé]mica)\b/i.test(t);
-  const esWords = (t.match(/\b(y|el|la|los|las|un|una|en|de|del|por|para|con|como|su|sus|que|desarrollo|experiencia|educación|gestión|diseño|implementación|creación|optimización)\b/g) || []).length;
-  if (esHeaderMatch || esWords >= 3) {
+  const esWords = (t.match(/\b(desarrollo|experiencia|educación|gestión|diseño|implementación|creación|optimización|habilidades|idiomas|proyectos)\b/g) || []).length;
+  if ((esHeaderMatch || (esWords >= 3 && esWords > enWords)) && (!isEnglishCountry || esHeaderMatch)) {
     return "es";
   }
 
   // French detection
   const frHeaderMatch = /\b(exp[eé]rience\s+professionnelle|comp[eé]tences\s+techniques|dipl[oô]me|formation\s+acad[eé]mique)\b/i.test(t);
-  const frWords = (t.match(/\b(et|le|la|les|un|une|dans|en|pour|avec|par|sur|du|des|est|sont|expérience|développement|gestion|conception|mise|optimisation)\b/g) || []).length;
-  if (frHeaderMatch || frWords >= 3) {
+  const frWords = (t.match(/\b(expérience|développement|gestion|conception|mise|optimisation|compétences|diplôme|formation)\b/g) || []).length;
+  if ((frHeaderMatch || (frWords >= 3 && frWords > enWords)) && (!isEnglishCountry || frHeaderMatch)) {
     return "fr";
   }
 
   // Italian detection
   const itHeaderMatch = /\b(esperienza\s+lavorativa|competenze\s+tecniche|istruzione|certificazioni)\b/i.test(t);
-  const itWords = (t.match(/\b(e|il|lo|la|i|gli|le|un|uno|una|in|con|per|su|da|del|della|delle|esperienza|sviluppo|gestione|progettazione)\b/g) || []).length;
-  if (itHeaderMatch || itWords >= 3) {
+  const itWords = (t.match(/\b(esperienza|sviluppo|gestione|progettazione|competenze|istruzione|certificazioni)\b/g) || []).length;
+  if ((itHeaderMatch || (itWords >= 3 && itWords > enWords)) && (!isEnglishCountry || itHeaderMatch)) {
     return "it";
   }
 
   // Dutch detection
   const nlHeaderMatch = /\b(werkervaring|opleiding|vaardigheden|kennis)\b/i.test(t);
-  const nlWords = (t.match(/\b(en|de|het|een|van|in|op|voor|met|als|bij|werkervaring|opleiding|ontwikkeling|beheer)\b/g) || []).length;
-  if (nlHeaderMatch || nlWords >= 3) {
+  const nlWords = (t.match(/\b(werkervaring|opleiding|ontwikkeling|beheer|vaardigheden)\b/g) || []).length;
+  if ((nlHeaderMatch || (nlWords >= 3 && nlWords > enWords)) && (!isEnglishCountry || nlHeaderMatch)) {
     return "nl";
   }
 
@@ -728,7 +734,7 @@ export function renderTailoredResume(
   summary?: string,
   lang?: SupportedLanguage
 ): string {
-  const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
+  const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text, profile.country) || "en";
   const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
 
   let backbone = profile.latexBackbone?.includes(TOKENS.experience) 
@@ -772,7 +778,7 @@ export function renderGroundedCoverLetter(
   analysis: ApplicationAnalysis,
   lang?: SupportedLanguage
 ): string {
-  const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
+  const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text, profile.country) || "en";
   const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
 
   let roleClean = cleanJobTitle(job.role) || profile.headline || "Specialist";

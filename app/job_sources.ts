@@ -8,6 +8,7 @@ export interface SourceJob {
   location: string;
   url: string;
   postedDate: string;
+  postedAt?: string;
   description: string;
   salary?: string;
   portal: "cv-library" | "reed" | "google-jobs" | "adzuna" | "jobicy" | "arbeitnow" | "remotive" | "themuse" | "greenhouse" | "lever" | "ashby";
@@ -29,13 +30,62 @@ function text(value: unknown): string {
   return String(value || "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
 }
 
-function dateOnly(value: unknown): string {
+export function parseJobDateAndTimestamp(value: unknown): { date: string; timestamp?: string } {
   if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value > 10_000_000_000 ? value : value * 1000).toISOString().slice(0, 10);
+    const d = new Date(value > 10_000_000_000 ? value : value * 1000);
+    return { date: d.toISOString().slice(0, 10), timestamp: d.toISOString() };
   }
-  const raw = String(value || "");
+  const raw = String(value || "").trim();
+  if (!raw) {
+    const now = new Date();
+    return { date: now.toISOString().slice(0, 10), timestamp: now.toISOString() };
+  }
+
+  // Relative times (e.g. Google Jobs "3 hours ago", "45 minutes ago", "today")
+  const hoursMatch = raw.match(/(\d+)\s*hour/i);
+  if (hoursMatch) {
+    const hrs = parseInt(hoursMatch[1], 10);
+    const d = new Date(Date.now() - hrs * 3600 * 1000);
+    return { date: d.toISOString().slice(0, 10), timestamp: d.toISOString() };
+  }
+  const minsMatch = raw.match(/(\d+)\s*min/i);
+  if (minsMatch) {
+    const mins = parseInt(minsMatch[1], 10);
+    const d = new Date(Date.now() - mins * 60 * 1000);
+    return { date: d.toISOString().slice(0, 10), timestamp: d.toISOString() };
+  }
+  const daysMatch = raw.match(/(\d+)\s*day/i);
+  if (daysMatch) {
+    const days = parseInt(daysMatch[1], 10);
+    const d = new Date(Date.now() - days * 86400 * 1000);
+    return { date: d.toISOString().slice(0, 10), timestamp: d.toISOString() };
+  }
+  if (/today|just now/i.test(raw)) {
+    const now = new Date();
+    return { date: now.toISOString().slice(0, 10), timestamp: now.toISOString() };
+  }
+
+  const parsedMs = Date.parse(raw);
+  if (!isNaN(parsedMs)) {
+    const d = new Date(parsedMs);
+    return { date: d.toISOString().slice(0, 10), timestamp: d.toISOString() };
+  }
+
   const match = raw.match(/\d{4}-\d{2}-\d{2}/);
-  return match?.[0] || new Date().toISOString().slice(0, 10);
+  const dateStr = match?.[0] || new Date().toISOString().slice(0, 10);
+  return { date: dateStr };
+}
+
+export function parseJobDate(value: unknown): { postedDate: string; postedAt?: string } {
+  const parsed = parseJobDateAndTimestamp(value);
+  return {
+    postedDate: parsed.date,
+    postedAt: parsed.timestamp,
+  };
+}
+
+function dateOnly(value: unknown): string {
+  return parseJobDateAndTimestamp(value).date;
 }
 
 function salaryRange(minimum: unknown, maximum: unknown, currency = "£"): string | undefined {
@@ -74,7 +124,7 @@ export function normalizeCvLibraryJobs(payload: any): SourceJob[] {
     company: text(job.agency?.title || job.company || "Unknown employer"),
     location: text(job.location || "United Kingdom"),
     url: String(job.url || "").startsWith("http") ? String(job.url) : `https://www.cv-library.co.uk${job.url || ""}`,
-    postedDate: dateOnly(job.posted),
+    ...parseJobDate(job.posted),
     description: text(job.description_full || job.description),
     salary: text(typeof job.salary === "object" ? `${job.salary.min || ""} - ${job.salary.max || ""} ${job.salary.period || ""}` : job.salary),
     portal: "cv-library" as const,
@@ -89,7 +139,7 @@ export function normalizeReedJobs(payload: any): SourceJob[] {
     company: text(job.employerName || "Unknown employer"),
     location: text(job.locationName || "United Kingdom"),
     url: String(job.jobUrl || `https://www.reed.co.uk/jobs/${job.jobId || ""}`),
-    postedDate: dateOnly(job.date),
+    ...parseJobDate(job.date),
     description: text(job.jobDescription),
     salary: job.minimumSalary ? `£${Number(job.minimumSalary).toLocaleString()} - £${Number(job.maximumSalary || job.minimumSalary).toLocaleString()}` : undefined,
     portal: "reed" as const,
@@ -106,7 +156,7 @@ export function normalizeGoogleJobs(payload: any): SourceJob[] {
       company: text(job.company_name || "Unknown employer"),
       location: text(job.location || "United Kingdom"),
       url: String(applyUrl),
-      postedDate: dateOnly(job.detected_extensions?.posted_at || job.extensions?.find((item: string) => /ago|today/i.test(item))),
+      ...parseJobDate(job.detected_extensions?.posted_at || job.extensions?.find((item: string) => /ago|today/i.test(item))),
       description: text(job.description),
       salary: text(job.detected_extensions?.salary || "") || undefined,
       portal: "google-jobs" as const,
@@ -122,7 +172,7 @@ export function normalizeAdzunaJobs(payload: any): SourceJob[] {
     company: text(job.company?.display_name || "Unknown employer"),
     location: text(job.location?.display_name || "United Kingdom"),
     url: String(job.redirect_url || ""),
-    postedDate: dateOnly(job.created),
+    ...parseJobDate(job.created),
     description: text(job.description),
     salary: salaryRange(job.salary_min, job.salary_max),
     portal: "adzuna" as const,
@@ -137,7 +187,7 @@ export function normalizeJobicyJobs(payload: any): SourceJob[] {
     company: text(job.companyName || "Unknown employer"),
     location: text(job.jobGeo || job.jobLocation || "Remote"),
     url: String(job.url || ""),
-    postedDate: dateOnly(job.pubDate || job.createdAt),
+    ...parseJobDate(job.pubDate || job.createdAt),
     description: text(job.jobDescription || job.description),
     salary: text(job.annualSalaryMin && job.annualSalaryMax ? `${job.annualSalaryMin} - ${job.annualSalaryMax}` : job.salary) || undefined,
     portal: "jobicy" as const,
@@ -152,7 +202,7 @@ export function normalizeArbeitnowJobs(payload: any): SourceJob[] {
     company: text(job.company_name || "Unknown employer"),
     location: text(job.remote ? `${job.location || "Europe"} · Remote` : job.location || "Europe"),
     url: String(job.url || ""),
-    postedDate: dateOnly(job.created_at),
+    ...parseJobDate(job.created_at),
     description: text(job.description),
     portal: "arbeitnow" as const,
     sourceLabel: "Arbeitnow",
@@ -166,7 +216,7 @@ export function normalizeRemotiveJobs(payload: any): SourceJob[] {
     company: text(job.company_name || "Unknown employer"),
     location: text(job.candidate_required_location || "Remote"),
     url: String(job.url || ""),
-    postedDate: dateOnly(job.publication_date),
+    ...parseJobDate(job.publication_date),
     description: text(job.description),
     salary: text(job.salary) || undefined,
     portal: "remotive" as const,
@@ -193,7 +243,7 @@ export function normalizeTheMuseJobs(payload: any): SourceJob[] {
       company: text(job.company?.name || "Unknown employer"),
       location: text(locStr),
       url: String(applyUrl),
-      postedDate: dateOnly(job.publication_date),
+      ...parseJobDate(job.publication_date),
       description: text(rawDesc),
       portal: "themuse" as const,
       sourceLabel: "The Muse",
@@ -218,7 +268,7 @@ export function normalizeGreenhouseJobs(company: string, payload: any): SourceJo
       company: text(companyTitle),
       location: text(job.location?.name || "Global / Remote"),
       url: String(job.absolute_url || ""),
-      postedDate: dateOnly(job.updated_at),
+      ...parseJobDate(job.updated_at),
       description: text(rawContent),
       portal: "greenhouse" as const,
       sourceLabel: `Greenhouse (${companyTitle})`,
@@ -238,7 +288,7 @@ export function normalizeLeverJobs(company: string, payload: any): SourceJob[] {
       company: text(companyTitle),
       location: text(loc),
       url: String(job.applyUrl || job.hostedUrl || ""),
-      postedDate: dateOnly(job.createdAt ? new Date(job.createdAt) : undefined),
+      ...parseJobDate(job.createdAt ? new Date(job.createdAt) : undefined),
       description: desc,
       portal: "lever" as const,
       sourceLabel: `Lever (${companyTitle})`,
@@ -257,7 +307,7 @@ export function normalizeAshbyJobs(company: string, payload: any): SourceJob[] {
       company: text(companyTitle),
       location: text(locStr),
       url: String(job.jobUrl || ""),
-      postedDate: dateOnly(job.publishedAt),
+      ...parseJobDate(job.publishedAt),
       description: text(job.descriptionPlain || ""),
       portal: "ashby" as const,
       sourceLabel: `Ashby (${companyTitle})`,
@@ -273,17 +323,76 @@ export interface CandidateCountryInfo {
   isUk: boolean;
 }
 
-export function detectCandidateCountry(locationStr?: string, targetLocations: string[] = []): CandidateCountryInfo {
+export function detectCandidateCountry(
+  locationStr?: string,
+  targetLocations: string[] = [],
+  postcodeStr?: string,
+  countryStr?: string
+): CandidateCountryInfo {
+  // 1. Explicit country string has highest priority
+  if (countryStr && countryStr.trim()) {
+    const c = countryStr.trim().toLowerCase();
+    if (/united kingdom|\buk\b|\bgb\b|great britain|england|scotland|wales|northern ireland/i.test(c)) {
+      return { countryName: "United Kingdom", freehireCode: "GB", adzunaCode: "gb", currency: "£", isUk: true };
+    }
+    if (/germany|deutschland|\bde\b/i.test(c)) {
+      return { countryName: "Germany", freehireCode: "DE", adzunaCode: "de", currency: "€", isUk: false };
+    }
+    if (/india|\bin\b|bharat/i.test(c)) {
+      return { countryName: "India", freehireCode: "IN", adzunaCode: "in", currency: "₹", isUk: false };
+    }
+    if (/united states|\busa\b|\bus\b|america/i.test(c)) {
+      return { countryName: "United States", freehireCode: "US", adzunaCode: "us", currency: "$", isUk: false };
+    }
+    if (/france|\bfr\b/i.test(c)) {
+      return { countryName: "France", freehireCode: "FR", adzunaCode: "fr", currency: "€", isUk: false };
+    }
+    if (/netherlands|holland|\bnl\b/i.test(c)) {
+      return { countryName: "Netherlands", freehireCode: "NL", adzunaCode: "nl", currency: "€", isUk: false };
+    }
+    if (/canada|\bca\b/i.test(c)) {
+      return { countryName: "Canada", freehireCode: "CA", adzunaCode: "ca", currency: "CA$", isUk: false };
+    }
+    if (/australia|\bau\b/i.test(c)) {
+      return { countryName: "Australia", freehireCode: "AU", adzunaCode: "au", currency: "AU$", isUk: false };
+    }
+    if (/denmark|danmark|\bdk\b/i.test(c)) {
+      return { countryName: "Denmark", freehireCode: "DK", adzunaCode: "dk", currency: "kr.", isUk: false };
+    }
+    if (/spain|españa|\bes\b/i.test(c)) {
+      return { countryName: "Spain", freehireCode: "ES", adzunaCode: "es", currency: "€", isUk: false };
+    }
+    if (/italy|italia|\bit\b/i.test(c)) {
+      return { countryName: "Italy", freehireCode: "IT", adzunaCode: "it", currency: "€", isUk: false };
+    }
+  }
+
+  // 2. Postcode regex inspection
+  if (postcodeStr && postcodeStr.trim()) {
+    const pc = postcodeStr.trim().toUpperCase();
+    // UK Postcodes: full (e.g. EC1A 1BB, TS25 1AB) or outcode areas (e.g. TS25, EC1, M1, SW1, EH1)
+    const isUkPostcode = /^[A-Z]{1,2}[0-9][0-9A-Z]?(\s*[0-9][A-Z]{2})?$/.test(pc) &&
+      /^(TS|EC|SW|W|NW|SE|E|N|WC|M|B|G|EH|LS|NE|L|S|CR|BR|UB|HA|IG|RM|DA|TW|KT|SM|EN|WD|AL|LU|MK|OX|CB|BS|CF|CV|LE|NG|PE|RG|SO|SP|TA|TQ|TR|PL|EX|BA|BH|DT|BN|CT|ME|TN|CM|CO|IP|NR|SS|WV|WS|DY|ST|TF|CW|SK|WA|WN|BL|OL|HD|HX|BD|WF|HG|YO|HU|DN|LN|DH|SR|DL|CA|LA|PR|FY|BB|PA|FK|KY|DD|AB|IV|KW|PH|ZE|HS|BT)/i.test(pc);
+    if (isUkPostcode) {
+      return { countryName: "United Kingdom", freehireCode: "GB", adzunaCode: "gb", currency: "£", isUk: true };
+    }
+    // German 5-digit postal code
+    if (/^[0-9]{5}$/.test(pc) && /germany|deutschland|berlin|munich|münchen|frankfurt|chemnitz|dresden|sachsen/i.test(locationStr || "")) {
+      return { countryName: "Germany", freehireCode: "DE", adzunaCode: "de", currency: "€", isUk: false };
+    }
+  }
+
+  // 3. Location string & target locations
   const combined = [locationStr || "", ...targetLocations].join(" ").toLowerCase();
 
+  if (/united states|\bua\b|\busa\b|\bus\b|america|new york|california|san francisco|austin|texas|seattle|chicago|boston|los angeles/i.test(combined)) {
+    return { countryName: "United States", freehireCode: "US", adzunaCode: "us", currency: "$", isUk: false };
+  }
   if (/germany|deutschland|berlin|munich|münchen|frankfurt|hamburg|cologne|köln|stuttgart|düsseldorf|dusseldorf|leipzig|chemnitz|dresden|sachsen|erfurt|bonn|hannover|nürnberg|nuremberg|bremen|kiel|augsburg|mannheim|wiesbaden|mainz|karlsruhe|essen|dortmund/i.test(combined)) {
     return { countryName: "Germany", freehireCode: "DE", adzunaCode: "de", currency: "€", isUk: false };
   }
   if (/india|bangalore|bengaluru|hyderabad|mumbai|delhi|noida|gurgaon|gurugram|pune|chennai|kolkata/i.test(combined)) {
     return { countryName: "India", freehireCode: "IN", adzunaCode: "in", currency: "₹", isUk: false };
-  }
-  if (/united states|\bua\b|usa|america|new york|california|san francisco|austin|texas|seattle|chicago|boston|los angeles/i.test(combined)) {
-    return { countryName: "United States", freehireCode: "US", adzunaCode: "us", currency: "$", isUk: false };
   }
   if (/france|paris|lyon|marseille/i.test(combined)) {
     return { countryName: "France", freehireCode: "FR", adzunaCode: "fr", currency: "€", isUk: false };
@@ -296,6 +405,33 @@ export function detectCandidateCountry(locationStr?: string, targetLocations: st
   }
   if (/australia|sydney|melbourne|brisbane/i.test(combined)) {
     return { countryName: "Australia", freehireCode: "AU", adzunaCode: "au", currency: "AU$", isUk: false };
+  }
+  if (/ireland|dublin|cork|galway/i.test(combined)) {
+    return { countryName: "Ireland", freehireCode: "IE", adzunaCode: "ie", currency: "€", isUk: false };
+  }
+  if (/denmark|danmark|copenhagen|københavn|aarhus|odense/i.test(combined)) {
+    return { countryName: "Denmark", freehireCode: "DK", adzunaCode: "dk", currency: "kr.", isUk: false };
+  }
+  if (/sweden|sverige|stockholm|gothenburg|göteborg|malmö/i.test(combined)) {
+    return { countryName: "Sweden", freehireCode: "SE", adzunaCode: "se", currency: "kr", isUk: false };
+  }
+  if (/norway|norge|oslo|bergen/i.test(combined)) {
+    return { countryName: "Norway", freehireCode: "NO", adzunaCode: "no", currency: "kr", isUk: false };
+  }
+  if (/switzerland|schweiz|suisse|svizzera|zurich|zürich|geneva|genève|basel|bern/i.test(combined)) {
+    return { countryName: "Switzerland", freehireCode: "CH", adzunaCode: "ch", currency: "CHF", isUk: false };
+  }
+  if (/austria|österreich|vienna|wien|graz|salzburg/i.test(combined)) {
+    return { countryName: "Austria", freehireCode: "AT", adzunaCode: "at", currency: "€", isUk: false };
+  }
+  if (/poland|polska|warsaw|warszawa|krakow|kraków|wrocław/i.test(combined)) {
+    return { countryName: "Poland", freehireCode: "PL", adzunaCode: "pl", currency: "zł", isUk: false };
+  }
+  if (/spain|españa|madrid|barcelona|valencia|seville|sevilla/i.test(combined)) {
+    return { countryName: "Spain", freehireCode: "ES", adzunaCode: "es", currency: "€", isUk: false };
+  }
+  if (/italy|italia|rome|roma|milan|milano|turin|torino/i.test(combined)) {
+    return { countryName: "Italy", freehireCode: "IT", adzunaCode: "it", currency: "€", isUk: false };
   }
 
   return { countryName: "United Kingdom", freehireCode: "GB", adzunaCode: "gb", currency: "£", isUk: true };
