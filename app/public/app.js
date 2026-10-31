@@ -175,6 +175,20 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 function setupEventListeners() {
+  // Native macOS Titlebar Drag & Zoom
+  const titlebar = document.querySelector(".titlebar");
+  if (titlebar) {
+    titlebar.addEventListener("mousedown", (e) => {
+      // Don't drag if clicking buttons, inputs, dropdown menus, or interactive controls
+      if (e.target.closest("button, input, select, a, .profile-dropdown-menu, .search-box")) return;
+      if (e.detail === 2) {
+        window.webkit?.messageHandlers?.doubleClickTitlebar?.postMessage({});
+        return;
+      }
+      window.webkit?.messageHandlers?.dragWindow?.postMessage({});
+    });
+  }
+
   // Navigation filters
   document.querySelectorAll(".nav-item").forEach(item => {
     item.addEventListener("click", () => {
@@ -273,7 +287,17 @@ function setupEventListeners() {
 
   // Tailor action
   btnTailor.addEventListener("click", tailorCurrentJob);
-  document.getElementById("chkDeepTailor")?.addEventListener("change", updateTailorBtnLabel);
+  document.getElementById("btnToggleDeepTailor")?.addEventListener("click", () => {
+    const chk = document.getElementById("chkDeepTailor");
+    const nextState = !chk?.checked;
+    syncDeepTailorBtnState(nextState);
+    updateTailorBtnLabel();
+  });
+  document.getElementById("chkDeepTailor")?.addEventListener("change", () => {
+    const chk = document.getElementById("chkDeepTailor");
+    syncDeepTailorBtnState(chk?.checked);
+    updateTailorBtnLabel();
+  });
 
   // Mark applied
   btnMarkApplied.addEventListener("click", markCurrentJobApplied);
@@ -2038,9 +2062,9 @@ function renderJobs() {
     // Status Badge
     let statusBadge = "";
     if (job.status === "applied") {
-      statusBadge = '<span class="status-badge applied">Applied</span>';
+      statusBadge = '<span class="meta-pill status-applied">✓ Applied</span>';
     } else if (job.status === "drafted") {
-      statusBadge = '<span class="status-badge drafted">CV Ready</span>';
+      statusBadge = '<span class="meta-pill status-tailored">✓ Tailored</span>';
     }
 
     const relativeDateBadge = formatRelativeDate(job.posted_date);
@@ -2150,15 +2174,22 @@ function selectJob(job) {
 
   const chkDeep = document.getElementById("chkDeepTailor");
   if (chkDeep) {
-    chkDeep.checked = Boolean(job.is_deep_tailored !== undefined ? job.is_deep_tailored : activeProfile?.enableDeepTailor);
+    const isDeep = Boolean(job.is_deep_tailored !== undefined ? job.is_deep_tailored : activeProfile?.enableDeepTailor);
+    syncDeepTailorBtnState(isDeep);
     updateTailorBtnLabel();
   }
 
+  const appliedSvgCheck = document.getElementById("appliedSvgCheck");
+  const markAppliedText = document.getElementById("markAppliedText");
   if (job.status === "applied") {
-    btnMarkApplied.textContent = "✅ Applied";
+    if (appliedSvgCheck) appliedSvgCheck.style.display = "inline";
+    if (markAppliedText) markAppliedText.textContent = "Applied";
+    btnMarkApplied.classList.add("btn-applied-active");
     btnMarkApplied.disabled = true;
   } else {
-    btnMarkApplied.textContent = "✅ Mark as Applied";
+    if (appliedSvgCheck) appliedSvgCheck.style.display = "none";
+    if (markAppliedText) markAppliedText.textContent = "Mark Applied";
+    btnMarkApplied.classList.remove("btn-applied-active");
     btnMarkApplied.disabled = false;
   }
 
@@ -2222,48 +2253,6 @@ async function renderCVTab() {
     ? activeTailoredData.cvEnglishPath
     : (selectedJob.cv_file || "");
 
-  const langPills = isDual ? `
-    <div style="display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border-color); margin-right: 6px;">
-      <span style="font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase;">Edition:</span>
-      <button type="button" class="btn ${currentDocLang === 'native' ? 'btn-primary' : 'btn-secondary'}" id="btnCvLangNative" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">${activeTailoredData.languageName || 'Original'}</button>
-      <button type="button" class="btn ${currentDocLang === 'english' ? 'btn-primary' : 'btn-secondary'}" id="btnCvLangEnglish" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">🇬🇧 English</button>
-    </div>
-  ` : '';
-
-  studioContent.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto; flex-wrap: wrap; gap: 8px;">
-      <div style="font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;">
-        <span><b>Format:</b> Jake Gutierrez ATS Single-Page (100% Parsable Unicode)</span>
-        ${(selectedJob.is_deep_tailored || activeTailoredData?.is_deep_tailored) ? '<span class="badge badge-emerald" style="font-size: 11px; padding: 2px 8px; border-radius: 999px;">🎯 Deep Aligned (Target Stack)</span>' : ''}
-      </div>
-      <div style="display: flex; gap: 8px; align-items: center;">
-        ${langPills}
-        <button class="btn-primary" id="btnDownloadCVPdf">Download PDF</button>
-        <button class="btn-secondary" id="btnOpenPreviewCV" title="Open PDF with the system viewer">Open</button>
-        <button class="btn-secondary" id="btnRevealCV" title="Show PDF in its folder">Show in folder</button>
-        <button class="btn-secondary" id="btnToggleCVMode">${currentCVViewMode === "visual" ? "📝 Raw LaTeX" : "📄 Visual View"}</button>
-        <button class="btn-secondary" id="btnCopyCV">📋 Copy LaTeX</button>
-        <button class="btn-secondary" id="btnOpenOverleaf">Open Overleaf ↗</button>
-      </div>
-    </div>
-    <div id="cvContainer" style="max-width: 820px; margin: 0 auto;">
-      <div style="text-align: center; padding: 40px; color: var(--text-secondary);">Loading tailored CV...</div>
-    </div>
-  `;
-
-  document.getElementById("btnCvLangNative")?.addEventListener("click", () => {
-    currentDocLang = "native";
-    renderCVTab();
-  });
-  document.getElementById("btnCvLangEnglish")?.addEventListener("click", () => {
-    currentDocLang = "english";
-    renderCVTab();
-  });
-  document.getElementById("btnOpenOverleaf")?.addEventListener("click", () => window.open("https://www.overleaf.com/project", "_blank"));
-  document.getElementById("btnDownloadCVPdf")?.addEventListener("click", () => downloadPDF("cv"));
-  document.getElementById("btnOpenPreviewCV")?.addEventListener("click", () => openInPreview("cv"));
-  document.getElementById("btnRevealCV")?.addEventListener("click", () => revealInFinder("cv"));
-
   let texCode = "";
   if (cvPath) {
     try {
@@ -2278,15 +2267,59 @@ async function renderCVTab() {
   }
 
   if (!texCode) {
-    document.getElementById("cvContainer").innerHTML = `
-      <div style="text-align: center; padding: 50px 20px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px dashed var(--border-strong);">
-        <h3 style="font-size: 16px; margin-bottom: 8px;">Tailored CV not yet generated for ${selectedJob.company}</h3>
-        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">Click the button below to curate and generate a bespoke ATS CV for candidate <b>${escapeHtml(activeProfile?.name || 'Candidate')}</b>.</p>
-        <button class="btn-primary" style="margin: 0 auto;" onclick="tailorCurrentJob()">⚡ Generate Bespoke CV Now</button>
+    studioContent.innerHTML = `
+      <div class="empty-doc-card">
+        <div class="empty-card-icon">📄</div>
+        <h3 class="empty-card-title">Tailored CV Not Yet Generated</h3>
+        <p class="empty-card-subtitle">Generate a bespoke ATS-optimized resume tailored to <b>${escapeHtml(selectedJob.company)}</b>'s requirements for candidate <b>${escapeHtml(activeProfile?.name || 'Candidate')}</b>.</p>
+        <button class="btn-primary btn-action" onclick="tailorCurrentJob()">
+          <span class="btn-icon">✦</span>
+          <span>Tailor Application Now</span>
+        </button>
       </div>
     `;
     return;
   }
+
+  const langPills = isDual ? `
+    <div style="display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border-subtle); margin-right: 6px;">
+      <span style="font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase;">Edition:</span>
+      <button type="button" class="btn ${currentDocLang === 'native' ? 'btn-primary' : 'btn-secondary'}" id="btnCvLangNative" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">${activeTailoredData.languageName || 'Original'}</button>
+      <button type="button" class="btn ${currentDocLang === 'english' ? 'btn-primary' : 'btn-secondary'}" id="btnCvLangEnglish" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">🇬🇧 English</button>
+    </div>
+  ` : '';
+
+  studioContent.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto; flex-wrap: wrap; gap: 8px;">
+      <div style="font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;">
+        <span><b>Format:</b> ATS Single-Page (100% Parsable Unicode)</span>
+        ${(selectedJob.is_deep_tailored || activeTailoredData?.is_deep_tailored) ? '<span class="meta-pill status-tailored" style="font-size: 10.5px; padding: 1px 7px;">🎯 Deep Tech Match</span>' : ''}
+      </div>
+      <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+        ${langPills}
+        <button class="btn-primary btn-action" id="btnDownloadCVPdf">Download PDF</button>
+        <button class="btn-secondary btn-action" id="btnOpenPreviewCV" title="Open PDF with system viewer">Open</button>
+        <button class="btn-secondary btn-action" id="btnRevealCV" title="Show PDF in Finder">Finder</button>
+        <button class="btn-secondary btn-action" id="btnToggleCVMode">${currentCVViewMode === "visual" ? "Raw LaTeX" : "Visual View"}</button>
+        <button class="btn-secondary btn-action" id="btnCopyCV">Copy LaTeX</button>
+        <button class="btn-secondary btn-action" id="btnOpenOverleaf">Overleaf ↗</button>
+      </div>
+    </div>
+    <div id="cvContainer" style="max-width: 820px; margin: 0 auto;"></div>
+  `;
+
+  document.getElementById("btnCvLangNative")?.addEventListener("click", () => {
+    currentDocLang = "native";
+    renderCVTab();
+  });
+  document.getElementById("btnCvLangEnglish")?.addEventListener("click", () => {
+    currentDocLang = "english";
+    renderCVTab();
+  });
+  document.getElementById("btnOpenOverleaf")?.addEventListener("click", () => window.open("https://www.overleaf.com/project", "_blank"));
+  document.getElementById("btnDownloadCVPdf")?.addEventListener("click", () => downloadPDF("cv"));
+  document.getElementById("btnOpenPreviewCV")?.addEventListener("click", () => openInPreview("cv"));
+  document.getElementById("btnRevealCV")?.addEventListener("click", () => revealInFinder("cv"));
 
   document.getElementById("btnCopyCV")?.addEventListener("click", () => {
     navigator.clipboard.writeText(texCode);
@@ -2464,47 +2497,6 @@ async function renderCoverTab() {
     ? activeTailoredData.coverEnglishPath
     : (selectedJob.cover_file || "");
 
-  const langPills = isDual ? `
-    <div style="display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border-color); margin-right: 6px;">
-      <span style="font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase;">Edition:</span>
-      <button type="button" class="btn ${currentDocLang === 'native' ? 'btn-primary' : 'btn-secondary'}" id="btnCoverLangNative" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">${activeTailoredData.languageName || 'Original'}</button>
-      <button type="button" class="btn ${currentDocLang === 'english' ? 'btn-primary' : 'btn-secondary'}" id="btnCoverLangEnglish" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">🇬🇧 English</button>
-    </div>
-  ` : '';
-
-  studioContent.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto; flex-wrap: wrap; gap: 8px;">
-      <div style="font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;">
-        <span><b>Format:</b> Executive Formal Letterhead (Targeted to ${escapeHtml(selectedJob.company)})</span>
-        ${(selectedJob.is_deep_tailored || activeTailoredData?.is_deep_tailored) ? '<span class="badge badge-emerald" style="font-size: 11px; padding: 2px 8px; border-radius: 999px;">🎯 Deep Aligned</span>' : ''}
-      </div>
-      <div style="display: flex; gap: 8px; align-items: center;">
-        ${langPills}
-        <button class="btn-primary" id="btnDownloadCoverPdf">Download PDF</button>
-        <button class="btn-secondary" id="btnOpenPreviewCover" title="Open PDF with the system viewer">Open</button>
-        <button class="btn-secondary" id="btnRevealCover" title="Show PDF in its folder">Show in folder</button>
-        <button class="btn-secondary" id="btnToggleCoverMode">${currentCoverViewMode === "visual" ? "📝 Raw LaTeX" : "📄 Visual View"}</button>
-        <button class="btn-secondary" id="btnCopyCoverText" title="Copy clean plain text to clipboard">📋 Copy Plain Text</button>
-        <button class="btn-secondary" id="btnCopyCover">📋 Copy LaTeX</button>
-      </div>
-    </div>
-    <div id="coverContainer" style="max-width: 820px; margin: 0 auto;">
-      <div style="text-align: center; padding: 40px; color: var(--text-secondary);">Loading cover letter...</div>
-    </div>
-  `;
-
-  document.getElementById("btnCoverLangNative")?.addEventListener("click", () => {
-    currentDocLang = "native";
-    renderCoverTab();
-  });
-  document.getElementById("btnCoverLangEnglish")?.addEventListener("click", () => {
-    currentDocLang = "english";
-    renderCoverTab();
-  });
-  document.getElementById("btnDownloadCoverPdf")?.addEventListener("click", () => downloadPDF("cover"));
-  document.getElementById("btnOpenPreviewCover")?.addEventListener("click", () => openInPreview("cover"));
-  document.getElementById("btnRevealCover")?.addEventListener("click", () => revealInFinder("cover"));
-
   let texCode = "";
   if (coverPath) {
     try {
@@ -2519,15 +2511,58 @@ async function renderCoverTab() {
   }
 
   if (!texCode) {
-    document.getElementById("coverContainer").innerHTML = `
-      <div style="text-align: center; padding: 50px 20px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px dashed var(--border-strong);">
-        <h3 style="font-size: 16px; margin-bottom: 8px;">Cover Letter not yet generated</h3>
-        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">Generate tailored materials to view the bespoke cover letter for ${selectedJob.company}.</p>
-        <button class="btn-primary" style="margin: 0 auto;" onclick="tailorCurrentJob()">⚡ Generate Bespoke Cover Letter Now</button>
+    studioContent.innerHTML = `
+      <div class="empty-doc-card">
+        <div class="empty-card-icon">✉️</div>
+        <h3 class="empty-card-title">Cover Letter Not Yet Generated</h3>
+        <p class="empty-card-subtitle">Generate bespoke, humanized cover letter materials tailored directly to <b>${escapeHtml(selectedJob.company)}</b>.</p>
+        <button class="btn-primary btn-action" onclick="tailorCurrentJob()">
+          <span class="btn-icon">✦</span>
+          <span>Tailor Application Now</span>
+        </button>
       </div>
     `;
     return;
   }
+
+  const langPills = isDual ? `
+    <div style="display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border-subtle); margin-right: 6px;">
+      <span style="font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase;">Edition:</span>
+      <button type="button" class="btn ${currentDocLang === 'native' ? 'btn-primary' : 'btn-secondary'}" id="btnCoverLangNative" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">${activeTailoredData.languageName || 'Original'}</button>
+      <button type="button" class="btn ${currentDocLang === 'english' ? 'btn-primary' : 'btn-secondary'}" id="btnCoverLangEnglish" style="font-size: 11px; padding: 2px 7px; border-radius: 4px;">🇬🇧 English</button>
+    </div>
+  ` : '';
+
+  studioContent.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; max-width: 820px; margin-left: auto; margin-right: auto; flex-wrap: wrap; gap: 8px;">
+      <div style="font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;">
+        <span><b>Format:</b> Formal Letterhead (${escapeHtml(selectedJob.company)})</span>
+        ${(selectedJob.is_deep_tailored || activeTailoredData?.is_deep_tailored) ? '<span class="meta-pill status-tailored" style="font-size: 10.5px; padding: 1px 7px;">🎯 Deep Tech Match</span>' : ''}
+      </div>
+      <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+        ${langPills}
+        <button class="btn-primary btn-action" id="btnDownloadCoverPdf">Download PDF</button>
+        <button class="btn-secondary btn-action" id="btnOpenPreviewCover" title="Open PDF with system viewer">Open</button>
+        <button class="btn-secondary btn-action" id="btnRevealCover" title="Show PDF in Finder">Finder</button>
+        <button class="btn-secondary btn-action" id="btnToggleCoverMode">${currentCoverViewMode === "visual" ? "Raw LaTeX" : "Visual View"}</button>
+        <button class="btn-secondary btn-action" id="btnCopyCoverText" title="Copy clean plain text to clipboard">Copy Text</button>
+        <button class="btn-secondary btn-action" id="btnCopyCover">Copy LaTeX</button>
+      </div>
+    </div>
+    <div id="coverContainer" style="max-width: 820px; margin: 0 auto;"></div>
+  `;
+
+  document.getElementById("btnCoverLangNative")?.addEventListener("click", () => {
+    currentDocLang = "native";
+    renderCoverTab();
+  });
+  document.getElementById("btnCoverLangEnglish")?.addEventListener("click", () => {
+    currentDocLang = "english";
+    renderCoverTab();
+  });
+  document.getElementById("btnDownloadCoverPdf")?.addEventListener("click", () => downloadPDF("cover"));
+  document.getElementById("btnOpenPreviewCover")?.addEventListener("click", () => openInPreview("cover"));
+  document.getElementById("btnRevealCover")?.addEventListener("click", () => revealInFinder("cover"));
 
   const coverParagraphs = extractCoverParagraphs(texCode);
 
@@ -3213,12 +3248,23 @@ async function sendJobChatMessage(text) {
 
 function updateTailorBtnLabel() {
   const chk = document.getElementById("chkDeepTailor");
-  if (!btnTailor) return;
-  if (chk && chk.checked) {
-    btnTailor.innerHTML = "🎯 Deep Tailor CV & Cover Letter";
-  } else {
-    btnTailor.innerHTML = "⚡ Tailor CV & Cover Letter";
+  const txt = document.getElementById("btnTailorText");
+  if (txt) {
+    txt.textContent = (chk && chk.checked) ? "Deep Tailor Application" : "Tailor Application";
   }
+}
+
+function syncDeepTailorBtnState(isActive) {
+  const btn = document.getElementById("btnToggleDeepTailor");
+  const chk = document.getElementById("chkDeepTailor");
+  const check = document.getElementById("targetStackCheck");
+  const dot = document.getElementById("targetStackDot");
+  const label = document.getElementById("targetStackLabel");
+  if (chk) chk.checked = Boolean(isActive);
+  if (btn) btn.classList.toggle("active", Boolean(isActive));
+  if (check) check.style.display = isActive ? "inline" : "none";
+  if (dot) dot.style.display = isActive ? "none" : "inline";
+  if (label) label.textContent = isActive ? "Deep AI Active" : "Deep AI Match";
 }
 
 async function tailorCurrentJob() {
@@ -3227,8 +3273,11 @@ async function tailorCurrentJob() {
   const chkDeep = document.getElementById("chkDeepTailor");
   const isDeepTailor = chkDeep ? chkDeep.checked : Boolean(activeProfile?.enableDeepTailor);
 
+  const btnTailorText = document.getElementById("btnTailorText");
   btnTailor.disabled = true;
-  btnTailor.textContent = isDeepTailor ? "⏳ Deep Tailoring..." : "⏳ Tailoring...";
+  if (btnTailorText) {
+    btnTailorText.textContent = isDeepTailor ? "Deep Tailoring..." : "Tailoring...";
+  }
 
   try {
     const res = await fetch("/api/tailor", {
@@ -3268,7 +3317,7 @@ async function tailorCurrentJob() {
       const scoreNote = data.baseline_score && data.tailored_score
         ? ` (${data.baseline_score}% Baseline ➔ ${data.tailored_score}% Tailored ATS)`
         : ` (${selectedJob.fit_score}% Match)`;
-      const deepTag = selectedJob.is_deep_tailored ? "🎯 Deep AI Matched " : "";
+      const deepTag = selectedJob.is_deep_tailored ? "Deep AI Matched " : "";
       showToast(`✨ ${deepTag}ATS CV & Cover Letter generated for ${selectedJob.company}${scoreNote}!`);
     } else {
       showToast(data.error || "Failed to tailor application");
@@ -3478,7 +3527,11 @@ async function markCurrentJobApplied() {
           j.status = "applied";
         }
       });
-      btnMarkApplied.textContent = "✅ Applied";
+      const appliedSvgCheck = document.getElementById("appliedSvgCheck");
+      const markAppliedText = document.getElementById("markAppliedText");
+      if (appliedSvgCheck) appliedSvgCheck.style.display = "inline";
+      if (markAppliedText) markAppliedText.textContent = "Applied";
+      btnMarkApplied.classList.add("btn-applied-active");
       btnMarkApplied.disabled = true;
       renderJobs();
       updateBadgeCounts();
@@ -4041,9 +4094,9 @@ function updateFeedSyncStatus(syncData) {
       ? syncData.lastSearch.addedCount
       : (lastResult?.addedCount || 0);
     const addedPart = addedCount > 0 ? ` (${addedCount} new)` : "";
-    syncStatusEl.textContent = `Auto-sync active · Last scrape: ${formatted}${addedPart}`;
+    syncStatusEl.innerHTML = `<span class="sync-dot"></span><span class="sync-status-text">Auto-sync active · Last scrape: ${escapeHtml(formatted)}${escapeHtml(addedPart)}</span>`;
   } else {
-    syncStatusEl.textContent = "Auto-sync active · Checking every 30s";
+    syncStatusEl.innerHTML = `<span class="sync-dot"></span><span class="sync-status-text">Auto-sync active · Checking every 30s</span>`;
   }
 }
 

@@ -628,21 +628,22 @@ async function fetchJobDescription(job: { id?: string; url?: string; portal?: st
   }
 
   // 2. Freehire detail
-  if (portal === "freehire-ats" || url.includes("freehire.me")) {
+  if (portal === "freehire-ats" || url.includes("freehire.me") || job.id?.startsWith("fh_")) {
     const freehireCliPath = join(APP_ROOT, ".agents", "skills", "freehire-search", "cli", "src", "cli.ts");
     if (existsSync(freehireCliPath)) {
-      const slugOrUrl = url || job.id?.replace(/^fh_/, "") || "";
-      if (slugOrUrl) {
+      const slug = (url.includes("freehire.me/jobs/") ? url.split("/jobs/")[1]?.split("?")[0] : "") ||
+                   (job.id ? job.id.replace(/^fh_/, "") : "");
+      if (slug) {
         try {
-          const res = await runCliAsync([BUN_EXECUTABLE, "run", freehireCliPath, "detail", slugOrUrl, "--format", "json"], 10000);
+          const res = await runCliAsync([BUN_EXECUTABLE, "run", freehireCliPath, "detail", slug, "--format", "json"], 10000);
           if (res.status === 0 && res.stdout) {
             const parsed = JSON.parse(res.stdout);
-            if (parsed.description && parsed.description.length > 50) {
+            if (parsed.description && parsed.description.length > 500 && !parsed.description.endsWith("…") && !parsed.description.endsWith("...")) {
               return parsed.description;
             }
           }
         } catch (e) {
-          console.warn("Failed to fetch Freehire detail for:", slugOrUrl, e);
+          console.warn("Failed to fetch Freehire detail for:", slug, e);
         }
       }
     }
@@ -701,6 +702,45 @@ async function fetchJobDescription(job: { id?: string; url?: string; portal?: st
       } catch (e) {
         console.warn("Reed web detail fetch error:", e);
       }
+    }
+  }
+
+  // 4. Schema.org JobPosting JSON-LD & Direct Web Extraction (for any direct ATS or job URL)
+  if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
+    try {
+      const resp = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(10000)
+      });
+      if (resp.ok) {
+        const html = await resp.text();
+        const jsonLdRegex = /<script\s+[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+        let m: RegExpExecArray | null;
+        while ((m = jsonLdRegex.exec(html)) !== null) {
+          try {
+            const parsed = JSON.parse(m[1]);
+            const candidate = Array.isArray(parsed) ? parsed.find(x => x["@type"] === "JobPosting") :
+                             (parsed["@type"] === "JobPosting" ? parsed :
+                             (parsed["@graph"] ? parsed["@graph"].find((x: any) => x["@type"] === "JobPosting") : null));
+            if (candidate && candidate.description && candidate.description.length > 80) {
+              return cleanHtmlDescription(candidate.description);
+            }
+          } catch {
+            // Ignore parse errors from non-standard JSON-LD
+          }
+        }
+
+        const cleanText = cleanHtmlDescription(html);
+        if (cleanText && cleanText.length > 300) {
+          return cleanText;
+        }
+      }
+    } catch (e) {
+      console.warn("Direct web JD fetch error for:", url, e);
     }
   }
 

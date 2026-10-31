@@ -2,12 +2,29 @@ import Cocoa
 import WebKit
 import UniformTypeIdentifiers
 
+class WindowActionHandler: NSObject, WKScriptMessageHandler {
+    weak var appDelegate: AppDelegate?
+    init(appDelegate: AppDelegate) { self.appDelegate = appDelegate }
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let app = self.appDelegate, let win = app.window else { return }
+        if message.name == "dragWindow" {
+            let event = app.lastMouseDownEvent ?? NSApp.currentEvent
+            if let event = event {
+                win.performDrag(with: event)
+            }
+        } else if message.name == "doubleClickTitlebar" {
+            win.zoom(nil)
+        }
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var serverProcess: Process?
     var serverURL = URL(string: "http://127.0.0.1:3333")!
     var serverLogURL: URL?
+    var lastMouseDownEvent: NSEvent?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -231,6 +248,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         window.title = "AI Job Search Studio"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.center()
 
@@ -240,6 +258,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         let prefs = WKWebpagePreferences()
         prefs.allowsContentJavaScript = true
         config.defaultWebpagePreferences = prefs
+
+        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+            if event.type == .leftMouseDown {
+                self?.lastMouseDownEvent = event
+            } else if event.type == .leftMouseUp {
+                self?.lastMouseDownEvent = nil
+            }
+            return event
+        }
+
+        let actionHandler = WindowActionHandler(appDelegate: self)
+        config.userContentController.add(actionHandler, name: "dragWindow")
+        config.userContentController.add(actionHandler, name: "doubleClickTitlebar")
 
         webView = WKWebView(frame: window.contentView!.bounds, configuration: config)
         webView.autoresizingMask = [.width, .height]

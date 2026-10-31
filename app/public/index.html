@@ -183,25 +183,25 @@
       <!-- Pane 2: Job Feed -->
       <section class="job-feed">
         <div class="feed-header">
-          <div class="feed-header-left">
-            <div style="display: flex; align-items: baseline; gap: 8px;">
+          <div class="feed-header-top-row">
+            <div class="feed-title-group">
               <span class="feed-title" id="feedTitle">All Opportunities</span>
-              <span class="feed-count" id="feedCount">0 roles</span>
+              <span class="feed-count-pill" id="feedCount">0 roles</span>
             </div>
-            <div class="feed-sync-status" id="feedSyncStatus" style="font-size: 11px; color: var(--text-tertiary); margin-top: 2px;">
-              Auto-sync active · Checking for updates
+            <div class="feed-sort-wrapper">
+              <select id="feedSortSelect" class="feed-sort-select" title="Sort job listings">
+                <option value="days" selected>📅 Newest (Days Wise)</option>
+                <option value="sponsor_new_first">✨ Newly Licensed First (30d)</option>
+                <option value="sponsors_first">🛡️ Licensed Sponsors First</option>
+                <option value="sponsors_old_first">⏳ Established Sponsors First</option>
+                <option value="score">🎯 Match % (Score Wise)</option>
+                <option value="pipeline">📝 Application Pipeline</option>
+              </select>
             </div>
           </div>
-          <div class="feed-sort-wrapper">
-            <label for="feedSortSelect" class="feed-sort-label">Sort:</label>
-            <select id="feedSortSelect" class="feed-sort-select" title="Sort job listings">
-              <option value="days" selected>📅 Newest (Days Wise)</option>
-              <option value="sponsor_new_first">✨ Newly Licensed First (30d)</option>
-              <option value="sponsors_first">🛡️ Licensed Sponsors First</option>
-              <option value="sponsors_old_first">⏳ Established Sponsors First</option>
-              <option value="score">🎯 Match % (Score Wise)</option>
-              <option value="pipeline">📝 Application Pipeline</option>
-            </select>
+          <div class="feed-sync-status" id="feedSyncStatus">
+            <span class="sync-dot"></span>
+            <span class="sync-status-text">Auto-sync active · Checking for updates</span>
           </div>
         </div>
         <div class="job-list" id="jobList">
@@ -234,17 +234,47 @@
           </div>
 
           <div class="studio-actions-bar" id="studioActionsBar" style="display: none;">
-            <div class="tailor-btn-group">
-              <button class="btn-primary" id="btnTailor">⚡ Tailor CV & Cover Letter</button>
-              <label class="deep-tailor-toggle" title="Adapt work experience bullets & skills to highlight the employer's core technology stack (e.g. Azure/AKS/DevOps) using active-voice humanizer rules">
-                <input type="checkbox" id="chkDeepTailor">
-                <span class="toggle-slider"></span>
-                <span class="toggle-label">🎯 Deep AI Match</span>
-              </label>
-            </div>
-            <button class="btn-secondary" id="btnOpenJobChat">💬 Ask AI About Role</button>
-            <button class="btn-secondary" id="btnMarkApplied">✅ Mark as Applied</button>
-            <button class="btn-secondary" id="btnCopyRecruiterMsg">💬 Copy Outreach Note</button>
+            <button class="btn-primary btn-action" id="btnTailor" title="Generate tailored CV and cover letter matching this role">
+              <svg class="action-svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>
+              </svg>
+              <span id="btnTailorText">Tailor Application</span>
+            </button>
+
+            <button type="button" class="btn-secondary btn-action btn-toggle" id="btnToggleDeepTailor" title="Deep AI Match: Adapts experience bullets & skills to highlight the employer's core technology stack (e.g. Azure, DevOps, Kubernetes) using active-voice humanizer rules">
+              <svg class="action-svg" id="targetStackSvg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="m9 12 2 2 4-4" id="targetStackCheck" style="display: none;"/>
+                <circle cx="12" cy="12" r="3" id="targetStackDot"/>
+              </svg>
+              <span id="targetStackLabel">Deep AI Match</span>
+              <input type="checkbox" id="chkDeepTailor" style="display: none;">
+            </button>
+
+            <div class="actions-separator" aria-hidden="true"></div>
+
+            <button class="btn-secondary btn-action" id="btnOpenJobChat" title="Analyze job description, key requirements, and interview questions">
+              <svg class="action-svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span>Role Insights</span>
+            </button>
+
+            <button class="btn-secondary btn-action" id="btnMarkApplied" title="Record this role as applied in your tracker">
+              <svg class="action-svg" id="appliedSvgIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="m9 12 2 2 4-4" id="appliedSvgCheck" style="display: none;"/>
+              </svg>
+              <span id="markAppliedText">Mark Applied</span>
+            </button>
+
+            <button class="btn-secondary btn-action" id="btnCopyRecruiterMsg" title="Copy high-conversion outreach note for recruiters">
+              <svg class="action-svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>
+                <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+              </svg>
+              <span>Copy Outreach</span>
+            </button>
           </div>
         </div>
 
