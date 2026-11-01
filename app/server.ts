@@ -508,20 +508,22 @@ function readTracker(activeProfile?: CandidateProfile): Record<string, any> {
         const coverNorm = coverFile.toLowerCase().replace(/[^a-z0-9]/g, "");
         const candidateSlugNorm = candidateId.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-        const isSelf = (candidateSlugNorm && (cvNorm.includes(candidateSlugNorm) || coverNorm.includes(candidateSlugNorm))) ||
+        const isSelf = !cvFile || (candidateSlugNorm && (cvNorm.includes(candidateSlugNorm) || coverNorm.includes(candidateSlugNorm))) ||
                        (candidateNameNorm && (cvNorm.includes(candidateNameNorm) || coverNorm.includes(candidateNameNorm)));
 
-        const isAlex = cvNorm.includes("alex") || coverNorm.includes("alex");
-        const isCandidateB = cvNorm.includes("jordan") || coverNorm.includes("jordan");
-
-        if (candidateId === "jordan-patel" && isAlex && !isCandidateB) {
-          continue;
-        }
-        if (candidateId === "alex-taylor" && isCandidateB && !isAlex) {
-          continue;
-        }
-        if (cvFile && !isSelf && (isAlex || isCandidateB)) {
-          continue;
+        if (cvFile && !isSelf) {
+          const otherProfiles = profilesManager.getAll().profiles.filter(p => p.id !== candidateId);
+          const isOther = otherProfiles.some(p => {
+            const otherSlug = p.id.toLowerCase().replace(/[^a-z0-9]/g, "");
+            const otherName = (p.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            const otherFirst = (p.name || "").split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "");
+            return (otherSlug && (cvNorm.includes(otherSlug) || coverNorm.includes(otherSlug))) ||
+                   (otherName && (cvNorm.includes(otherName) || coverNorm.includes(otherName))) ||
+                   (otherFirst && otherFirst.length >= 3 && (cvNorm.includes(otherFirst) || coverNorm.includes(otherFirst)));
+          });
+          if (isOther) {
+            continue;
+          }
         }
       }
 
@@ -2719,8 +2721,8 @@ function updateTracker(
   let found = false;
 
   const candidateSlug = activeProfile.id.replace(/[^a-z0-9]/gi, "_").toLowerCase();
-  const isAlexProfile = activeProfile.id === "alex-taylor";
-  const isCandidateBProfile = activeProfile.id === "jordan-patel";
+  const candidateNamePart = (activeProfile.name || "").split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "") || "";
+  const otherProfiles = profilesManager.getAll().profiles.filter(p => p.id !== activeProfile.id);
 
   const newLines = lines.map(line => {
     if (!line.trim()) return line;
@@ -2731,11 +2733,13 @@ function updateTracker(
     const targetRole = (role || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
     const lineCv = (cols[10] || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-    const isAlexRow = lineCv.includes("alex");
-    const isCandidateBRow = lineCv.includes("jordan");
-    const matchesCandidate = (isCandidateBProfile && !isAlexRow) ||
-                             (isAlexProfile && !isCandidateBRow) ||
-                             lineCv.includes(candidateSlug);
+    const belongsToOther = otherProfiles.some(p => {
+      const otherSlug = p.id.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+      const otherName = (p.name || "").split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "");
+      return (otherSlug && lineCv.includes(otherSlug)) || (otherName && otherName.length >= 3 && lineCv.includes(otherName));
+    });
+
+    const matchesCandidate = !belongsToOther || lineCv.includes(candidateSlug) || (candidateNamePart && lineCv.includes(candidateNamePart));
 
     if (cols.length >= 4 && normTrackComp === targetComp && normTrackRole === targetRole && matchesCandidate) {
       found = true;

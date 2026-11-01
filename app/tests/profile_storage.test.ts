@@ -55,14 +55,14 @@ describe("uploaded resume persistence", () => {
     const manager = new ProfilesManager(root);
 
     const devopsProfile: CandidateProfile = {
-      id: "alex", name: "Alex Taylor", headline: "DevOps Engineer", email: "alex.taylor@example.com", phone: "", location: "Hartlepool", postcode: "TS25", linkedin: "", github: "", visaSponsorshipRequired: true,
-      targetRoles: ["Lead DevOps Engineer", "Platform Engineer"], targetLocations: ["Remote", "Hartlepool"], preferredRadiusMiles: 50, minSalary: 60000,
+      id: "devops-candidate", name: "Alex Taylor", headline: "DevOps Engineer", email: "alex@example.com", phone: "", location: "Leeds", postcode: "LS1", linkedin: "", github: "", visaSponsorshipRequired: true,
+      targetRoles: ["Lead DevOps Engineer", "Platform Engineer"], targetLocations: ["Remote", "Leeds"], preferredRadiusMiles: 50, minSalary: 60000,
       skills: { cloud: ["AWS"], devops: ["Kubernetes", "Terraform"], languages: ["Python"], tools: [] }, experience: [], education: [], certifications: [], profileVersion: 1
     };
 
     const dynamicsProfile: CandidateProfile = {
-      id: "jordan", name: "Jordan Patel", headline: "Senior Dynamics Developer", email: "jordan.patel@example.com", phone: "", location: "Middlesbrough", postcode: "TS1", linkedin: "", github: "", visaSponsorshipRequired: false,
-      targetRoles: ["Senior Dynamics Developer", "Power Platform Developer"], targetLocations: ["Remote", "Middlesbrough"], preferredRadiusMiles: 50, minSalary: 65000,
+      id: "dynamics-candidate", name: "Jordan Patel", headline: "Senior Dynamics Developer", email: "jordan@example.com", phone: "", location: "Manchester", postcode: "M1", linkedin: "", github: "", visaSponsorshipRequired: false,
+      targetRoles: ["Senior Dynamics Developer", "Power Platform Developer"], targetLocations: ["Remote", "Manchester"], preferredRadiusMiles: 50, minSalary: 65000,
       skills: { cloud: ["Azure"], devops: [], languages: ["C#", ".NET"], tools: ["Dynamics 365", "Power Apps"] }, experience: [], education: [], certifications: [], profileVersion: 1
     };
 
@@ -72,15 +72,15 @@ describe("uploaded resume persistence", () => {
     const stored = manager.getAll().profiles;
     expect(stored.length).toBeGreaterThanOrEqual(2);
 
-    const p1 = stored.find(p => p.id === "alex");
-    const p2 = stored.find(p => p.id === "jordan");
+    const p1 = stored.find(p => p.id === "devops-candidate");
+    const p2 = stored.find(p => p.id === "dynamics-candidate");
 
     expect(p1?.name).toBe("Alex Taylor");
-    expect(p1?.location).toBe("Hartlepool");
+    expect(p1?.location).toBe("Leeds");
     expect(p1?.headline).toBe("DevOps Engineer");
 
     expect(p2?.name).toBe("Jordan Patel");
-    expect(p2?.location).toBe("Middlesbrough");
+    expect(p2?.location).toBe("Manchester");
     expect(p2?.headline).toBe("Senior Dynamics Developer");
   });
 
@@ -148,20 +148,20 @@ describe("uploaded resume persistence", () => {
     const dir = mkdtempSync(join(tmpdir(), "same-person-multi-profile-"));
     const manager = new ProfilesManager(dir);
 
-    // Profile 1: Jordan Patel - Dynamics Track
+    // Profile 1: Jordan - Dynamics Track
     const profileDynamics = {
       id: "jordan-patel-dynamics",
       name: "Jordan Patel",
       headline: "Senior Dynamics 365 Developer",
       email: "jordan.patel@example.com",
       phone: "+44 7700 900456",
-      location: "Middlesbrough, UK",
-      postcode: "TS1",
+      location: "Manchester, UK",
+      postcode: "M1",
       linkedin: "",
       github: "",
       visaSponsorshipRequired: false,
       targetRoles: ["Senior Dynamics Developer", "Power Platform Developer"],
-      targetLocations: ["Remote", "Middlesbrough, UK"],
+      targetLocations: ["Remote", "Manchester, UK"],
       preferredRadiusMiles: 40,
       minSalary: 75000,
       skills: { "Dynamics": ["Dynamics 365", "Power Apps", "Dataverse"] },
@@ -169,20 +169,20 @@ describe("uploaded resume persistence", () => {
       tracker: { "job_dyn_1": { status: "drafted" } }
     };
 
-    // Profile 2: Jordan Patel - DevOps Track (same person, different track)
+    // Profile 2: Jordan - DevOps Track (same person, different track)
     const profileDevops = {
       id: "jordan-patel-devops",
       name: "Jordan Patel",
       headline: "DevOps Engineer / Cloud Engineer",
       email: "jordan.patel@example.com",
       phone: "+44 7700 900456",
-      location: "Middlesbrough, UK",
-      postcode: "TS1",
+      location: "Manchester, UK",
+      postcode: "M1",
       linkedin: "",
       github: "",
       visaSponsorshipRequired: false,
       targetRoles: ["DevOps Engineer", "Platform Engineer", "Cloud Engineer"],
-      targetLocations: ["Remote", "Middlesbrough, UK", "Manchester, UK"],
+      targetLocations: ["Remote", "Manchester, UK", "Leeds, UK"],
       preferredRadiusMiles: 50,
       minSalary: 80000,
       skills: { "DevOps": ["Azure DevOps", "Kubernetes", "Terraform", "CI/CD"] },

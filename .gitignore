@@ -71,6 +71,7 @@ cv/main_*.*
 cv/*.txt
 cv/*_master.tex
 !cv/jake_master.tex
+cv/cv_*.*
 cv/*_cv.*
 cover_letters/cover_*.*
 cover_letters/Cover_*.*

@@ -342,8 +342,8 @@ function header(profile: CandidateProfile, role: string): string {
   return `\\begin{center}\n\\textbf{\\Huge \\scshape ${escapeLatex(profile.name)}} \\\\ \\vspace{3pt}\n\\textbf{\\large ${escapeLatex(role)}} \\\\ \\vspace{3pt}\n\\small ${links}\n\\end{center}`;
 }
 
-function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis, lang: SupportedLanguage = "en"): string {
-  const roleTitle = getDisplayRole(profile, job, analysis);
+function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis, lang: SupportedLanguage = "en", customRole?: string): string {
+  const roleTitle = customRole || getDisplayRole(profile, job, analysis);
   const locParts = (profile.location || "").split(",").map(p => p.trim()).filter(Boolean);
   const city = locParts[0] || (profile.location ? profile.location.trim() : "Metropolitan Area");
   const country = locParts.length > 1 ? locParts[locParts.length - 1] : "";
@@ -424,7 +424,7 @@ function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobI
   ].join("\n\n");
 }
 
-function experience(profile: CandidateProfile, analysis: ApplicationAnalysis, job?: JobInput, lang: SupportedLanguage = "en"): string {
+function experience(profile: CandidateProfile, analysis: ApplicationAnalysis, job?: JobInput, lang: SupportedLanguage = "en", customRole?: string): string {
   const pack = LANGUAGE_PACKS[lang] || LANGUAGE_PACKS.en;
   const validExp = (profile.experience || []).filter(item => (item.bullets || []).some(b => b && b.trim().length > 0));
   if (validExp.length > 0) {
@@ -440,7 +440,7 @@ function experience(profile: CandidateProfile, analysis: ApplicationAnalysis, jo
     }).join("\n");
   }
 
-  return synthesizeTailoredExperienceLatex(profile, job, analysis, lang);
+  return synthesizeTailoredExperienceLatex(profile, job, analysis, lang, customRole);
 }
 
 function projects(profile: CandidateProfile): string {
@@ -732,7 +732,8 @@ export function renderTailoredResume(
   job: JobInput,
   analysis: ApplicationAnalysis,
   summary?: string,
-  lang?: SupportedLanguage
+  lang?: SupportedLanguage,
+  customDisplayRole?: string
 ): string {
   const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text, profile.country) || "en";
   const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
@@ -757,13 +758,18 @@ export function renderTailoredResume(
   }
 
   const summaryContent = formatSummary(summary || buildGroundedSummary(profile, job, analysis, resolvedLang));
-  const displayRole = getDisplayRole(profile, job, analysis);
+  const displayRole = customDisplayRole || getDisplayRole(profile, job, analysis);
+
+  // If backbone already has a hardcoded role in \textbf{\large ...}, update it
+  if (customDisplayRole && backbone.includes("\\textbf{\\large")) {
+    backbone = backbone.replace(/\\textbf\{\\large\s+[^}]+\}/, `\\textbf{\\large ${escapeLatex(displayRole)}}`);
+  }
 
   const replacements: Record<string, string> = {
     [TOKENS.header]: header(profile, displayRole),
     [TOKENS.headline]: escapeLatex(displayRole),
     [TOKENS.summary]: summaryContent,
-    [TOKENS.experience]: experience(profile, analysis, job, resolvedLang),
+    [TOKENS.experience]: experience(profile, analysis, job, resolvedLang, displayRole),
     [TOKENS.projects]: projects(profile),
     [TOKENS.skills]: skills(profile, analysis, resolvedLang),
     [TOKENS.education]: education(profile),

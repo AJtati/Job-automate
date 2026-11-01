@@ -4,7 +4,7 @@ import { CandidateProfile } from "./profiles_manager";
 import { analyzeApplication, buildGroundedSummary, type JobInput } from "./application_engine";
 import { parseResumeDeterministically } from "./resume_parser";
 import {
-  renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle,
+  renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole,
   detectLanguageDeterministically, type SupportedLanguage, LANGUAGE_PACKS,
 } from "./resume_engine";
 import { detectCandidateCountry, type CandidateCountryInfo } from "./job_sources";
@@ -61,6 +61,7 @@ export interface TailorReport {
   skillsAdded: string[];
   bulletsUpdatedCount: number;
   gapKeywordsBridged: string[];
+  designation?: string;
 }
 
 export interface ModelOption {
@@ -2418,6 +2419,108 @@ Return a valid JSON object ONLY with the following schema:
     return aligned;
   }
 
+  /**
+   * Synthesize an apt, near, and humanly believable professional job designation
+   * for the top of the candidate's CV using AI, bridging the candidate's actual
+   * career history with the employer's role requirements.
+   *
+   * Crucial rule: Never copy-paste the verbatim job posting title, which looks
+   * template-generated and artificial to recruiters.
+   * Fallback: If AI is unavailable or fails, returns local getDisplayRole().
+   */
+  public async generateAptJobDesignation(
+    profile: CandidateProfile,
+    job: JobInput,
+    analysis?: ApplicationAnalysis,
+    targetLanguage?: SupportedLanguage
+  ): Promise<string> {
+    const fallback = getDisplayRole(profile, job, analysis);
+    if (this.config.provider === "builtin") {
+      return fallback;
+    }
+
+    try {
+      const rawRole = job.role || "";
+      const cleanPostingTitle = cleanJobTitle(rawRole);
+      const candidateHeadline = profile.headline || "";
+      const targetRoles = (profile.targetRoles || []).join(", ");
+      const pastTitles = (profile.experience || [])
+        .map(e => e.role)
+        .filter(Boolean)
+        .slice(0, 3)
+        .join(", ");
+      const keySkills = (analysis?.matchedKeywords || []).slice(0, 6).join(", ") ||
+        Object.values(profile.skills || {}).flatMap(v => Array.isArray(v) ? v : []).slice(0, 6).join(", ");
+      const resolvedLang: SupportedLanguage = targetLanguage || (profile.preferredLanguage as SupportedLanguage) || "en";
+      const langNotice = resolvedLang === "de"
+        ? "in German (Deutsch) or standard DACH technical designation"
+        : (resolvedLang === "es"
+          ? "in Spanish (Español)"
+          : (resolvedLang === "fr"
+            ? "in French (Français)"
+            : "in English"));
+
+      const prompt = `You are an expert technical recruiter and CV architect.
+Candidate Background:
+- Current Headline: ${candidateHeadline || "Senior Technology Professional"}
+- Target Roles: ${targetRoles || candidateHeadline}
+- Recent Positions Held: ${pastTitles || candidateHeadline}
+- Core Skills: ${keySkills || "Cloud, Infrastructure, Automation"}
+
+Target Opportunity:
+- Employer Job Posting Title: ${cleanPostingTitle}
+- Hiring Company: ${job.company || "Employer"}
+- JD Context: ${(job.fullJd || "").slice(0, 600)}
+
+Task:
+Determine an APT, NEAR, and HUMANLY BELIEVABLE professional job title (designation) ${langNotice} to place directly beneath the candidate's name on their tailored CV.
+
+CRITICAL RULES:
+1. NEVER COPY-PASTE THE EXACT VERBATIM JOB POSTING TITLE.
+   Verbatim copying of the employer's posting title (e.g. "${cleanPostingTitle}") looks fake, suspicious, and auto-generated to human hiring managers.
+2. Formulate an authentic, natural professional title (2 to 5 words) that bridges the candidate's genuine background with the role being applied for.
+   - Example 1: Candidate is "DevOps Engineer / Platform Engineer", applying for "Cloud & Infrastructure Solutions Engineer".
+     -> Apt title: "Cloud Infrastructure Engineer" or "Senior Cloud & DevOps Engineer" (NOT verbatim "Cloud & Infrastructure Solutions Engineer").
+   - Example 2: Candidate is "Senior DevOps / Platform Engineer", applying for "Director of Engineering, Dedicated Infrastructure & Platforms".
+     -> Apt title: "Lead Infrastructure & Platform Engineer" or "Principal Platform Engineer" (believable senior/lead title, not falsely claiming Director).
+   - Example 3: Candidate is "QA Automation Engineer", applying for "Senior Test Automation Specialist - Python".
+     -> Apt title: "Senior QA Automation Engineer".
+   - Example 4: Candidate is "Senior Dynamics 365 Developer", applying for "Power Platform & CRM Solutions Consultant".
+     -> Apt title: "Senior Dynamics 365 & Power Platform Developer".
+3. Ground the seniority level in candidate's experience: do not demote an experienced candidate to junior/trainee, and do not invent an unrealistic promotion (e.g., VP/Executive).
+4. Strictly ban buzzwords: NO "Results-Driven", NO "Visionary", NO "Ninja", NO "Rockstar", NO "Mission-Critical".
+5. Output ONLY the plain-text job title. No quotation marks, no markdown, no explanations, no trailing punctuation.`;
+
+      const systemPrompt = "You are an expert technical recruiter and resume architect. Output only a 2 to 5 word professional title. Strictly obey the rules.";
+      const response = (await this.generateText(prompt, systemPrompt)).trim();
+
+      // Clean up response
+      let cleaned = response
+        .replace(/^["'`]|["'`]$/g, "")
+        .replace(/^(?:Job\s*Title|Title|Designation|Professional\s*Title):\s*/i, "")
+        .replace(/[*_#]/g, "")
+        .replace(/\.$/, "")
+        .trim();
+
+      const isExactVerbatim = cleaned.toLowerCase() === cleanPostingTitle.toLowerCase();
+      const words = cleaned.split(/\s+/).filter(Boolean);
+      const hasBanned = /proven|mission-critical|results-driven|rockstar|ninja|expert\b/i.test(cleaned);
+
+      if (cleaned.length >= 4 && cleaned.length <= 60 && words.length >= 2 && words.length <= 6 && !hasBanned) {
+        if (isExactVerbatim) {
+          if (candidateHeadline && candidateHeadline.toLowerCase() !== cleanPostingTitle.toLowerCase()) {
+            return candidateHeadline;
+          }
+        }
+        return cleaned;
+      }
+    } catch (err) {
+      console.warn("AI job designation generation error, falling back to deterministic:", err);
+    }
+
+    return fallback;
+  }
+
   public async generateTailoredCV(
     profile: CandidateProfile,
     job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string },
@@ -2551,6 +2654,20 @@ ${JSON.stringify(expPayload, null, 2)}`;
       : (this.config.provider === "nvidia" ? (this.config.nvidiaModel || "nvidia")
       : "Built-in Engine")))));
 
+    // Determine the apt, natural, humanly believable designation / display role
+    let aptDesignation = getDisplayRole(tailoredProfile, jobInput, analysis);
+    if (this.config.provider !== "builtin") {
+      try {
+        const aiDesignation = await this.generateAptJobDesignation(tailoredProfile, jobInput, analysis, resolvedLang);
+        if (aiDesignation) {
+          aptDesignation = aiDesignation;
+          this.lastLlmSuccess = true;
+        }
+      } catch (err) {
+        console.warn("AI job designation generation error, falling back to deterministic:", err);
+      }
+    }
+
     const isAiProvider = this.config.provider !== "builtin";
     this.lastTailorReport = {
       engine: this.config.provider,
@@ -2562,10 +2679,11 @@ ${JSON.stringify(expPayload, null, 2)}`;
       deepTailored: Boolean(deepTailor || tailoredProfile.enableDeepTailor),
       skillsAdded: this.lastAddedSkills || [],
       bulletsUpdatedCount: (tailoredProfile.experience || []).reduce((acc, e) => acc + (e.bullets?.length || 0), 0),
-      gapKeywordsBridged: this.lastBridgedGaps || []
+      gapKeywordsBridged: this.lastBridgedGaps || [],
+      designation: aptDesignation
     };
 
-    return renderTailoredResume(tailoredProfile, jobInput, analysis, summary, resolvedLang);
+    return renderTailoredResume(tailoredProfile, jobInput, analysis, summary, resolvedLang, aptDesignation);
 
     /* Legacy generator retained below for migration reference; the canonical
        renderer above now owns all generated resumes. */

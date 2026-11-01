@@ -193,8 +193,8 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
       headline: "DevOps Engineer / Platform Engineer",
       email: "alex.taylor@example.com",
       phone: "+44 7700 900123",
-      location: "Hartlepool, UK",
-      postcode: "TS24",
+      location: "Leeds, UK",
+      postcode: "LS1",
       linkedin: "",
       github: "",
       visaSponsorshipRequired: true,
@@ -343,8 +343,8 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
       headline: "DevOps Engineer / Platform Engineer",
       email: "alex.taylor@example.com",
       phone: "+44 7700 900123",
-      location: "Hartlepool",
-      postcode: "TS25",
+      location: "Leeds",
+      postcode: "LS1",
       linkedin: "",
       github: "",
       visaSponsorshipRequired: true,
@@ -426,6 +426,64 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
 
     // Standard CV should not force AKS into bullets
     expect(standardCV).not.toContain("Kubernetes manifests for Azure Kubernetes Service (AKS)");
+  });
+
+  test("generateAptJobDesignation synthesizes believable natural title and falls back gracefully", async () => {
+    const aiService = new AIService({ provider: "builtin" });
+    const candidate: CandidateProfile = {
+      id: "alex-climb",
+      name: "Alex Taylor",
+      headline: "DevOps Engineer / Platform Engineer",
+      location: "Leeds, UK",
+      targetRoles: ["DevOps Engineer", "Platform Engineer", "Cloud Engineer"],
+      skills: { cloud: ["AWS", "Azure"], devops: ["Kubernetes", "Terraform", "CI/CD"] },
+      experience: [
+        { company: "Flutter UK", role: "Platform / DevOps Engineer", location: "Leeds", startDate: "2023", endDate: "Present", bullets: ["Built Kubernetes clusters."] }
+      ],
+      education: [],
+      certifications: []
+    };
+
+    const climbJob = {
+      company: "Climb Global Solutions",
+      role: "Cloud & Infrastructure Solutions Engineer",
+      location: "Remote (UK)",
+      fullJd: "Seeking a Cloud & Infrastructure Solutions Engineer to lead cloud architecture and infrastructure automation across AWS and Kubernetes."
+    };
+
+    // 1. When provider is builtin (AI offline), falls back to local deterministic display role
+    const fallbackTitle = await aiService.generateAptJobDesignation(candidate, climbJob);
+    expect(fallbackTitle).toBeTruthy();
+
+    // 2. Mock AI generation returning an apt, humanly believable title
+    const mockAiService = new AIService({ provider: "openai", openaiApiKey: "mock-key" });
+    (mockAiService as any).generateText = async () => "Senior Cloud & Infrastructure Engineer";
+
+    const aiTitle = await mockAiService.generateAptJobDesignation(candidate, climbJob);
+    expect(aiTitle).toBe("Senior Cloud & Infrastructure Engineer");
+    // Ensure it is a natural title that bridges candidate background
+    expect(aiTitle).not.toBe(climbJob.role);
+
+    // 3. Verify renderTailoredResume uses the custom apt designation directly beneath the name in LaTeX
+    const latex = renderTailoredResume(candidate, climbJob, { overallScore: 88, verdict: "Strong Match", matchedKeywords: ["AWS"], gapKeywords: [] } as any, undefined, "en", aiTitle);
+    expect(latex).toContain("\\textbf{\\large Senior Cloud \\& Infrastructure Engineer}");
+
+    // 4. Verify that if AI fails (throws error), it falls back to local getDisplayRole
+    (mockAiService as any).generateText = async () => { throw new Error("API rate limited"); };
+    const recoveredTitle = await mockAiService.generateAptJobDesignation(candidate, climbJob);
+    expect(recoveredTitle).toBe(fallbackTitle);
+
+    // 5. Verify generateTailoredCV integrates apt designation into tailor report and final LaTeX
+    (mockAiService as any).generateText = async (prompt: string) => {
+      if (prompt.includes("professional job title (designation)")) {
+        return "Senior Cloud & Infrastructure Engineer";
+      }
+      return "Experienced platform engineer with strong AWS and Kubernetes expertise.";
+    };
+    const tailoredLatex = await mockAiService.generateTailoredCV(candidate, climbJob, "en", false);
+    expect(tailoredLatex).toContain("\\textbf{\\large Senior Cloud \\& Infrastructure Engineer}");
+    const report = mockAiService.getLastTailorReport();
+    expect(report?.designation).toBe("Senior Cloud & Infrastructure Engineer");
   });
 });
 

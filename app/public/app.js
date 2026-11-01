@@ -2905,6 +2905,11 @@ function renderDetailsTab() {
                   <span class="meta-pill" style="font-size: 11px; padding: 3px 8px; ${r.isAiSuccess ? 'background: rgba(52,211,153,0.15); border-color: rgba(52,211,153,0.35); color: #34d399;' : 'background: rgba(251,191,36,0.15); border-color: rgba(251,191,36,0.35); color: #fbbf24;'}">
                     ${r.isAiSuccess ? (r.engine === 'builtin' ? '⚡ Built-in Engine' : `✨ ${escapeHtml(r.engineModel)}`) : '⚠️ AI Offline · Local Fallback'}
                   </span>
+                  ${r.designation ? `
+                    <span class="meta-pill" style="font-size: 11px; padding: 3px 8px; background: rgba(59, 130, 246, 0.15); border-color: rgba(59, 130, 246, 0.35); color: #60a5fa;" title="AI-synthesized humanly believable title for CV">
+                      🎯 Title: ${escapeHtml(r.designation)}
+                    </span>
+                  ` : ''}
                   ${r.deepTailored ? `
                     <span class="meta-pill" style="font-size: 11px; padding: 3px 8px; background: rgba(10, 132, 255, 0.15); border-color: rgba(10, 132, 255, 0.35); color: #93c5fd;">
                       Deep Tech Aligned
@@ -3566,7 +3571,8 @@ async function tailorCurrentJob() {
         toastMsg = `⚠️ AI Offline · Generated using Local Fallback for ${selectedJob.company}${scoreNote}`;
       } else if (r?.engineNotice) {
         const addedMsg = r.skillsAdded && r.skillsAdded.length ? ` · Aligned ${r.skillsAdded.length} skills` : "";
-        toastMsg = `${r.engineNotice}: ${selectedJob.company}${scoreNote}${addedMsg}!`;
+        const desigMsg = r.designation ? ` (${r.designation})` : "";
+        toastMsg = `${r.engineNotice}: ${selectedJob.company}${desigMsg}${scoreNote}${addedMsg}!`;
       } else {
         const deepTag = selectedJob.is_deep_tailored ? "Deep AI Matched " : "";
         toastMsg = `✨ ${deepTag}ATS CV & Cover Letter generated for ${selectedJob.company}${scoreNote}!`;

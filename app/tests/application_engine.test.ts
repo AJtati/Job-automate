@@ -45,8 +45,8 @@ describe("application evidence scoring", () => {
 
   test("strictly penalizes cross-domain role mismatches between Dynamics and DevOps", () => {
     const dynamicsProfile: CandidateProfile = {
-      id: "jordan", name: "Jordan Patel", headline: "Senior Dynamics 365 CRM & Power Platform Developer",
-      email: "jordan.patel@example.com", phone: "", location: "Middlesbrough, UK", postcode: "", linkedin: "", github: "",
+      id: "dynamics-dev", name: "Jordan Patel", headline: "Senior Dynamics 365 CRM & Power Platform Developer",
+      email: "jordan@example.com", phone: "", location: "Manchester, UK", postcode: "", linkedin: "", github: "",
       visaSponsorshipRequired: false, targetRoles: ["Senior Dynamics Developer", "Power Platform Developer"],
       targetLocations: ["Remote", "Middlesbrough, UK"], preferredRadiusMiles: 40, minSalary: 0,
       skills: {
