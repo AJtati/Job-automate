@@ -632,6 +632,15 @@ async function fetchProfiles() {
   }
 }
 
+function getProfileCurrencySymbol(profile = activeProfile) {
+  if (!profile) return "£";
+  const loc = ((profile.location || "") + " " + (profile.country || "")).toLowerCase();
+  const isDe = /germany|deutschland|berlin|munich|chemnitz|leipzig|dresden|frankfurt|hamburg|sachsen|\bde\b/i.test(loc);
+  const isUs = /united states|\busa\b|\bus\b|america|new york|california|austin|texas|san francisco|seattle/i.test(loc);
+  const isIndia = /india|\bin\b|bangalore|hyderabad|mumbai|delhi|pune|chennai|noida/i.test(loc);
+  return isDe ? "€" : (isIndia ? "₹" : (isUs ? "$" : "£"));
+}
+
 function updateProfileUI() {
   if (!activeProfile) return;
 
@@ -668,7 +677,7 @@ function updateProfileUI() {
     sidebarResumeSource.title = source?.importedAt ? `Imported ${new Date(source.importedAt).toLocaleString()}` : "";
   }
 
-  const currencySymbol = isDe ? "€" : (isIndia ? "₹" : (isUs ? "$" : "£"));
+  const currencySymbol = getProfileCurrencySymbol(activeProfile);
   sidebarStatBase.textContent = `${activeProfile.location.split(",")[0]}${activeProfile.postcode ? ` (${activeProfile.postcode})` : ''}`;
   sidebarStatRadius.textContent = `${activeProfile.preferredRadiusMiles || 50} miles`;
   const minSal = (typeof activeProfile.minSalary === "number") ? activeProfile.minSalary : 0;
@@ -2821,8 +2830,11 @@ async function renderCoverTab() {
 }
 
 function renderDetailsTab() {
-  const jdText = selectedJob.full_jd || selectedJob.summary || "Full Job Description not available.";
-  const analysis = selectedJob.analysis || {};
+  if (!selectedJob) return;
+  try {
+    const currencySymbol = getProfileCurrencySymbol(activeProfile);
+    const jdText = selectedJob.full_jd || selectedJob.summary || "Full Job Description not available.";
+    const analysis = selectedJob.analysis || {};
   const fitScore = Number(analysis.overallScore ?? selectedJob.fit_score ?? 0);
   const verdict = analysis.verdict || "Not scored";
 
@@ -3140,9 +3152,19 @@ function renderDetailsTab() {
       showToast("Error updating job description.");
     }
   });
+  } catch (err) {
+    console.error("Error rendering details tab:", err);
+    studioContent.innerHTML = `
+      <div style="padding: 30px; text-align: center; color: var(--text-secondary);">
+        <p>⚠️ Unable to display ATS details for this role.</p>
+        <p style="font-size: 12px; color: var(--text-tertiary);">${escapeHtml(err?.message || String(err))}</p>
+      </div>
+    `;
+  }
 }
 
 function renderAnswersTab() {
+  if (!selectedJob) return;
   const visaText = activeProfile?.visaSponsorshipRequired ?
     `Yes. My candidate profile records that I require Skilled Worker sponsorship. I would confirm the exact arrangement with ${selectedJob.company}.` :
     "No, I have unrestricted right to work in the UK and do not require sponsorship.";
