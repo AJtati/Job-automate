@@ -37,6 +37,8 @@ Both subcommands print JSON on stdout. Exit 0 on success, 1 on a usage or
 state error, or on `apply` when any result could not be written.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os

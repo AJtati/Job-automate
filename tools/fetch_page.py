@@ -38,6 +38,8 @@ Exit codes: 0 fetched; 1 refused by robots policy (go to escalation step 4);
 2 usage or transport error.
 """
 
+from __future__ import annotations
+
 import argparse
 import gzip
 import hashlib

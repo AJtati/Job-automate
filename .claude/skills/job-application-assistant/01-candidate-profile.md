@@ -38,6 +38,10 @@ Location / Hybrid
 - Automated testing and deployment workflows across distributed microservices.
 - Implemented centralized monitoring and observability dashboards.
 
+## Independent Projects
+
+Add only projects supported by the source resume or confirmed by the candidate.
+
 ## Technical Skills
 
 ### Cloud & Platforms
@@ -57,10 +61,6 @@ Location / Hybrid
 
 ### Languages & Frameworks
 - TypeScript, Python, Go, Bash, SQL
-
-## Independent Projects
-
-Add only projects supported by the source resume or confirmed by the candidate.
 
 ## Publications
 

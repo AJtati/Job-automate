@@ -191,19 +191,68 @@ fi
 cp "$TECTONIC_BIN" "$APP_BUNDLE/Contents/Resources/bin/tectonic"
 chmod +x "$APP_BUNDLE/Contents/Resources/bin/tectonic"
 
-# 4. Prepare Staging Directory for DMG
-echo "Preparing DMG staging folder..."
-cp -R "$APP_BUNDLE" "$STAGING_DIR/"
-ln -s /Applications "$STAGING_DIR/Applications"
+# 4. Generate Apple-designed retina DMG background (Multi-Resolution HiDPI TIFF)
+echo "Generating Apple-designed retina DMG background..."
+swiftc -target "$SWIFT_TARGET" -framework Cocoa "$REPO_DIR/tools/generate_dmg_background.swift" -o "$DIST_DIR/generate_dmg_background"
+"$DIST_DIR/generate_dmg_background" "$DIST_DIR/dmg_background.tiff"
+rm -f "$DIST_DIR/generate_dmg_background"
 
-# 5. Build DMG using native macOS hdiutil
-echo "Creating DMG package..."
+# 5. Build Styled macOS DMG Package using Python dmgbuild (.DS_Store native generator)
+echo "Creating styled macOS DMG installer..."
 rm -f "$DMG_PATH"
-hdiutil create -volname "AI Job Search Studio" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
 
+python3 - <<PYEOF
+import os, sys
+
+try:
+    import dmgbuild
+except ImportError:
+    print("Installing dmgbuild helper...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "dmgbuild"])
+    import dmgbuild
+
+dmg_path = "$DMG_PATH"
+app_name = "$APP_NAME"
+app_bundle = "$APP_BUNDLE"
+bg_path = "$DIST_DIR/dmg_background.tiff"
+icon_path = "$APP_BUNDLE/Contents/Resources/app.icns"
+
+if os.path.exists(dmg_path):
+    os.remove(dmg_path)
+
+settings = {
+    'files': [app_bundle],
+    'symlinks': {'Applications': '/Applications'},
+    'icon': icon_path if os.path.exists(icon_path) else None,
+    'badge_icon': icon_path if os.path.exists(icon_path) else None,
+    'background': bg_path if os.path.exists(bg_path) else None,
+    'show_status_bar': False,
+    'show_tab_view': False,
+    'show_toolbar': False,
+    'show_pathbar': False,
+    'show_sidebar': False,
+    'arrange_by': None,
+    'icon_size': 128.0,
+    'text_size': 13.0,
+    'window_rect': ((200, 120), (660, 440)),
+    'default_view': 'icon-view',
+    'icon_locations': {
+        f'{app_name}.app': (170, 200),
+        'Applications': (490, 200)
+    },
+    'hide_extensions': [f'{app_name}.app'],
+    'format': 'UDZO'
+}
+
+dmgbuild.build_dmg(dmg_path, app_name, settings=settings)
+print("Styled DMG successfully created!")
+PYEOF
+
+rm -f "$DIST_DIR"/dmg_background*
 rm -rf "$STAGING_DIR"
 
 echo "=========================================================="
-echo "🎉 SUCCESS: Native Cocoa DMG created with Dock presence!"
+echo "🎉 SUCCESS: Styled Native macOS DMG created!"
 echo "📍 Location: $DMG_PATH"
 echo "=========================================================="

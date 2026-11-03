@@ -23,6 +23,8 @@ when every CLI installed, 1 when bun is missing, a manifest was skipped, or an
 install failed.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import shutil

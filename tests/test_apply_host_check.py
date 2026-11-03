@@ -16,6 +16,8 @@ copy lacked had its postings classified "unverified" with no test failing.
 The ATS apex list stays the fixed set it is.
 """
 
+from __future__ import annotations
+
 import re
 import unittest
 from pathlib import Path
