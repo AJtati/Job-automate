@@ -992,6 +992,14 @@ function openProfileModal(profileToEdit) {
 
     const allSkills = extractAllSkillsFlat(profileToEdit.skills, profileToEdit.keywords);
     document.getElementById("formSkills").value = allSkills.join(", ");
+
+    const headerPrefs = profileToEdit.headerPreferences || {};
+    if (document.getElementById("formHeaderShowLocation")) document.getElementById("formHeaderShowLocation").checked = headerPrefs.showLocation !== false;
+    if (document.getElementById("formHeaderShowPhone")) document.getElementById("formHeaderShowPhone").checked = headerPrefs.showPhone !== false;
+    if (document.getElementById("formHeaderShowEmail")) document.getElementById("formHeaderShowEmail").checked = headerPrefs.showEmail !== false;
+    if (document.getElementById("formHeaderShowLinkedin")) document.getElementById("formHeaderShowLinkedin").checked = headerPrefs.showLinkedin !== false;
+    if (document.getElementById("formHeaderShowGithub")) document.getElementById("formHeaderShowGithub").checked = headerPrefs.showGithub !== false;
+    if (document.getElementById("formHeaderRelocationNote")) document.getElementById("formHeaderRelocationNote").value = headerPrefs.relocationNote || "";
   } else {
     profileModalTitle.textContent = "Create New Candidate Profile";
     profileForm.reset();
@@ -1001,6 +1009,12 @@ function openProfileModal(profileToEdit) {
     document.getElementById("formMinSalary").value = "0";
     document.getElementById("formVisaRequired").checked = true;
     document.getElementById("formEnableDeepTailor").checked = false;
+    if (document.getElementById("formHeaderShowLocation")) document.getElementById("formHeaderShowLocation").checked = true;
+    if (document.getElementById("formHeaderShowPhone")) document.getElementById("formHeaderShowPhone").checked = true;
+    if (document.getElementById("formHeaderShowEmail")) document.getElementById("formHeaderShowEmail").checked = true;
+    if (document.getElementById("formHeaderShowLinkedin")) document.getElementById("formHeaderShowLinkedin").checked = true;
+    if (document.getElementById("formHeaderShowGithub")) document.getElementById("formHeaderShowGithub").checked = true;
+    if (document.getElementById("formHeaderRelocationNote")) document.getElementById("formHeaderRelocationNote").value = "";
   }
   profileModal.style.display = "flex";
 }
@@ -1053,6 +1067,15 @@ async function handleSaveProfileForm(e) {
   const baseSkills = pendingModalProfileData?.skills || existing?.skills;
   const finalSkills = groupManualSkills(rawSkills, baseSkills);
 
+  const headerPreferences = {
+    showLocation: document.getElementById("formHeaderShowLocation") ? document.getElementById("formHeaderShowLocation").checked : true,
+    showPhone: document.getElementById("formHeaderShowPhone") ? document.getElementById("formHeaderShowPhone").checked : true,
+    showEmail: document.getElementById("formHeaderShowEmail") ? document.getElementById("formHeaderShowEmail").checked : true,
+    showLinkedin: document.getElementById("formHeaderShowLinkedin") ? document.getElementById("formHeaderShowLinkedin").checked : true,
+    showGithub: document.getElementById("formHeaderShowGithub") ? document.getElementById("formHeaderShowGithub").checked : true,
+    relocationNote: document.getElementById("formHeaderRelocationNote") ? document.getElementById("formHeaderRelocationNote").value.trim() : "",
+  };
+
   const profilePayload = {
     id: resolvedId,
     name,
@@ -1064,6 +1087,7 @@ async function handleSaveProfileForm(e) {
     country: country || undefined,
     linkedin,
     github,
+    headerPreferences,
     preferredRadiusMiles,
     minSalary,
     visaSponsorshipRequired,
@@ -2290,11 +2314,11 @@ function selectJob(job) {
   const searchRole = job.title || "Job";
   const locCity = (job.location || "").split(",")[0].trim();
 
-  // 1. Direct Apply / Employer Careers button
+  // 1. Direct Apply / Employer Careers compact pill
   if (studioDirectApplyBtn) {
     const directQuery = `"${searchCompany}" "${searchRole}" ${locCity ? `"${locCity}" ` : ''}careers OR jobs`;
     studioDirectApplyBtn.href = `https://www.google.com/search?q=${encodeURIComponent(directQuery)}`;
-    studioDirectApplyBtn.textContent = `🏢 Find on ${searchCompany} Careers ↗`;
+    studioDirectApplyBtn.textContent = `🏢 Employer Careers ↗`;
     studioDirectApplyBtn.title = `Search and apply directly on ${searchCompany}'s official careers portal without intermediary signups`;
     studioDirectApplyBtn.style.display = "inline-flex";
   }
@@ -2307,49 +2331,65 @@ function selectJob(job) {
     studioLinkBtn.href = job.url;
     studioLinkBtn.style.display = "inline-flex";
     if (isWhatJobs) {
-      studioLinkBtn.textContent = "WhatJobs Listing (Requires Signup) ↗";
-      studioLinkBtn.title = "WhatJobs asks candidates to create an account. Use 'Find on Company Careers' to apply directly.";
+      studioLinkBtn.textContent = "WhatJobs ↗";
+      studioLinkBtn.title = "WhatJobs asks candidates to create an account. Use 'Employer Careers' to apply directly.";
     } else if (job.portal === "linkedin-search" || job.url.includes("linkedin.com")) {
-      studioLinkBtn.textContent = "Open on LinkedIn ↗";
+      studioLinkBtn.textContent = "LinkedIn ↗";
     } else if (job.url.includes("reed.co.uk")) {
-      studioLinkBtn.textContent = "Open on Reed ↗";
+      studioLinkBtn.textContent = "Reed ↗";
     } else if (job.url.includes("cv-library.co.uk")) {
-      studioLinkBtn.textContent = "Open on CV-Library ↗";
+      studioLinkBtn.textContent = "CV-Library ↗";
     } else {
-      studioLinkBtn.textContent = "Open original listing ↗";
+      studioLinkBtn.textContent = "Portal ↗";
     }
   } else {
     studioLinkBtn.style.display = "none";
   }
 
-  // 3. Aggregator notice banner
+  // 3. Consolidated Sleek Apple Status Strip
+  const studioStatusStrip = document.getElementById("studioStatusStrip");
+  const statusStripDivider = document.getElementById("statusStripDivider");
+
+  let hasSponsor = false;
+  if (job.sponsor_verified) {
+    hasSponsor = true;
+    studioSponsorBanner.style.display = "inline-flex";
+    if (job.is_new_sponsor) {
+      studioSponsorBanner.className = "status-strip-left new-sponsor";
+      const matchedOrg = job.sponsorship_employer || job.new_sponsor_org || job.company;
+      studioSponsorText.innerHTML = `<strong>✨ Newly Approved Sponsor (${escapeHtml(job.new_sponsor_formatted || 'Last 30 Days')})</strong>: <strong>${escapeHtml(matchedOrg)}</strong>`;
+    } else {
+      studioSponsorBanner.className = "status-strip-left";
+      studioSponsorText.textContent = job.sponsorship_status === "offered"
+        ? `Licensed employer · sponsorship offered`
+        : `Licensed employer · sponsorship unconfirmed`;
+    }
+  } else {
+    studioSponsorBanner.style.display = "none";
+  }
+
+  let hasAggregator = false;
   if (studioAggregatorNotice && studioAggregatorNoticeText) {
     if (isWhatJobs) {
-      studioAggregatorNotice.style.display = "flex";
-      studioAggregatorNoticeText.innerHTML = `This vacancy was discovered on <strong>WhatJobs</strong>, which prompts users to register an account before applying. Click <strong>🏢 Find on ${escapeHtml(searchCompany)} Careers ↗</strong> to open and apply directly on the employer's official website.`;
+      hasAggregator = true;
+      studioAggregatorNotice.style.display = "inline-flex";
+      studioAggregatorNotice.className = "status-strip-right";
+      studioAggregatorNoticeText.innerHTML = `Discovered on <strong>WhatJobs</strong> (prompts registration) · Use <strong>Employer Careers ↗</strong> for direct apply`;
     } else if (isAggregator) {
-      studioAggregatorNotice.style.display = "flex";
-      studioAggregatorNoticeText.innerHTML = `This role is hosted on an aggregator portal. You can click <strong>🏢 Find on ${escapeHtml(searchCompany)} Careers ↗</strong> to bypass intermediary signups and apply directly on the company's website.`;
+      hasAggregator = true;
+      studioAggregatorNotice.style.display = "inline-flex";
+      studioAggregatorNotice.className = "status-strip-right";
+      studioAggregatorNoticeText.innerHTML = `Aggregator portal · Use <strong>Employer Careers ↗</strong> for direct apply`;
     } else {
       studioAggregatorNotice.style.display = "none";
     }
   }
 
-  // Sponsor Banner
-  if (job.sponsor_verified) {
-    studioSponsorBanner.style.display = "flex";
-    if (job.is_new_sponsor) {
-      studioSponsorBanner.className = "sponsor-banner new-sponsor-banner";
-      const matchedOrg = job.sponsorship_employer || job.new_sponsor_org || job.company;
-      studioSponsorText.innerHTML = `<strong>✨ Newly Approved UK Sponsor (${escapeHtml(job.new_sponsor_formatted || 'Last 30 Days')})</strong> · Licensed Skilled Worker employer: <strong>${escapeHtml(matchedOrg)}</strong>`;
-    } else {
-      studioSponsorBanner.className = "sponsor-banner";
-      studioSponsorText.textContent = job.sponsorship_status === "offered"
-        ? `Licensed employer · this vacancy states sponsorship is offered`
-        : `Licensed employer · this vacancy does not confirm sponsorship`;
-    }
-  } else {
-    studioSponsorBanner.style.display = "none";
+  if (statusStripDivider) {
+    statusStripDivider.style.display = (hasSponsor && hasAggregator) ? "block" : "none";
+  }
+  if (studioStatusStrip) {
+    studioStatusStrip.style.display = (hasSponsor || hasAggregator) ? "flex" : "none";
   }
 
   // Actions Bar
@@ -2446,14 +2486,17 @@ async function renderCVTab() {
     : (targetJob.cv_file || "");
 
   if (!cvPath) {
+    if (isTailoringActive) {
+      return;
+    }
     studioContent.innerHTML = `
       <div class="empty-doc-card">
         <div class="empty-card-icon">📄</div>
         <h3 class="empty-card-title">Tailored CV Not Yet Generated</h3>
         <p class="empty-card-subtitle">Generate a bespoke ATS-optimized resume tailored to <b>${escapeHtml(targetJob.company)}</b>'s requirements for candidate <b>${escapeHtml(activeProfile?.name || 'Candidate')}</b>.</p>
-        <button class="btn-primary btn-action" onclick="tailorCurrentJob()">
+        <button class="btn-primary btn-action" id="btnEmptyTailor" onclick="tailorCurrentJob()">
           <span class="btn-icon">✦</span>
-          <span>Tailor Application Now</span>
+          <span id="btnEmptyTailorText">Tailor Application Now</span>
         </button>
       </div>
     `;
@@ -3593,6 +3636,10 @@ async function sendJobChatMessage(text) {
 function updateTailorBtnLabel() {
   const chk = document.getElementById("chkDeepTailor");
   const txt = document.getElementById("btnTailorText");
+  const spinner = document.getElementById("tailorSpinner");
+  const wandSvg = document.getElementById("tailorWandSvg");
+  if (spinner) spinner.style.display = "none";
+  if (wandSvg) wandSvg.style.display = "inline-block";
   if (txt) {
     txt.textContent = (chk && chk.checked) ? "Deep Tailor Application" : "Tailor Application";
   }
@@ -3611,17 +3658,88 @@ function syncDeepTailorBtnState(isActive) {
   if (label) label.textContent = isActive ? "Deep AI Active" : "Deep AI Match";
 }
 
+let isTailoringActive = false;
+
 async function tailorCurrentJob() {
-  if (!selectedJob) return;
+  if (!selectedJob || isTailoringActive) return;
 
   const chkDeep = document.getElementById("chkDeepTailor");
   const isDeepTailor = chkDeep ? chkDeep.checked : Boolean(activeProfile?.enableDeepTailor);
 
+  isTailoringActive = true;
+
   const btnTailorText = document.getElementById("btnTailorText");
+  const tailorSpinner = document.getElementById("tailorSpinner");
+  const tailorWandSvg = document.getElementById("tailorWandSvg");
+  const btnEmptyTailor = document.getElementById("btnEmptyTailor");
+  const btnEmptyTailorText = document.getElementById("btnEmptyTailorText");
+
   btnTailor.disabled = true;
+  if (btnEmptyTailor) {
+    btnEmptyTailor.disabled = true;
+    if (btnEmptyTailorText) btnEmptyTailorText.textContent = "Tailoring in progress...";
+  }
+  if (tailorSpinner) tailorSpinner.style.display = "inline-block";
+  if (tailorWandSvg) tailorWandSvg.style.display = "none";
   if (btnTailorText) {
     btnTailorText.textContent = isDeepTailor ? "Deep Tailoring..." : "Tailoring...";
   }
+
+  // Switch to CV tab if user is currently on another tab
+  if (currentTab !== "tab-cv") {
+    const cvTabBtn = document.querySelector('.tab-btn[data-tab="tab-cv"]');
+    if (cvTabBtn) cvTabBtn.click();
+  }
+
+  // Inject Apple HIG Live Progress Card immediately
+  studioContent.innerHTML = `
+    <div class="tailoring-loader-card">
+      <div class="tailoring-pulse-icon">✨</div>
+      <div class="tailoring-loader-title">${isDeepTailor ? "Deep AI Match & Tailoring Active" : "Curating Tailored ATS Resume"}</div>
+      <div class="tailoring-loader-subtitle">Synthesizing aligned experience & keyword match for <b>${escapeHtml(selectedJob.title)}</b> at <b>${escapeHtml(selectedJob.company)}</b>.</div>
+      <div class="apple-progress-bar">
+        <div class="apple-progress-bar-fill"></div>
+      </div>
+      <div class="tailoring-steps-list">
+        <div class="tailoring-step-item active" id="tailorStep1">
+          <span class="tailoring-step-bullet">1</span>
+          <span>Analyzing job description & ATS requirements</span>
+        </div>
+        <div class="tailoring-step-item" id="tailorStep2">
+          <span class="tailoring-step-bullet">2</span>
+          <span>Calibrating engineering experience & keywords</span>
+        </div>
+        <div class="tailoring-step-item" id="tailorStep3">
+          <span class="tailoring-step-bullet">3</span>
+          <span>Drafting active-voice humanized LaTeX resume</span>
+        </div>
+        <div class="tailoring-step-item" id="tailorStep4">
+          <span class="tailoring-step-bullet">4</span>
+          <span>Auditing ATS compliance & verified typography</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const stepTimers = [];
+  stepTimers.push(setTimeout(() => {
+    const s1 = document.getElementById("tailorStep1");
+    const s2 = document.getElementById("tailorStep2");
+    if (s1) { s1.className = "tailoring-step-item completed"; const b = s1.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
+    if (s2) { s2.className = "tailoring-step-item active"; }
+  }, 1200));
+  stepTimers.push(setTimeout(() => {
+    const s2 = document.getElementById("tailorStep2");
+    const s3 = document.getElementById("tailorStep3");
+    if (s2) { s2.className = "tailoring-step-item completed"; const b = s2.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
+    if (s3) { s3.className = "tailoring-step-item active"; }
+  }, 2800));
+  stepTimers.push(setTimeout(() => {
+    const s3 = document.getElementById("tailorStep3");
+    const s4 = document.getElementById("tailorStep4");
+    if (s3) { s3.className = "tailoring-step-item completed"; const b = s3.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
+    if (s4) { s4.className = "tailoring-step-item active"; }
+  }, 4800));
 
   try {
     const res = await fetch("/api/tailor", {
@@ -3657,6 +3775,7 @@ async function tailorCurrentJob() {
       }
       data.jobId = selectedJob.id;
       activeTailoredData = data;
+      isTailoringActive = false;
       renderJobs();
       selectJob(selectedJob);
       renderStudioTabContent();
@@ -3678,12 +3797,36 @@ async function tailorCurrentJob() {
       }
       showToast(toastMsg);
     } else {
+      isTailoringActive = false;
       showToast(data.error || "Failed to tailor application");
+      studioContent.innerHTML = `
+        <div class="tailoring-loader-card" style="border-color: rgba(239, 68, 68, 0.45);">
+          <div class="tailoring-pulse-icon" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #ef4444;">⚠️</div>
+          <div class="tailoring-loader-title">Tailoring Could Not Complete</div>
+          <div class="tailoring-loader-subtitle">${escapeHtml(data.error || "An error occurred while generating the resume.")}</div>
+          <button class="btn-primary btn-action" onclick="tailorCurrentJob()" style="margin-top: 14px;">
+            <span>↺ Retry Tailoring</span>
+          </button>
+        </div>
+      `;
     }
   } catch (err) {
     console.error(err);
+    isTailoringActive = false;
     showToast("Error during tailoring");
+    studioContent.innerHTML = `
+      <div class="tailoring-loader-card" style="border-color: rgba(239, 68, 68, 0.45);">
+        <div class="tailoring-pulse-icon" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #ef4444;">⚠️</div>
+        <div class="tailoring-loader-title">Network or Engine Error</div>
+        <div class="tailoring-loader-subtitle">Could not connect to the tailoring service. Please try again.</div>
+        <button class="btn-primary btn-action" onclick="tailorCurrentJob()" style="margin-top: 14px;">
+          <span>↺ Retry Tailoring</span>
+        </button>
+      </div>
+    `;
   } finally {
+    stepTimers.forEach(t => clearTimeout(t));
+    isTailoringActive = false;
     btnTailor.disabled = false;
     updateTailorBtnLabel();
   }

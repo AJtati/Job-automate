@@ -1560,7 +1560,7 @@ export class AIService {
                 maxOutputTokens: maxTokens
               }
             }),
-            signal: AbortSignal.timeout(30000)
+            signal: AbortSignal.timeout(12000)
           });
           if (res.ok) {
             const data: any = await res.json();
@@ -1577,7 +1577,11 @@ export class AIService {
           const errBody = await res.text();
           console.warn(`Gemini model ${modelToTry} returned ${res.status}:`, errBody);
           this.parseAndRecordGenerationError("gemini", modelToTry, res.status, errBody);
-          if (res.status === 404 || res.status === 503 || res.status === 429 || errBody.includes("not found") || errBody.includes("UNAVAILABLE")) continue;
+          if (res.status === 429 || errBody.includes("RESOURCE_EXHAUSTED") || errBody.includes("quota") || errBody.includes("QuotaFailure")) {
+            // Free tier or daily project quota exhausted for this API key: break immediately to local fallback
+            break;
+          }
+          if (res.status === 404 || res.status === 503 || errBody.includes("not found") || errBody.includes("UNAVAILABLE")) continue;
           break;
         } catch (e: any) {
           console.warn(`Gemini call failed with ${modelToTry}:`, e);
@@ -2895,15 +2899,28 @@ ${JSON.stringify(expPayload, null, 2)}`;
       try {
         const source = [tailoredProfile.summary, ...(tailoredProfile.experience || []).flatMap(item => item.bullets || [])].filter(Boolean).join("\n");
         const langNotice = resolvedLang === "de" ? "in German (auf Deutsch)" : (resolvedLang === "es" ? "in Spanish (en Español)" : (resolvedLang === "fr" ? "in French (en Français)" : "in English"));
-        const prompt = `Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nSupported requirements: ${analysis.matchedKeywords.join(", ")}\nCandidate facts:\n${source}`;
-        const system = `Write one direct CV summary of 35-55 words strictly ${langNotice}. Use only the supplied candidate facts. Do not name the employer. Do not add years, metrics, tools, titles, or claims. Avoid proven track record, mission-critical, seamlessly, leveraging, ensuring, driving, and shallow -ing clauses. Return plain text only.`;
+        const prompt = `Target Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nRelevant Matched Technical Skills: ${analysis.matchedKeywords.slice(0, 8).join(", ")}\nCandidate Profile Facts:\n${source}`;
+        const system = `Write a direct, explanatory professional CV summary of 55 to 75 words (3 to 4 sentences) strictly ${langNotice}.
+Follow these structure rules:
+1. First sentence: State the candidate's core engineering identity, years of experience, and primary cloud/platform environments (e.g. AWS, Azure, Kubernetes).
+2. Second sentence: Detail concrete infrastructure and automation capabilities (e.g. multi-cluster Kubernetes/EKS, Infrastructure as Code with Terraform, and CI/CD pipelines).
+3. Third and fourth sentences: Explain operational scope and resilience (e.g. zero-downtime cluster upgrades, production observability, telemetry, and platform reliability for high-throughput services).
+
+Strict Humanizer Rules:
+- Plain, direct, active-voice engineering prose only.
+- Do not invent facts, tools, or metrics not present in the candidate facts.
+- Do not name current or past employers.
+- Strictly ban AI clichés and marketing fluff: do not use "proven track record", "mission-critical", "seamlessly", "leveraging", "passionate", "pivotal", "adept at", "cutting-edge", or "dynamic".
+- Strictly ban shallow "-ing" clauses (avoid "ensuring high availability", "driving velocity", "highlighting best practices").
+- Do not use em-dashes (—) or double hyphens (--).
+- Return only the raw summary paragraph with no quotes, headings, or conversational wrapper.`;
         const candidate = (await this.generateText(prompt, system)).trim();
         const sourceNumbers = new Set(source.match(/\b\d+(?:[.,]\d+)?%?\b/g) || []);
         const candidateNumbers = candidate.match(/\b\d+(?:[.,]\d+)?%?\b/g) || [];
         const safeNumbers = candidateNumbers.every(value => sourceNumbers.has(value));
-        const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i.test(candidate);
+        const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b|cutting-edge|passionate|\badept\b/i.test(candidate);
         const isCorrectLang = resolvedLang === "de" ? detectLanguageDeterministically(candidate) === "de" : true;
-        if (candidate.length >= 80 && candidate.length <= 520 && safeNumbers && !banned && isCorrectLang) {
+        if (candidate.length >= 100 && candidate.length <= 650 && safeNumbers && !banned && isCorrectLang) {
           summary = candidate;
           this.lastLlmSuccess = true;
         }

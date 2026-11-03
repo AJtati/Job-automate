@@ -162,7 +162,16 @@ cp "$REPO_DIR/data/profiles.template.json" "$APP_BUNDLE/Contents/Resources/data/
 cp "$REPO_DIR/data/sponsor_register.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
 
 # A packaged runtime makes the installed app independent of the user's PATH.
-BUN_PATH="$(command -v bun)"
+BUN_PATH="$(command -v bun 2>/dev/null || true)"
+if [ -z "$BUN_PATH" ] || [ ! -x "$BUN_PATH" ]; then
+    if [ -x "$HOME/.bun/bin/bun" ]; then
+        BUN_PATH="$HOME/.bun/bin/bun"
+    elif [ -x "/opt/homebrew/bin/bun" ]; then
+        BUN_PATH="/opt/homebrew/bin/bun"
+    elif [ -x "/usr/local/bin/bun" ]; then
+        BUN_PATH="/usr/local/bin/bun"
+    fi
+fi
 mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
 cp "$BUN_PATH" "$APP_BUNDLE/Contents/Resources/bin/bun"
 chmod +x "$APP_BUNDLE/Contents/Resources/bin/bun"

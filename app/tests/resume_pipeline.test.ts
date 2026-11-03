@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { analyzeApplication } from "../application_engine";
 import { parseResumeDeterministically } from "../resume_parser";
-import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole } from "../resume_engine";
+import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole, header } from "../resume_engine";
 import type { CandidateProfile } from "../profiles_manager";
 import { AIService } from "../ai_service";
 
@@ -484,6 +484,80 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     expect(tailoredLatex).toContain("\\textbf{\\large Senior Cloud \\& Infrastructure Engineer}");
     const report = mockAiService.getLastTailorReport();
     expect(report?.designation).toBe("Senior Cloud & Infrastructure Engineer");
+  });
+
+  test("candidate header customization respects individual header preferences and mobility notes", () => {
+    const baseCandidate: CandidateProfile = {
+      id: "candidate-a",
+      name: "Ajith Surya Thati",
+      headline: "Senior DevOps Engineer",
+      email: "ajithsurya.t@gmail.com",
+      phone: "+44 7469 475250",
+      location: "Hartlepool",
+      postcode: "TS25",
+      linkedin: "https://linkedin.com/in/ajithsurya",
+      github: "https://github.com/AJtati",
+      portfolio: "https://ajtati.github.io/resumeproject/",
+      visaSponsorshipRequired: true,
+      targetRoles: ["DevOps Engineer"],
+      targetLocations: ["Remote", "Leeds"],
+      preferredRadiusMiles: 70,
+      minSalary: 0,
+      skills: {},
+      experience: [],
+      education: [],
+      certifications: []
+    };
+
+    // 1. Default without preferences includes all standard fields
+    const defaultHdr = header(baseCandidate, "Senior DevOps Engineer");
+    expect(defaultHdr).toContain("Hartlepool");
+    expect(defaultHdr).toContain("+44 7469 475250");
+    expect(defaultHdr).toContain("ajithsurya.t@gmail.com");
+    expect(defaultHdr).toContain("LinkedIn");
+    expect(defaultHdr).toContain("GitHub");
+
+    // 2. Candidate opting to hide phone and append relocation mobility note
+    const customCandidate: CandidateProfile = {
+      ...baseCandidate,
+      headerPreferences: {
+        showLocation: true,
+        showPhone: false,
+        showEmail: true,
+        showLinkedin: true,
+        showGithub: false,
+        relocationNote: "Open to Relocation / Hybrid: Leeds, Manchester"
+      }
+    };
+    const customHdr = header(customCandidate, "Senior DevOps Engineer");
+    expect(customHdr).toContain("Hartlepool (Open to Relocation / Hybrid: Leeds, Manchester)");
+    expect(customHdr).not.toContain("+44 7469 475250");
+    expect(customHdr).toContain("ajithsurya.t@gmail.com");
+    expect(customHdr).toContain("LinkedIn");
+    expect(customHdr).not.toContain("GitHub");
+
+    // 3. Different candidate opting for customLocationText and hiding location entirely
+    const privacyCandidate: CandidateProfile = {
+      ...baseCandidate,
+      headerPreferences: {
+        showLocation: false,
+        showPhone: true,
+        showEmail: true,
+        showLinkedin: false,
+        showGithub: false
+      }
+    };
+    const privacyHdr = header(privacyCandidate, "Platform Engineer");
+    expect(privacyHdr).not.toContain("Hartlepool");
+    expect(privacyHdr).toContain("+44 7469 475250");
+    expect(privacyHdr).not.toContain("LinkedIn");
+  });
+
+  test("localized LaTeX backbone contains clean ATS fontspec definition preventing word-split glitches", () => {
+    const backbone = createLatexBackbone();
+    expect(backbone).toContain("\\usepackage{iftex}");
+    expect(backbone).toContain("Kerning=Off");
+    expect(backbone).toContain("Arial");
   });
 });
 

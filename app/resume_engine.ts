@@ -275,6 +275,34 @@ export function createLocalizedBackbone(lang: SupportedLanguage = "en"): string 
 \usepackage[${pack.babel}]{babel}
 \usepackage{tabularx}
 \usepackage{needspace}
+\usepackage{iftex}
+\ifXeTeX
+  \usepackage{fontspec}
+  \IfFontExistsTF{Arial}{
+    \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+    \setmainfont{Arial}
+  }{
+    \IfFontExistsTF{Liberation Sans}{
+      \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+      \setmainfont{Liberation Sans}
+    }{}
+  }
+\else\ifLuaTeX
+  \usepackage{fontspec}
+  \IfFontExistsTF{Arial}{
+    \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+    \setmainfont{Arial}
+  }{
+    \IfFontExistsTF{Liberation Sans}{
+      \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+      \setmainfont{Liberation Sans}
+    }{}
+  }
+\else
+  \usepackage[T1]{fontenc}
+  \usepackage{helvet}
+  \renewcommand{\familydefault}{\sfdefault}
+\fi\fi
 \ifx\pdfgentounicode\undefined\else
   \input{glyphtounicode}
   \pdfgentounicode=1
@@ -330,16 +358,50 @@ function safeUrl(value: string): string {
   return (value || "").replace(/[{}\\]/g, "");
 }
 
-function header(profile: CandidateProfile, role: string): string {
-  const links = [
-    profile.location && escapeLatex(profile.location),
-    profile.phone && escapeLatex(profile.phone),
-    profile.email && `\\href{mailto:${safeUrl(profile.email)}}{${escapeLatex(profile.email)}}`,
-    profile.linkedin && `\\href{${safeUrl(profile.linkedin)}}{LinkedIn}`,
-    profile.github && `\\href{${safeUrl(profile.github)}}{GitHub}`,
-    profile.portfolio && `\\href{${safeUrl(profile.portfolio)}}{Portfolio}`,
-  ].filter(Boolean).join(" $|$ ");
-  return `\\begin{center}\n\\textbf{\\Huge \\scshape ${escapeLatex(profile.name)}} \\\\ \\vspace{3pt}\n\\textbf{\\large ${escapeLatex(role)}} \\\\ \\vspace{3pt}\n\\small ${links}\n\\end{center}`;
+export function header(profile: CandidateProfile, role: string): string {
+  const prefs = profile.headerPreferences || {};
+  const links: string[] = [];
+
+  // Location & Mobility / Commute Note
+  if (prefs.showLocation !== false) {
+    let loc = prefs.customLocationText?.trim();
+    if (!loc && profile.location) {
+      loc = profile.location.trim();
+      if (prefs.relocationNote?.trim()) {
+        loc = `${loc} (${prefs.relocationNote.trim()})`;
+      }
+    }
+    if (loc) {
+      links.push(escapeLatex(loc));
+    }
+  }
+
+  // Contact Phone
+  if (prefs.showPhone !== false && profile.phone) {
+    links.push(escapeLatex(profile.phone));
+  }
+
+  // Email
+  if (prefs.showEmail !== false && profile.email) {
+    links.push(`\\href{mailto:${safeUrl(profile.email)}}{${escapeLatex(profile.email)}}`);
+  }
+
+  // LinkedIn
+  if (prefs.showLinkedin !== false && profile.linkedin) {
+    links.push(`\\href{${safeUrl(profile.linkedin)}}{LinkedIn}`);
+  }
+
+  // GitHub
+  if (prefs.showGithub !== false && profile.github) {
+    links.push(`\\href{${safeUrl(profile.github)}}{GitHub}`);
+  }
+
+  // Portfolio
+  if (prefs.showPortfolio !== false && profile.portfolio) {
+    links.push(`\\href{${safeUrl(profile.portfolio)}}{Portfolio}`);
+  }
+
+  return `\\begin{center}\n\\textbf{\\Huge \\scshape ${escapeLatex(profile.name)}} \\\\ \\vspace{3pt}\n\\textbf{\\large ${escapeLatex(role)}} \\\\ \\vspace{3pt}\n\\small ${links.join(" $|$ ")}\n\\end{center}`;
 }
 
 function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis, lang: SupportedLanguage = "en", customRole?: string): string {

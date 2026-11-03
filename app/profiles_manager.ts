@@ -33,6 +33,17 @@ export interface ProjectItem {
   bullets: string[];
 }
 
+export interface HeaderPreferences {
+  showLocation?: boolean;
+  showPhone?: boolean;
+  showEmail?: boolean;
+  showLinkedin?: boolean;
+  showGithub?: boolean;
+  showPortfolio?: boolean;
+  relocationNote?: string;
+  customLocationText?: string;
+}
+
 export interface CandidateProfile {
   id: string;
   name: string;
@@ -46,6 +57,7 @@ export interface CandidateProfile {
   linkedin: string;
   github: string;
   portfolio?: string;
+  headerPreferences?: HeaderPreferences;
   visaSponsorshipRequired: boolean;
   targetRoles: string[];
   targetLocations: string[];
