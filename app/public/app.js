@@ -2317,10 +2317,14 @@ function renderJobs() {
       "freehire-ats": "Direct ATS", "linkedin-search": "LinkedIn", "cv-library": "CV-Library",
       reed: "Reed", "google-jobs": "Google Jobs", adzuna: "Adzuna", jobicy: "Jobicy",
       arbeitnow: "Arbeitnow", remotive: "Remotive", "external-url": "Imported",
+      jobspy: "JobSpy",
     };
     const isImported = isImportedJob(job);
+    const isJobSpy = job.portal === "jobspy" || (job.source && /jobspy/i.test(job.source));
     const portalTag = isImported
       ? `<span class="meta-pill pill-imported">🔗 Imported</span>`
+      : isJobSpy
+      ? `<span class="meta-pill pill-jobspy" style="color: #c084fc; border-color: rgba(192,132,252,0.35); font-weight: 600;">🕵️ ${escapeHtml(job.source || job.sourceLabel || "JobSpy")}</span>`
       : `<span class="meta-pill" style="color: #93c5fd; border-color: rgba(147,197,253,0.3); font-weight: 500;">${escapeHtml(portalNames[job.portal] || job.portal || "Source")}</span>`;
     const isTailored = Boolean(job.tailored_score && job.baseline_score && job.tailored_score !== job.baseline_score);
     const scoreLabel = isTailored
@@ -2463,6 +2467,19 @@ function selectJob(job) {
       studioLinkBtn.textContent = "Reed ↗";
     } else if (job.url.includes("cv-library.co.uk")) {
       studioLinkBtn.textContent = "CV-Library ↗";
+    } else if (job.portal === "jobspy" || (job.source && /jobspy/i.test(job.source))) {
+      const src = (job.source || job.sourceLabel || "").toLowerCase();
+      if (src.includes("indeed") || job.url.includes("indeed.com")) {
+        studioLinkBtn.textContent = "Indeed ↗";
+      } else if (src.includes("glassdoor") || job.url.includes("glassdoor.com")) {
+        studioLinkBtn.textContent = "Glassdoor ↗";
+      } else if (src.includes("google") || job.url.includes("google.com")) {
+        studioLinkBtn.textContent = "Google Jobs ↗";
+      } else if (src.includes("ziprecruiter") || job.url.includes("ziprecruiter.com")) {
+        studioLinkBtn.textContent = "ZipRecruiter ↗";
+      } else {
+        studioLinkBtn.textContent = "JobSpy ↗";
+      }
     } else {
       studioLinkBtn.textContent = "Portal ↗";
     }
@@ -3425,8 +3442,139 @@ function renderAnswersTab() {
   `;
 }
 
-// Storage for per-job chat histories
-const jobChatHistories = new Map();
+// Persistent Multi-Session Chat Storage for In-Posting Job AI Assistant
+const CHAT_STORAGE_KEY = "ai_job_search_chat_sessions_v2";
+
+function loadAllJobChatSessions() {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) || {};
+  } catch (e) {
+    console.warn("Failed to load chat sessions from localStorage:", e);
+    return {};
+  }
+}
+
+function saveAllJobChatSessions(allSessions) {
+  try {
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(allSessions));
+  } catch (e) {
+    console.warn("Failed to save chat sessions to localStorage:", e);
+  }
+}
+
+function getJobSessionsData(jobId) {
+  const all = loadAllJobChatSessions();
+  if (!all[jobId] || !Array.isArray(all[jobId].sessions) || all[jobId].sessions.length === 0) {
+    const initialSession = {
+      id: "session_" + Date.now(),
+      title: "General Chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: []
+    };
+    all[jobId] = {
+      activeSessionId: initialSession.id,
+      sessions: [initialSession]
+    };
+    saveAllJobChatSessions(all);
+  }
+  return all[jobId];
+}
+
+function getActiveJobSession(jobId) {
+  const data = getJobSessionsData(jobId);
+  let active = (data.sessions || []).find(s => s.id === data.activeSessionId);
+  if (!active) {
+    active = data.sessions[0];
+    data.activeSessionId = active.id;
+    const all = loadAllJobChatSessions();
+    all[jobId] = data;
+    saveAllJobChatSessions(all);
+  }
+  return { active, data };
+}
+
+function createNewJobChatSession(jobId, customTitle) {
+  const all = loadAllJobChatSessions();
+  const data = all[jobId] || { activeSessionId: "", sessions: [] };
+  const num = (data.sessions || []).length + 1;
+  const newSession = {
+    id: "session_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+    title: customTitle || `Chat ${num}`,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: []
+  };
+  data.sessions = data.sessions || [];
+  data.sessions.unshift(newSession);
+  data.activeSessionId = newSession.id;
+  all[jobId] = data;
+  saveAllJobChatSessions(all);
+  return newSession;
+}
+
+function switchJobChatSession(jobId, sessionId) {
+  const all = loadAllJobChatSessions();
+  if (all[jobId]) {
+    const exists = all[jobId].sessions.some(s => s.id === sessionId);
+    if (exists) {
+      all[jobId].activeSessionId = sessionId;
+      saveAllJobChatSessions(all);
+    }
+  }
+}
+
+function deleteJobChatSession(jobId, sessionId) {
+  const all = loadAllJobChatSessions();
+  if (!all[jobId]) return;
+  const data = all[jobId];
+  data.sessions = (data.sessions || []).filter(s => s.id !== sessionId);
+  if (data.sessions.length === 0) {
+    const fresh = {
+      id: "session_" + Date.now(),
+      title: "General Chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: []
+    };
+    data.sessions = [fresh];
+    data.activeSessionId = fresh.id;
+  } else if (data.activeSessionId === sessionId) {
+    data.activeSessionId = data.sessions[0].id;
+  }
+  all[jobId] = data;
+  saveAllJobChatSessions(all);
+}
+
+function appendJobChatMessage(jobId, sessionId, message) {
+  const all = loadAllJobChatSessions();
+  if (!all[jobId]) return;
+  const session = (all[jobId].sessions || []).find(s => s.id === sessionId);
+  if (!session) return;
+  session.messages = session.messages || [];
+  session.messages.push(message);
+  session.updatedAt = Date.now();
+  if (message.role === "user" && (/^(?:General Chat|Chat \d+|Chat Session \d+)$/i.test(session.title))) {
+    const cleanPrompt = message.content.replace(/[#*`_]/g, "").trim();
+    if (cleanPrompt) {
+      session.title = cleanPrompt.length > 28 ? cleanPrompt.slice(0, 26) + "…" : cleanPrompt;
+    }
+  }
+  saveAllJobChatSessions(all);
+}
+
+function clearJobChatSession(jobId, sessionId) {
+  const all = loadAllJobChatSessions();
+  if (!all[jobId]) return;
+  const session = (all[jobId].sessions || []).find(s => s.id === sessionId);
+  if (session) {
+    session.messages = [];
+    session.updatedAt = Date.now();
+    saveAllJobChatSessions(all);
+  }
+}
 
 function formatMarkdownToHtml(markdown) {
   if (!markdown) return "";
@@ -3505,10 +3653,8 @@ function renderJobChatTab() {
   if (!selectedJob) return;
 
   const jobId = selectedJob.id || `${selectedJob.company}_${selectedJob.title}`;
-  if (!jobChatHistories.has(jobId)) {
-    jobChatHistories.set(jobId, []);
-  }
-  const history = jobChatHistories.get(jobId);
+  const { active, data } = getActiveJobSession(jobId);
+  const history = active?.messages || [];
 
   const fitScore = Number(selectedJob.analysis?.overallScore ?? selectedJob.fit_score ?? 0);
   const company = selectedJob.company || "Company";
@@ -3516,7 +3662,7 @@ function renderJobChatTab() {
 
   studioContent.innerHTML = `
     <div class="job-chat-wrapper">
-      <!-- Header with context & clear option -->
+      <!-- Header with context, session switcher & actions -->
       <div class="job-chat-header">
         <div class="job-chat-header-title">
           <div>
@@ -3530,12 +3676,26 @@ function renderJobChatTab() {
               </button>
             </h3>
             <div class="job-chat-header-sub" style="margin-top: 3px;">
-              Grounded in candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b> and full job description · <b>${selectedJob.tailored_score && selectedJob.baseline_score && selectedJob.tailored_score !== selectedJob.baseline_score ? `${selectedJob.baseline_score}% Baseline ➔ ${selectedJob.tailored_score}% Tailored ATS Match` : `${fitScore}% Match`}</b>
+              Grounded in candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b>, tailored CV, and full job description · <b>${selectedJob.tailored_score && selectedJob.baseline_score && selectedJob.tailored_score !== selectedJob.baseline_score ? `${selectedJob.baseline_score}% Baseline ➔ ${selectedJob.tailored_score}% Tailored ATS Match` : `${fitScore}% Match`}</b>
             </div>
           </div>
         </div>
-        <div style="display: flex; gap: 8px;">
-          <button class="btn-secondary" id="btnClearJobChat" style="font-size: 11px; padding: 4px 10px;" title="Reset chat for this role">🔄 New Chat</button>
+        <div class="job-chat-session-bar">
+          <div class="job-chat-session-select-wrapper">
+            <span style="font-size: 11px; color: var(--text-tertiary); font-weight: 500;">Session:</span>
+            <select id="selectJobChatSession" class="job-chat-session-select" title="Switch between saved chat threads for this role">
+              ${(data.sessions || []).map(s => `
+                <option value="${s.id}" ${s.id === data.activeSessionId ? "selected" : ""}>
+                  ${escapeHtml(s.title || "Chat")} (${(s.messages || []).length})
+                </option>
+              `).join("")}
+            </select>
+          </div>
+          <button class="btn-secondary" id="btnNewJobChatSession" style="font-size: 11px; padding: 4px 10px;" title="Start a fresh chat thread for this role">＋ New Chat</button>
+          <button class="btn-secondary" id="btnClearJobChat" style="font-size: 11px; padding: 4px 8px;" title="Clear current session messages">🧹 Clear</button>
+          ${(data.sessions || []).length > 1 ? `
+            <button class="btn-secondary" id="btnDeleteJobChatSession" style="font-size: 11px; padding: 4px 8px; color: var(--danger-color, #ef4444);" title="Delete current chat session">🗑️</button>
+          ` : ""}
         </div>
       </div>
 
@@ -3560,9 +3720,9 @@ function renderJobChatTab() {
             </div>
             <div class="chat-msg-content">
               <p>Hello! I am your dedicated <b>Job Application & Interview Co-Pilot</b> for <b>${escapeHtml(role)}</b> at <b>${escapeHtml(company)}</b>.</p>
-              <p>I have analyzed the complete job description against candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b>'s profile. Ask me anything about this role—I can help you:</p>
+              <p>I have analyzed the complete job description against candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b>'s profile and tailored application documents. Ask me anything about this role—I can help you:</p>
               <ul>
-                <li>Draft heartfelt answers explaining <b>why you want this job</b> and why you are the best fit</li>
+                <li>Draft authentic answers explaining <b>why you want this job</b> and why you are the best fit</li>
                 <li>Anticipate <b>interview questions</b> with STAR model answers tailored to your real projects</li>
                 <li>Write punchy <b>LinkedIn recruiter messages</b> ready to copy and send</li>
                 <li>Tackle tough <b>application questionnaire</b> fields (visa, notice, compensation)</li>
@@ -3636,11 +3796,32 @@ function renderJobChatTab() {
     });
   });
 
-  // Hook up Clear Chat
-  document.getElementById("btnClearJobChat")?.addEventListener("click", () => {
-    jobChatHistories.set(jobId, []);
+  // Hook up Session Selector
+  document.getElementById("selectJobChatSession")?.addEventListener("change", (e) => {
+    const targetSessionId = e.target.value;
+    switchJobChatSession(jobId, targetSessionId);
     renderJobChatTab();
-    showToast("Chat history cleared for this job.");
+  });
+
+  // Hook up New Session
+  document.getElementById("btnNewJobChatSession")?.addEventListener("click", () => {
+    createNewJobChatSession(jobId);
+    renderJobChatTab();
+    showToast("Started a new chat session.");
+  });
+
+  // Hook up Delete Session
+  document.getElementById("btnDeleteJobChatSession")?.addEventListener("click", () => {
+    deleteJobChatSession(jobId, active.id);
+    renderJobChatTab();
+    showToast("Chat session deleted.");
+  });
+
+  // Hook up Clear Chat in active session
+  document.getElementById("btnClearJobChat")?.addEventListener("click", () => {
+    clearJobChatSession(jobId, active.id);
+    renderJobChatTab();
+    showToast("Chat history cleared for this session.");
   });
 
   // Hook up Send
@@ -3677,13 +3858,10 @@ async function sendJobChatMessage(text) {
   if (!selectedJob || !text.trim()) return;
 
   const jobId = selectedJob.id || `${selectedJob.company}_${selectedJob.title}`;
-  if (!jobChatHistories.has(jobId)) {
-    jobChatHistories.set(jobId, []);
-  }
-  const history = jobChatHistories.get(jobId);
+  const { active } = getActiveJobSession(jobId);
 
-  // Add user message to history
-  history.push({ role: "user", content: text.trim(), time: Date.now() });
+  // Add user message to persistent storage
+  appendJobChatMessage(jobId, active.id, { role: "user", content: text.trim(), time: Date.now() });
 
   // Clear input and re-render with loading state
   renderJobChatTab();
@@ -3702,7 +3880,7 @@ async function sendJobChatMessage(text) {
   loadingDiv.innerHTML = `
     <div class="chat-msg-header">
       <span class="chat-copilot-tag">🤖 Job Copilot</span>
-      <span style="font-size: 11px; color: var(--text-tertiary);">Thinking...</span>
+      <span style="font-size: 11px; color: var(--text-tertiary);">Analyzing role & candidate context...</span>
     </div>
     <div class="chat-msg-content">
       <div class="chat-loading-dots">
@@ -3716,20 +3894,28 @@ async function sendJobChatMessage(text) {
   if (messagesCont) messagesCont.scrollTop = messagesCont.scrollHeight;
 
   try {
+    // Filter clean history for context without broken error banners
+    const cleanHistory = (active.messages || [])
+      .slice(0, -1)
+      .filter(m => !m.content.startsWith("> ⚠️") && !m.content.includes("Model Response Stalled") && !m.content.includes("Connection error occurred"))
+      .slice(-8);
+
     const res = await fetch("/api/job-chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         jobId: selectedJob.id,
         message: text.trim(),
-        history: history.slice(0, -1),
+        history: cleanHistory,
         job: {
           company: selectedJob.company,
-          title: selectedJob.title,
+          title: selectedJob.title || selectedJob.role,
           location: selectedJob.location,
           salary: selectedJob.salary,
           full_jd: selectedJob.full_jd || selectedJob.summary || "",
           key_skills: selectedJob.key_skills || [],
+          cv_file: selectedJob.cv_file || "",
+          cover_file: selectedJob.cover_file || "",
           sponsorship_status: selectedJob.sponsorship_status,
           sponsor_verified: selectedJob.sponsor_verified,
           analysis: selectedJob.analysis
@@ -3739,16 +3925,16 @@ async function sendJobChatMessage(text) {
 
     const data = await res.json();
     if (data.success && data.reply) {
-      history.push({ role: "assistant", content: data.reply, time: Date.now() });
+      appendJobChatMessage(jobId, active.id, { role: "assistant", content: data.reply, time: Date.now() });
       if (data.aiError) {
         showToast(`⚠️ ${data.aiError.title}: Click model badge to switch.`, "warning");
       }
     } else {
-      history.push({ role: "assistant", content: `⚠️ ${data.error || "Could not generate a response. Please try again."}`, time: Date.now() });
+      appendJobChatMessage(jobId, active.id, { role: "assistant", content: `⚠️ ${data.error || "Could not generate a response. Please try again."}`, time: Date.now() });
     }
   } catch (err) {
     console.error("Job chat error:", err);
-    history.push({ role: "assistant", content: "⚠️ Connection error occurred while communicating with the assistant.", time: Date.now() });
+    appendJobChatMessage(jobId, active.id, { role: "assistant", content: "⚠️ Connection error occurred while communicating with the assistant.", time: Date.now() });
   } finally {
     renderJobChatTab();
     setTimeout(() => {
@@ -4259,6 +4445,8 @@ async function fetchSearchConfig() {
     const sources = searchConfig.sources || {};
     document.getElementById("sourceLinkedin").checked = Boolean(sources.linkedin);
     document.getElementById("sourceFreehire").checked = Boolean(sources.freehire);
+    const sourceJobspyEl = document.getElementById("sourceJobspy");
+    if (sourceJobspyEl) sourceJobspyEl.checked = Boolean(sources.jobspy);
     document.getElementById("sourceCvLibrary").checked = Boolean(sources.cvLibrary);
     document.getElementById("sourceReed").checked = Boolean(sources.reed);
     document.getElementById("sourceGoogleJobs").checked = Boolean(sources.googleJobs);
@@ -4321,6 +4509,7 @@ async function saveSearchConfig() {
     sources: {
       linkedin: true,
       freehire: true,
+      jobspy: Boolean(document.getElementById("sourceJobspy")?.checked),
       cvLibrary: document.getElementById("sourceCvLibrary").checked,
       reed: document.getElementById("sourceReed").checked,
       googleJobs: document.getElementById("sourceGoogleJobs").checked,

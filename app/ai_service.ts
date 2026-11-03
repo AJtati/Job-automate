@@ -1416,12 +1416,13 @@ export class AIService {
             prompt: fullPrompt,
             stream: false
           }),
-          signal: AbortSignal.timeout(30000)
+          signal: AbortSignal.timeout(60000)
         });
         if (res.ok) {
           const data: any = await res.json();
           this.lastGenerationError = null;
-          return data.response?.trim() || "";
+          const raw = data.response?.trim() || "";
+          return stripThinkingProcess(raw) || raw;
         }
         const errBody = await res.text();
         this.parseAndRecordGenerationError("ollama", modelToTry, res.status, errBody);
@@ -1456,7 +1457,7 @@ export class AIService {
               system: systemPrompt,
               messages: [{ role: "user", content: prompt }]
             }),
-            signal: AbortSignal.timeout(25000)
+            signal: AbortSignal.timeout(50000)
           });
           if (res.ok) {
             const data: any = await res.json();
@@ -1466,7 +1467,7 @@ export class AIService {
               this.saveConfig({ anthropicModel: modelToTry });
             }
             this.lastGenerationError = null;
-            return text;
+            return stripThinkingProcess(text) || text;
           }
           const errBody = await res.text();
           console.warn(`Anthropic model ${modelToTry} returned ${res.status}:`, errBody);
@@ -1507,7 +1508,7 @@ export class AIService {
                 { role: "user", content: prompt }
               ]
             }),
-            signal: AbortSignal.timeout(25000)
+            signal: AbortSignal.timeout(50000)
           });
           if (res.ok) {
             const data: any = await res.json();
@@ -1517,7 +1518,7 @@ export class AIService {
               this.saveConfig({ openaiModel: modelToTry });
             }
             this.lastGenerationError = null;
-            return text;
+            return stripThinkingProcess(text) || text;
           }
           const errBody = await res.text();
           console.warn(`OpenAI model ${modelToTry} returned ${res.status}:`, errBody);
@@ -1560,7 +1561,7 @@ export class AIService {
                 maxOutputTokens: maxTokens
               }
             }),
-            signal: AbortSignal.timeout(12000)
+            signal: AbortSignal.timeout(45000)
           });
           if (res.ok) {
             const data: any = await res.json();
@@ -1571,7 +1572,7 @@ export class AIService {
                 this.config.geminiModel = modelToTry;
                 this.saveConfig({ geminiModel: modelToTry });
               }
-              return text;
+              return stripThinkingProcess(text) || text;
             }
           }
           const errBody = await res.text();
@@ -1620,12 +1621,13 @@ export class AIService {
               temperature: 0.7,
               max_tokens: maxTokens
             }),
-            signal: AbortSignal.timeout(30000)
+            signal: AbortSignal.timeout(50000)
           });
           if (res.ok) {
             const data: any = await res.json();
             const choice = data.choices?.[0];
-            const text = (choice?.message?.content || choice?.message?.reasoning_content || choice?.message?.reasoning || "").trim();
+            const rawContent = (choice?.message?.content || "").trim();
+            const text = stripThinkingProcess(rawContent);
             if (text) {
               this.lastGenerationError = null;
               if (modelToTry !== this.config.openrouterModel) {
@@ -1674,12 +1676,13 @@ export class AIService {
               temperature: 0.7,
               max_tokens: maxTokens
             }),
-            signal: AbortSignal.timeout(35000)
+            signal: AbortSignal.timeout(50000)
           });
           if (res.ok) {
             const data: any = await res.json();
             const choice = data.choices?.[0];
-            const text = (choice?.message?.content || choice?.message?.reasoning_content || "").trim();
+            const rawContent = (choice?.message?.content || "").trim();
+            const text = stripThinkingProcess(rawContent);
             if (text) {
               this.lastGenerationError = null;
               if (modelToTry !== this.config.nvidiaModel) {
@@ -3255,15 +3258,21 @@ Target Competencies: ${(analysis.gapKeywords || []).slice(0, 4).join(", ")}
 
 Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} that makes the hiring manager excited to interview this candidate.`;
 
-        const aiResponse = await this.generateText(userPrompt, systemPrompt);
+        const rawResponse = await this.generateText(userPrompt, systemPrompt, 2500);
+        const aiResponse = stripThinkingProcess(rawResponse);
+
         if (aiResponse && aiResponse.includes("\\begin{document}")) {
           let cleaned = aiResponse.replace(/^```latex\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
-          cleaned = this.humanizeText(cleaned);
-          return cleaned;
-        } else if (aiResponse && aiResponse.trim().length > 150) {
+          if (isValidCoverLetter(cleaned)) {
+            cleaned = this.humanizeText(cleaned);
+            return cleaned;
+          }
+        } else if (aiResponse && isValidCoverLetter(aiResponse)) {
           const humanized = this.humanizeText(aiResponse.trim());
           return this.wrapParagraphsInCoverLatex(tailoredProfile, jobInput, humanized, resolvedLang);
         }
+
+        console.warn("[generateTailoredCoverLetter] AI response did not contain valid letter content after stripping thinking tokens. Falling back to grounded deterministic engine.");
       } catch (e) {
         console.warn("AI generation of cover letter failed, using deterministic engine:", e);
       }
@@ -3368,10 +3377,32 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     const locale = lang === "de" ? "de-DE" : (lang === "es" ? "es-ES" : (lang === "fr" ? "fr-FR" : (lang === "it" ? "it-IT" : (lang === "nl" ? "nl-NL" : "en-GB"))));
     const date = new Date().toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" });
 
-    const formattedBody = bodyText
+    // Clean body text of salutations, signoffs, and stray thinking paragraphs
+    let cleaned = bodyText.trim();
+    // Strip leading salutation (e.g. "Dear Hiring Team," or "Dear Hiring Manager,")
+    cleaned = cleaned.replace(/^(?:Dear\s+[^,\n]+,|To\s+the\s+Hiring\s+Team,)\s*/i, "");
+    // Strip trailing sign-off (e.g. "Sincerely, \n Candidate Name" or "Yours sincerely,")
+    cleaned = cleaned.replace(/(?:Sincerely|Yours sincerely|Best regards|Kind regards),?\s*(?:[A-Za-z\s]+)?$/i, "").trim();
+
+    const paragraphs = cleaned
       .split(/\n\s*\n/)
       .map(p => p.trim())
-      .filter(Boolean)
+      .filter(p => {
+        if (!p) return false;
+        // Filter out any leaked reasoning steps or rule repetition
+        if (/^(?:Here'?s (?:a )?thinking process|\d+\.\s*\*\*(?:analyze|deconstruct|map|identify)|\*\*strict rules:|\*\*constraints:)/i.test(p)) {
+          return false;
+        }
+        return true;
+      });
+
+    // If filtering left fewer than 2 paragraphs, fallback to grounded deterministic renderer
+    if (paragraphs.length < 2) {
+      const analysis = analyzeApplication(profile, job);
+      return renderGroundedCoverLetter(profile, job, analysis, lang);
+    }
+
+    const formattedBody = paragraphs
       .map(p => p.replace(/&/g, "\\&").replace(/%/g, "\\%").replace(/#/g, "\\#").replace(/\$/g, "\\$"))
       .join("\n\n\\par\n\n");
 
@@ -3407,7 +3438,18 @@ ${safeName}
   // In-Posting Job AI Assistant: Answer questions about a specific role with full JD & Profile context
   public async generateJobChatResponse(
     profile: CandidateProfile,
-    job: JobInput & { id?: string; salary?: string; portal?: string; analysis?: any; sponsorship_status?: string; sponsor_verified?: boolean; full_jd?: string; title?: string },
+    job: JobInput & {
+      id?: string;
+      salary?: string;
+      portal?: string;
+      analysis?: any;
+      sponsorship_status?: string;
+      sponsor_verified?: boolean;
+      full_jd?: string;
+      title?: string;
+      tailoredCvContent?: string;
+      tailoredCoverContent?: string;
+    },
     userMessage: string,
     history: Array<{ role: "user" | "assistant"; content: string }> = []
   ): Promise<string> {
@@ -3422,6 +3464,9 @@ ${safeName}
     const company = normalizedJob.company;
     const role = normalizedJob.role;
 
+    const tailoredCvText = job.tailoredCvContent ? extractGroundedResumeText(job.tailoredCvContent) : "";
+    const tailoredCoverText = job.tailoredCoverContent ? extractGroundedCoverText(job.tailoredCoverContent) : "";
+
     // If an AI provider is active, invoke LLM
     if (this.config.provider !== "builtin") {
       try {
@@ -3430,7 +3475,7 @@ ROLE: ${role} at ${company}
 LOCATION: ${normalizedJob.location || "Unspecified"} | COMPENSATION: ${job.salary || "Competitive / Unspecified"}
 SPONSORSHIP STATUS: ${job.sponsorship_status === "offered" ? "Sponsorship Explicitly Offered" : (job.sponsor_verified ? "Licensed Sponsor Employer" : "Standard Right-to-Work")}
 
-CANDIDATE PROFILE:
+CANDIDATE BASE PROFILE:
 Name: ${profile.name}
 Headline: ${profile.headline}
 Location: ${profile.location} (${profile.visaSponsorshipRequired ? "Requires Skilled Worker Visa Sponsorship" : "Unrestricted Right to Work"})
@@ -3440,7 +3485,13 @@ Work History Summary:
 ${(profile.experience || []).slice(0, 4).map(e => `• ${e.role} at ${e.company} (${e.startDate || ""} - ${e.endDate || ""}): ${(e.bullets || []).join(" ")}`).join("\n")}
 Certifications: ${(profile.certifications || []).map(c => `${c.name} (${c.issuer || ""})`).join(", ")}
 Education: ${(profile.education || []).map(e => `${e.degree} from ${e.institution}`).join(", ")}
-
+${tailoredCvText ? `
+SPECIFIC TAILORED RESUME FOR THIS ROLE:
+${tailoredCvText}
+` : ""}${tailoredCoverText ? `
+SPECIFIC TAILORED COVER LETTER FOR THIS ROLE:
+${tailoredCoverText}
+` : ""}
 ATS AUDIT FOR THIS JOB:
 Matched Skills: ${(analysis.matchedKeywords || []).join(", ") || "General alignment"}
 Target/Gap Areas: ${(analysis.gapKeywords || []).join(", ") || "None flagged"}
@@ -3448,33 +3499,41 @@ Target/Gap Areas: ${(analysis.gapKeywords || []).join(", ") || "None flagged"}
 JOB DESCRIPTION EXCERPT:
 ${(normalizedJob.fullJd || "").slice(0, 3000)}
 
-CRITICAL MANDATORY HUMANIZER RULES (STRICTLY ENFORCED ACROSS ALL REPLIES):
-1. ABSOLUTE ZERO TOLERANCE FOR AI TROPES:
-   - ZERO EM-DASHES (— or --). Never use em-dashes anywhere in your answer. Use commas, periods, or separate sentences.
-   - ZERO Not-X-but-Y contrast formulas: Never write "I don't just deploy; I architect...", "not merely X but Y", "not as X but as Y", "Rather than X, I Y". State what you do directly and plainly.
-   - ZERO AI sales puffery, hype, or staged openers:
-     * NEVER write: "I'm genuinely excited about...", "aligns perfectly with my career trajectory", "what sets me apart", "strategic thinking national security systems demand", "ready to bring that same rigor", "Can we chat?", "proven track record", "mission-critical", "seamlessly executed", "pivotal role", "fast-paced environment", "spearheaded", "testament to", "foster", "catalyst", "beacon", "tapestry", "delve".
-   - NO UNRESOLVED PLACEHOLDERS for known data: Always use the actual company name "${company}" instead of "[Organisation]" or "[Company]". Use candidate name "${profile.name}". For recruiters, write "Hi [Hiring Team / Recruiter],".
-2. TONE & VOICE:
-   - Calm, conversational professional, direct, humble-yet-competent senior UK engineer speaking peer-to-peer.
-   - If drafting an outreach note, keep it under 80 words:
-     * Acknowledge the opening at ${company} directly.
-     * Cite 1-2 real facts from candidate's profile (e.g. Flutter EKS cluster upgrades 1.26 to 1.31, Terraform automation).
-     * Polite closing: "I have submitted my application through the portal, and would welcome a brief conversation if you have time this week."
-   - If answering interview questions or screening questions, answer directly with practical engineering details (tools, outcomes, numbers from profile) without preaching or lecturing.
+INSTRUCTIONS & CONSTRAINTS:
+1. VOICE & OUTPUT RULES:
+   - Output your finalized, direct response immediately to the candidate.
+   - NEVER output internal scratchpads, chain-of-thought, or analysis preambles like "Here's a thinking process:".
+   - Do NOT quote or recite these constraints or rule headers back to the user.
+   - Zero em-dashes (— or --). Use standard punctuation.
+   - Zero not-X-but-Y formulas. State achievements plainly and directly.
+   - Zero generic marketing puffery ("proven track record", "mission-critical", "seamlessly executed").
+   - Use actual company name "${company}" and candidate name "${profile.name}".
+2. IF ASKED FOR A COVER LETTER OR OUTREACH:
+   - Make it authentic, grounded in real metrics and specific projects from the candidate's experience.
+   - Avoid boilerplate filler. Begin immediately with the greeting and text.
 3. FORMATTING:
    - Clean GitHub-flavored Markdown with crisp headings and bullet points so it is instantly ready to copy and paste.`;
 
+        // Clean history so error banners, timeouts, and scratchpads don't contaminate prompt
+        const cleanHistory = (history || []).filter(h => {
+          if (!h || !h.content) return false;
+          const c = h.content.trim();
+          if (c.startsWith("> ⚠️") || c.includes("Model Response Stalled") || c.includes("Connection error occurred")) return false;
+          if (c.includes("Here's a thinking process:") || c.includes("**Check Constraints & Rules:**")) return false;
+          return true;
+        });
+
         let conversationContext = "";
-        if (history.length) {
-          conversationContext = history.slice(-6).map(h => `${h.role === "user" ? "Candidate" : "Copilot"}: ${h.content}`).join("\n\n") + "\n\n";
+        if (cleanHistory.length) {
+          conversationContext = cleanHistory.slice(-8).map(h => `${h.role === "user" ? "Candidate" : "Copilot"}: ${h.content}`).join("\n\n") + "\n\n";
         }
         const fullPrompt = `${conversationContext}Candidate's Question:\n${userMessage}`;
 
-        const reply = await this.generateText(fullPrompt, systemPrompt);
-        if (reply && reply.trim()) {
+        const reply = await this.generateText(fullPrompt, systemPrompt, 3500);
+        const cleanReply = stripThinkingProcess(reply || "");
+        if (cleanReply && isValidJobChatResponse(cleanReply)) {
           this.lastGenerationError = null;
-          return this.humanizeText(reply.trim(), { company, role, candidateName: profile.name });
+          return this.humanizeText(cleanReply.trim(), { company, role, candidateName: profile.name });
         }
       } catch (e: any) {
         console.warn("AI generation for job chat failed:", e);
@@ -3734,4 +3793,177 @@ function cleanCandidateHeadline(role: string, fallbackHeadline = "Professional C
   if (lower.includes("data scientist")) return lower.includes("senior") ? "Senior Data Scientist" : "Data Scientist";
 
   return clean || fallbackHeadline;
+}
+
+export function stripThinkingProcess(raw: string): string {
+  if (!raw) return "";
+  let text = raw;
+
+  // 1. Strip explicit XML thinking/reasoning tags
+  text = text.replace(/<think[\s\S]*?<\/think>/gi, "");
+  text = text.replace(/<thought[\s\S]*?<\/thought>/gi, "");
+  text = text.replace(/<reasoning[\s\S]*?<\/reasoning>/gi, "");
+  text = text.replace(/<scratchpad[\s\S]*?<\/scratchpad>/gi, "");
+
+  // Handle unclosed thinking tags if generation cut off mid-thought
+  text = text.replace(/<(?:think|thought|reasoning|scratchpad)>[\s\S]*$/gi, "");
+
+  // 2. Strip conversational thinking preambles:
+  // e.g. "Here's a thinking process:\n...\nLet's outline:\n\n<answer>"
+  // or "Thinking Process:\n...\n\n<answer>"
+  const thinkingHeaderRegex = /^(?:Here'?s (?:a |the )?thinking process:?|Thinking Process:?|Thought Process:?|Internal Scratchpad:?|Analysis:?)/i;
+  if (thinkingHeaderRegex.test(text.trim())) {
+    // Check for "Let's outline:" or "Let's write:" or "Let's draft:" transition marker first:
+    const letsMatch = text.search(/\n\s*Let'?s (?:outline|write|draft|structure|begin|put it together)[^\n]*\n+/i);
+    if (letsMatch !== -1) {
+      const afterLets = text.slice(letsMatch).replace(/^\s*Let'?s [^\n]*\n+/i, "").trim();
+      if (afterLets) {
+        text = afterLets;
+      }
+    } else {
+      // Look for boundary where actual response begins (e.g. "Dear ...", "Here is ...", "Application for ...", "\documentclass", etc.):
+      const boundaryMatch = text.search(/\n\n\s*(?:(?:Dear|To the|Application for|I am writing|I'm writing|Here is|Here's|Hello|Hi)\b|\\documentclass|\\begin\{document\}|```(?:markdown|latex)?\s*\n\s*(?:Dear|I am|Application))/i);
+      if (boundaryMatch !== -1) {
+        text = text.slice(boundaryMatch).trim();
+      } else {
+        // If no boundary found and it's still pure thinking analysis, return empty
+        return "";
+      }
+    }
+  }
+
+  // 3. Strip any residual "Here's a thinking process:" lines
+  text = text.replace(/^Here'?s (?:a )?thinking process:?\s*$/gmi, "");
+
+  // 4. Strip numbered analysis steps if at the beginning:
+  if (/^\s*1\.\s*\*\*(?:Analyze|Check constraints|Review|Deconstruct)/i.test(text)) {
+    const boundary = text.search(/\n\n\s*(?:(?:Dear|To the|Application for|I am writing|I'm writing|Here is|Here's|Hello|Hi)\b|\\documentclass|\\begin\{document\})/i);
+    if (boundary !== -1) {
+      text = text.slice(boundary).trim();
+    }
+  }
+
+  return text.trim();
+}
+
+export function isValidJobChatResponse(text: string): boolean {
+  if (!text || text.trim().length < 15) return false;
+  const t = text.trim();
+  if (/^Here'?s (?:a )?thinking process/i.test(t)) return false;
+  if (/^\s*1\.\s*\*\*(?:Analyze|Check constraints|Deconstruct)/i.test(t)) return false;
+  if (t.includes("**Check Constraints & Rules:**") && (t.includes("HUMANIZER") || t.includes("ZERO TOLERANCE"))) return false;
+  return true;
+}
+
+export function extractGroundedResumeText(latex: string): string {
+  if (!latex) return "";
+  const lines = latex.split("\n");
+  const extractedBullets: string[] = [];
+  const skillsList: string[] = [];
+  let summary = "";
+  let inSummary = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("%")) continue;
+
+    if (/\\section\{(?:Summary|Profile|Professional Summary|About Me|Profil)\}/i.test(trimmed)) {
+      inSummary = true;
+      continue;
+    }
+    if (inSummary && /\\section\{/i.test(trimmed)) {
+      inSummary = false;
+    }
+    if (inSummary && trimmed) {
+      const cleanLine = trimmed
+        .replace(/\\textbf\{([^}]+)\}/g, "$1")
+        .replace(/\\emph\{([^}]+)\}/g, "$1")
+        .replace(/\\(?:vspace|hspace)\{[^}]+\}/g, "")
+        .replace(/[{}]/g, "")
+        .trim();
+      if (cleanLine && !cleanLine.startsWith("\\")) summary += (summary ? " " : "") + cleanLine;
+    }
+
+    const bulletMatch = trimmed.match(/\\resumeItem\{([^}]+)\}/);
+    if (bulletMatch && bulletMatch[1]) {
+      const bullet = bulletMatch[1]
+        .replace(/\\textbf\{([^}]+)\}/g, "$1")
+        .replace(/\\emph\{([^}]+)\}/g, "$1")
+        .replace(/[{}]/g, "")
+        .trim();
+      if (bullet.length > 10) {
+        extractedBullets.push(bullet);
+      }
+    }
+
+    if (/\\textbf\{[^}]*(?:Skills|Languages|Frameworks|Cloud|Tools)[^}]*\}:/i.test(trimmed)) {
+      const cleanSkills = trimmed
+        .replace(/\\textbf\{([^}]+)\}/g, "$1")
+        .replace(/[{}]/g, "")
+        .trim();
+      if (cleanSkills) skillsList.push(cleanSkills);
+    }
+  }
+
+  const parts: string[] = [];
+  if (summary) {
+    parts.push(`Tailored Summary: ${summary}`);
+  }
+  if (skillsList.length) {
+    parts.push(`Highlighted Skills:\n${skillsList.join("\n")}`);
+  }
+  if (extractedBullets.length) {
+    parts.push(`Key Tailored Experience Bullets (Crafted specifically for this job):\n${extractedBullets.map(b => `• ${b}`).join("\n")}`);
+  }
+
+  return parts.join("\n\n");
+}
+
+export function extractGroundedCoverText(latex: string): string {
+  if (!latex) return "";
+  if (!latex.includes("\\documentclass") && !latex.includes("\\begin{document}")) {
+    return latex.trim();
+  }
+  const lines = latex.split("\n");
+  const paragraphs: string[] = [];
+  let recording = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/\\textbf\{Dear\b|\\textbf\{To\b/i.test(trimmed) || /Dear Hiring Team/i.test(trimmed)) {
+      recording = true;
+      continue;
+    }
+    if (recording) {
+      if (/\\vspace\{|\\begin\{|\\end\{|Yours sincerely|Sincerely|Kind regards/i.test(trimmed)) {
+        if (/Yours sincerely|Sincerely|Kind regards/i.test(trimmed)) {
+          break;
+        }
+        continue;
+      }
+      const clean = trimmed
+        .replace(/\\textbf\{([^}]+)\}/g, "$1")
+        .replace(/\\emph\{([^}]+)\}/g, "$1")
+        .replace(/[{}]/g, "")
+        .trim();
+      if (clean.length > 20) {
+        paragraphs.push(clean);
+      }
+    }
+  }
+  return paragraphs.join("\n\n");
+}
+
+export function isValidCoverLetter(text: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  // Must be at least 180 characters of human letter prose
+  if (trimmed.length < 180) return false;
+
+  // Must not be an unparsed thinking/analysis dump
+  if (/^Here'?s (?:a )?thinking process/i.test(trimmed)) return false;
+  if (/\b(?:Analyze the (?:request|requirements)|Deconstruct the constraints|Map candidate profile)\b/i.test(trimmed)) return false;
+  if (/\bStrict rules:\s*No em-dashes\b/i.test(trimmed)) return false;
+
+  return true;
 }

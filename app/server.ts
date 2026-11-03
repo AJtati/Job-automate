@@ -17,7 +17,7 @@ import {
   detectCandidateCountry, detectJobCountry, type CandidateCountryInfo,
   searchAdzuna, searchArbeitnow, searchCvLibrary, searchGoogleJobs,
   searchJobicy, searchReed, searchRemotive, searchTheMuse,
-  searchGreenhouse, searchLever, searchAshby,
+  searchGreenhouse, searchLever, searchAshby, searchJobSpy,
   parseJobDateAndTimestamp,
   type SourceJob, type SourceReport,
 } from "./job_sources";
@@ -1074,8 +1074,25 @@ const INITIAL_SEED_JOBS = [
 
 // Helper to seed initial jobs if empty
 function getJobDedupKey(job: { url?: string; company?: string; title?: string }): string {
+  // 1. Normalized company + role deduplication:
+  // When both company and title exist, matching by company + title prevents duplicate postings
+  // across multiple job boards (Indeed, Glassdoor, LinkedIn, Google Jobs, and direct careers).
+  const normCompany = (job.company || "").toLowerCase()
+    .replace(/\b(europe limited|limited|ltd|b corp™|b corp|l\.p\.|lp|inc|llc|uk & ireland|plc)\b/g, "")
+    .replace(/[^a-z0-9]/g, "");
+  const normTitle = (job.title || "").toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/[^a-z0-9]/g, "");
+  if (normCompany && normTitle) {
+    return `ct_${normCompany}_${normTitle}`;
+  }
+
   const url = (job.url || "").trim();
-  // Extract 6+ digit portal job ID (e.g. LinkedIn 4472952380)
+  // Indeed jk ID (e.g. jk=d82bc175fd28e64f)
+  const jkMatch = url.match(/[?&]jk=([a-f0-9]+)/i);
+  if (jkMatch) return `indeed_${jkMatch[1].toLowerCase()}`;
+
+  // Extract 6+ digit portal job ID (e.g. LinkedIn 4472952380, Glassdoor 1010314493102)
   const idMatch = url.match(/(\d{6,})/);
   if (idMatch) return `job_id_${idMatch[1]}`;
   
@@ -1083,14 +1100,7 @@ function getJobDedupKey(job: { url?: string; company?: string; title?: string })
   const normUrl = url.split("?")[0].replace(/^https?:\/\/(www\.|uk\.)?/, "").replace(/\/$/, "");
   if (normUrl) return `url_${normUrl}`;
 
-  // Fallback to normalized company + role
-  const normCompany = (job.company || "").toLowerCase()
-    .replace(/\b(europe limited|limited|ltd|b corp™|b corp|l\.p\.|lp|inc|llc|uk & ireland|plc)\b/g, "")
-    .replace(/[^a-z0-9]/g, "");
-  const normTitle = (job.title || "").toLowerCase()
-    .replace(/[–—]/g, "-")
-    .replace(/[^a-z0-9]/g, "");
-  return `ct_${normCompany}_${normTitle}`;
+  return `fallback_${Math.random()}`;
 }
 
 function initializeSeed() {
@@ -1318,6 +1328,7 @@ export async function runScrapeForProfile(
     { enabled: config.sources.greenhouse, name: "Greenhouse ATS", keyReady: true, search: (q, l) => searchGreenhouse(config, q, l) },
     { enabled: config.sources.lever, name: "Lever ATS", keyReady: true, search: (q, l) => searchLever(config, q, l) },
     { enabled: config.sources.ashby, name: "Ashby ATS", keyReady: true, search: (q, l) => searchAshby(config, q, l) },
+    { enabled: Boolean(config.sources.jobspy), name: "JobSpy (Indeed, Glassdoor, Google)", keyReady: true, search: (q, l) => searchJobSpy(config, q, l, countryInfo.freehireCode) },
   ];
   for (const provider of apiSources) {
     const before = counters();
@@ -1336,7 +1347,7 @@ export async function runScrapeForProfile(
         countResult(ingestDiscoveredJob(seen, {
           id: `${job.portal}_${job.externalId}`, title: job.title, company: job.company, url: job.url,
           location: job.location, postedDate: job.postedDate, postedAt: job.postedAt, description: job.description,
-          salary: job.salary, portal: job.portal, source: "api",
+          salary: job.salary, portal: job.portal, source: job.sourceLabel || "api",
         }, profile, sponsorshipMode));
       }
       reports.push(withCounts({ source: provider.name, status: "ok", found: jobs.length }, before));
@@ -2131,6 +2142,48 @@ serve({
         const salary = incomingJob?.salary || storedJob.salary || "";
         const keySkills = incomingJob?.key_skills || storedJob.key_skills || storedJob.keySkills || [];
 
+        const candidateSlug = (activeProfile.name || "candidate").toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
+        const cleanCompany = (company || "Company").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+        const cleanRole = (role || "Role").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+
+        const cvPath = incomingJob?.cv_file || incomingJob?.cvFile || incomingJob?.cvPath || storedJob.cv_file || storedJob.cvFile;
+        const coverPath = incomingJob?.cover_file || incomingJob?.coverFile || incomingJob?.coverPath || storedJob.cover_file || storedJob.coverFile;
+
+        let tailoredCvContent = "";
+        let tailoredCoverContent = "";
+
+        const candidateCvPaths = [
+          cvPath,
+          `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`,
+          `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}_en.tex`
+        ].filter(Boolean) as string[];
+
+        for (const p of candidateCvPaths) {
+          const full = isAbsolute(p) ? p : join(ROOT_DIR, p);
+          if (existsSync(full)) {
+            try {
+              tailoredCvContent = readFileSync(full, "utf-8");
+              break;
+            } catch {}
+          }
+        }
+
+        const candidateCoverPaths = [
+          coverPath,
+          `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`,
+          `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}_en.tex`
+        ].filter(Boolean) as string[];
+
+        for (const p of candidateCoverPaths) {
+          const full = isAbsolute(p) ? p : join(ROOT_DIR, p);
+          if (existsSync(full)) {
+            try {
+              tailoredCoverContent = readFileSync(full, "utf-8");
+              break;
+            } catch {}
+          }
+        }
+
         const jobForChat = {
           ...storedJob,
           ...incomingJob,
@@ -2140,6 +2193,10 @@ serve({
           fullJd,
           keySkills,
           salary,
+          cv_file: cvPath || candidateCvPaths[0],
+          cover_file: coverPath || candidateCoverPaths[0],
+          tailoredCvContent,
+          tailoredCoverContent,
         };
 
         const reply = await aiService.generateJobChatResponse(activeProfile, jobForChat, message, history || []);

@@ -17,6 +17,7 @@ export interface SearchConfig {
     greenhouse: boolean;
     lever: boolean;
     ashby: boolean;
+    jobspy: boolean;
   };
   sponsorshipMode: SponsorshipMode;
   customAtsCompanies?: string;
@@ -42,6 +43,7 @@ const DEFAULT_CONFIG: SearchConfig = {
     greenhouse: true,
     lever: true,
     ashby: true,
+    jobspy: false,
   },
   sponsorshipMode: "all",
 };

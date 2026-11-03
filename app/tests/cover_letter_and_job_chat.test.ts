@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { renderGroundedCoverLetter, LANGUAGE_PACKS } from "../resume_engine";
-import { AIService } from "../ai_service";
+import {
+  AIService,
+  stripThinkingProcess,
+  isValidCoverLetter,
+  isValidJobChatResponse,
+  extractGroundedResumeText,
+  extractGroundedCoverText
+} from "../ai_service";
 import type { CandidateProfile } from "../profiles_manager";
 import type { JobInput } from "../application_engine";
 
@@ -357,5 +364,191 @@ Alex`;
     expect(cleaned).toContain("In my work, I architect for resilience and security");
     expect(cleaned).toContain("scaling microservices reliably");
     expect(cleaned).toContain("I have submitted my application, and would welcome a brief conversation if you have time this week.");
+  });
+
+  test("stripThinkingProcess purges internal LLM thinking/reasoning blocks and preambles", () => {
+    const rawWithXml = `<think>
+1. Analyze the job description: Azure DevOps Engineer.
+2. Candidate has Kubernetes and Terraform.
+3. Keep it human.
+</think>
+Dear Hiring Team,
+
+I am writing to apply for the Azure DevOps Engineer position.`;
+
+    expect(stripThinkingProcess(rawWithXml)).toBe(`Dear Hiring Team,\n\nI am writing to apply for the Azure DevOps Engineer position.`);
+
+    const rawWithMarkdownPreamble = `Here's a thinking process:
+
+1. **Analyze the Requirements:**
+- Role: Azure DevOps Engineer
+- Candidate: Ajith Surya Thati
+- Constraints: No em-dashes, no AI marketing clichés.
+
+2. **Deconstruct the Constraints:**
+- Must follow specific LaTeX formatting.
+
+Dear Hiring Team,
+
+I am writing to express my interest in the Azure DevOps Engineer role at BCN group. Over the past three years, I have maintained production cloud infrastructure with Terraform and Kubernetes.`;
+
+    const stripped = stripThinkingProcess(rawWithMarkdownPreamble);
+    expect(stripped).not.toContain("Here's a thinking process");
+    expect(stripped).not.toContain("Analyze the Requirements");
+    expect(stripped).not.toContain("Deconstruct the Constraints");
+    expect(stripped).toContain("Dear Hiring Team,");
+    expect(stripped).toContain("Azure DevOps Engineer role at BCN group");
+  });
+
+  test("isValidCoverLetter rejects pure thinking process or truncated scratchpads", () => {
+    const pureThinkingDump = `Here's a thinking process:
+
+1. **Analyze the Request:**
+   - Goal: Write a cover letter for Ajith Surya Thati.
+   - Strict rules: No em-dashes, no AI clichés.
+2. **Deconstruct Constraints:**
+   - Paragraph structure: 4 paragraphs.
+Sincerely,
+Ajith`;
+
+    expect(isValidCoverLetter(pureThinkingDump)).toBe(false);
+    expect(isValidCoverLetter("Too short")).toBe(false);
+
+    const validLetter = `I am writing to apply for the Azure DevOps Engineer position at BCN group. My background centers on cloud infrastructure, container orchestration with Kubernetes, and automated deployment pipelines. In my recent work, I upgraded production clusters across five versions with zero downtime and built reusable Terraform modules for application teams.`;
+    expect(isValidCoverLetter(validLetter)).toBe(true);
+  });
+
+  test("stripThinkingProcess cleans conversational chat reasoning from Nemotron/DeepSeek models", () => {
+    const screenshotSample = `Here's a thinking process:
+
+1. **Analyze User Input:**
+   - User is the candidate (Ajith Surya Thati)
+   - They say "hi"
+   - Then they ask for "Give me a cover letter for this"
+   - The "this" refers to the Azure DevOps Engineer role at bcn group that I have the full context for
+
+2. **Check Constraints & Rules:**
+   - I am Ajith Surya Thati's Personal Career Co-Pilot and Application Strategist
+   - Must follow CRITICAL MANDATORY HUMANIZER RULES strictly
+   - ABSOLUTE ZERO TOLERANCE FOR AI TROPES:
+     - Zero em-dashes
+     - Zero "not-X-but-Y" contrast formulas
+     - Zero AI sales puffery, hype, staged openers
+   - NO unresolved placeholders: Use actual company name "bcn group", candidate name "Ajith Surya Thati"
+
+Let's outline:
+
+Here is a revised cover letter for the Azure DevOps Engineer role at bcn group:
+
+Dear Hiring Team,
+
+I am writing to express my interest in the Azure DevOps Engineer position at bcn group. Over the past five years, I have architected and automated cloud infrastructure across Azure and AWS.`;
+
+    const cleaned = stripThinkingProcess(screenshotSample);
+    expect(cleaned).not.toContain("Here's a thinking process");
+    expect(cleaned).not.toContain("Analyze User Input");
+    expect(cleaned).not.toContain("Check Constraints & Rules");
+    expect(cleaned).not.toContain("CRITICAL MANDATORY HUMANIZER RULES");
+    expect(cleaned).not.toContain("Let's outline");
+    expect(cleaned).toContain("Here is a revised cover letter for the Azure DevOps Engineer role at bcn group:");
+    expect(cleaned).toContain("Dear Hiring Team,");
+    expect(isValidJobChatResponse(cleaned)).toBe(true);
+  });
+
+  test("isValidJobChatResponse detects and rejects pure unparsed scratchpads", () => {
+    const pureScratchpad = `Here's a thinking process:
+1. **Analyze User Input:** Candidate wants a cover letter.
+2. **Check Constraints & Rules:** Must follow CRITICAL MANDATORY HUMANIZER RULES.
+Let's outline:`;
+    expect(isValidJobChatResponse(pureScratchpad)).toBe(false);
+
+    const normalAnswer = `### Key Strengths for Azure DevOps Engineer at bcn group
+- **Infrastructure as Code**: Deep experience writing reusable Terraform modules.
+- **CI/CD Pipelines**: Production pipelines using GitHub Actions with security gates.`;
+    expect(isValidJobChatResponse(normalAnswer)).toBe(true);
+  });
+
+  test("extractGroundedResumeText extracts summary, skills, and experience bullets from LaTeX CV", () => {
+    const latexCv = `\\documentclass{article}
+\\begin{document}
+\\section{Professional Summary}
+Senior Platform & DevOps Engineer with 5+ years of experience automating Azure and AWS cloud environments.
+
+\\section{Technical Skills}
+\\textbf{Cloud & Containers}: Azure, AWS, Docker, Kubernetes, Helm \\\\
+\\textbf{IaC & CI/CD}: Terraform, Ansible, GitHub Actions, Jenkins
+
+\\section{Experience}
+\\resumeSubheading{FinTech Scaleup}{London, UK}{Senior DevOps Engineer}{2022 -- Present}
+\\resumeItemListStart
+\\resumeItem{Automated multi-account Azure landing zones using Terraform and GitHub Actions.}
+\\resumeItem{Upgraded 12 production Kubernetes clusters across 5 versions with zero customer downtime.}
+\\resumeItemListEnd
+\\end{document}`;
+
+    const extracted = extractGroundedResumeText(latexCv);
+    expect(extracted).toContain("Tailored Summary: Senior Platform & DevOps Engineer");
+    expect(extracted).toContain("Azure, AWS, Docker, Kubernetes, Helm");
+    expect(extracted).toContain("Automated multi-account Azure landing zones using Terraform and GitHub Actions.");
+    expect(extracted).toContain("Upgraded 12 production Kubernetes clusters across 5 versions with zero customer downtime.");
+  });
+
+  test("extractGroundedCoverText extracts body paragraphs cleanly from LaTeX cover letter", () => {
+    const latexCover = `\\documentclass{article}
+\\begin{document}
+\\textbf{Ajith Surya Thati}\\\\
+Hartlepool
+\\vspace{1em}
+\\textbf{Hiring Team}\\\\
+bcn group
+\\vspace{1em}
+\\textbf{Dear Hiring Team,}
+
+I am writing to apply for the Azure DevOps Engineer position at bcn group.
+
+Over the past four years, I have focused on automating scalable Azure infrastructure using Terraform. In my previous role, I designed automated CI/CD workflows and implemented automated security checks.
+
+I would welcome the opportunity to speak with your team about your cloud roadmap.
+
+Yours sincerely,
+Ajith Surya Thati
+\\end{document}`;
+
+    const extracted = extractGroundedCoverText(latexCover);
+    expect(extracted).toContain("I am writing to apply for the Azure DevOps Engineer position at bcn group.");
+    expect(extracted).toContain("Over the past four years, I have focused on automating scalable Azure infrastructure using Terraform.");
+    expect(extracted).toContain("I would welcome the opportunity to speak with your team about your cloud roadmap.");
+    expect(extracted).not.toContain("\\documentclass");
+    expect(extracted).not.toContain("\\vspace");
+    expect(extracted).not.toContain("Yours sincerely");
+  });
+
+  test("Job AI Assistant generateJobChatResponse incorporates tailored CV bullets into answers", async () => {
+    const tailoredCv = `\\documentclass{article}
+\\begin{document}
+\\section{Summary}
+Specialized Azure DevOps Engineer with hands-on enterprise landing zone delivery.
+\\section{Experience}
+\\resumeItem{Delivered Terraform Enterprise Landing Zones adhering to CIS Azure Foundations benchmark.}
+\\resumeItem{Led migration of 40 microservices to Azure AKS with automated GitOps deployments.}
+\\end{document}`;
+
+    const jobWithTailoredCv = {
+      ...job,
+      tailoredCvContent: tailoredCv
+    };
+
+    const reply = await aiService.generateJobChatResponse(
+      profile,
+      jobWithTailoredCv,
+      "What is my top strength for this role?"
+    );
+
+    expect(reply).toBeTruthy();
+    expect(reply.length).toBeGreaterThan(50);
+    // Does not leak rule prompt headers or thinking process
+    expect(reply).not.toContain("Here's a thinking process");
+    expect(reply).not.toContain("CRITICAL MANDATORY HUMANIZER RULES");
+    expect(reply).not.toContain("ABSOLUTE ZERO TOLERANCE");
   });
 });

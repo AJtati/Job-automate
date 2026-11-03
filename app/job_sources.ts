@@ -1,4 +1,7 @@
+import { spawn } from "child_process";
 import { createHash } from "crypto";
+import { existsSync } from "fs";
+import { resolve } from "path";
 import type { SearchConfig } from "./search_config";
 
 export interface SourceJob {
@@ -11,7 +14,7 @@ export interface SourceJob {
   postedAt?: string;
   description: string;
   salary?: string;
-  portal: "cv-library" | "reed" | "google-jobs" | "adzuna" | "jobicy" | "arbeitnow" | "remotive" | "themuse" | "greenhouse" | "lever" | "ashby";
+  portal: "cv-library" | "reed" | "google-jobs" | "adzuna" | "jobicy" | "arbeitnow" | "remotive" | "themuse" | "greenhouse" | "lever" | "ashby" | "jobspy";
   sourceLabel: string;
 }
 
@@ -744,4 +747,119 @@ export async function searchAshby(
   }));
 
   return allJobs;
+}
+
+export async function searchJobSpy(
+  config: SearchConfig,
+  query: string,
+  location: string,
+  countryCode?: string
+): Promise<SourceJob[]> {
+  const rootDir = process.env.AI_JOB_SEARCH_APP_ROOT || process.cwd();
+  let scriptPath = resolve(rootDir, "tools", "scrape_jobspy.py");
+  if (!existsSync(scriptPath)) {
+    const fallback = resolve(__dirname, "..", "tools", "scrape_jobspy.py");
+    if (existsSync(fallback)) scriptPath = fallback;
+  }
+
+  // Determine country string for Indeed
+  let country = "uk";
+  const locLower = (location || "").toLowerCase();
+  if (/denmark|copenhagen|aarhus|odense|\bdk\b/i.test(locLower)) country = "denmark";
+  else if (/germany|berlin|munich|frankfurt|hamburg|\bde\b/i.test(locLower)) country = "germany";
+  else if (/united states|\busa?\b|san francisco|new york|austin|seattle|california/i.test(locLower)) country = "usa";
+  else if (/india|bangalore|bengaluru|hyderabad|pune|mumbai|\bin\b/i.test(locLower)) country = "india";
+  else if (/france|paris|\bfr\b/i.test(locLower)) country = "france";
+  else if (/canada|toronto|vancouver|\bca\b/i.test(locLower)) country = "canada";
+  else if (/australia|sydney|melbourne|\bau\b/i.test(locLower)) country = "australia";
+
+  if (countryCode) {
+    const c = countryCode.toLowerCase();
+    if (c === "gb" || c === "uk") country = "uk";
+    else if (c === "us" || c === "usa") country = "usa";
+    else if (c === "de") country = "germany";
+    else if (c === "dk") country = "denmark";
+    else if (c === "in") country = "india";
+    else if (c === "fr") country = "france";
+    else if (c === "ca") country = "canada";
+    else if (c === "au") country = "australia";
+  }
+
+  return new Promise((resolvePromise) => {
+    const args = [
+      scriptPath,
+      "--query", query,
+      "--location", location,
+      "--country", country,
+      "--limit", "10",
+      "--hours-old", "168",
+      "--sites", "indeed,glassdoor,google,zip_recruiter",
+    ];
+
+    const proc = spawn("python3", args, {
+      cwd: rootDir,
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    const timer = setTimeout(() => {
+      try {
+        proc.kill("SIGTERM");
+      } catch {}
+      resolvePromise([]);
+    }, 20000);
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0 && !stdout.trim()) {
+        console.warn(`[searchJobSpy] Process exited with code ${code}: ${stderr}`);
+        resolvePromise([]);
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(stdout.trim());
+        if (!parsed.success || !Array.isArray(parsed.jobs)) {
+          resolvePromise([]);
+          return;
+        }
+
+        const jobs: SourceJob[] = parsed.jobs.map((j: any) => ({
+          externalId: String(j.externalId || j.id || ""),
+          title: text(j.title),
+          company: text(j.company),
+          location: text(j.location || location),
+          url: String(j.url || ""),
+          postedDate: String(j.postedDate || new Date().toISOString().slice(0, 10)),
+          postedAt: j.postedAt || undefined,
+          description: String(j.description || ""),
+          salary: j.salary && j.salary !== "Not advertised" ? String(j.salary) : undefined,
+          portal: "jobspy" as const,
+          sourceLabel: String(j.sourceLabel || "JobSpy"),
+        })).filter((j: SourceJob) => j.title && j.company && j.url);
+
+        resolvePromise(jobs);
+      } catch (err) {
+        console.warn(`[searchJobSpy] Failed to parse output: ${err}`);
+        resolvePromise([]);
+      }
+    });
+
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      console.warn(`[searchJobSpy] Failed to spawn python3: ${err.message}`);
+      resolvePromise([]);
+    });
+  });
 }

@@ -161,6 +161,10 @@ mkdir -p "$APP_BUNDLE/Contents/Resources/data"
 cp "$REPO_DIR/data/profiles.template.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
 cp "$REPO_DIR/data/sponsor_register.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
 
+# Bundle lightweight tools needed by the app at runtime
+mkdir -p "$APP_BUNDLE/Contents/Resources/tools"
+cp "$REPO_DIR/tools/scrape_jobspy.py" "$APP_BUNDLE/Contents/Resources/tools/" 2>/dev/null || true
+
 # A packaged runtime makes the installed app independent of the user's PATH.
 BUN_PATH="$(command -v bun 2>/dev/null || true)"
 if [ -z "$BUN_PATH" ] || [ ! -x "$BUN_PATH" ]; then

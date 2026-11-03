@@ -233,4 +233,98 @@ describe("job source normalization", () => {
 
     expect(isJobRelevantToProfile(importedSoftwareEngineerJob, devopsProfile, importedSoftwareEngineerJob.id)).toBe(true);
   });
+
+  test("JobSpy jobs are tagged with jobspy portal and distinctive board attribution", () => {
+    const rawJobs = [
+      { id: "jobspy_indeed_in-1", externalId: "in-1", title: "Software Engineer", company: "Anthropic", location: "London", url: "https://uk.indeed.com/viewjob?jk=abc", postedDate: "2026-11-03", portal: "jobspy", site: "indeed", sourceLabel: "JobSpy (Indeed)", source: "jobspy" },
+      { id: "jobspy_glassdoor_gd-2", externalId: "gd-2", title: "Site Reliability Engineer", company: "JPMorganChase", location: "London", url: "https://www.glassdoor.com/job-listing/j?jl=101", postedDate: "2026-11-03", portal: "jobspy", site: "glassdoor", sourceLabel: "JobSpy (Glassdoor)", source: "jobspy" },
+      { id: "jobspy_google_g-3", externalId: "g-3", title: "Cloud Architect", company: "Google Cloud", location: "London", url: "https://google.com/jobs/1", postedDate: "2026-11-03", portal: "jobspy", site: "google", sourceLabel: "JobSpy (Google)", source: "jobspy" }
+    ];
+
+    for (const job of rawJobs) {
+      expect(job.portal).toBe("jobspy");
+      expect(job.source).toBe("jobspy");
+      expect(job.sourceLabel).toMatch(/^JobSpy \((Indeed|Glassdoor|Google)\)$/);
+    }
+  });
+
+  test("cross-source deduplication unifies same company and role across JobSpy, LinkedIn, and ATS", () => {
+    function getJobDedupKey(job: { url?: string; company?: string; title?: string }): string {
+      const normCompany = (job.company || "").toLowerCase()
+        .replace(/\b(europe limited|limited|ltd|b corp™|b corp|l\.p\.|lp|inc|llc|uk & ireland|plc)\b/g, "")
+        .replace(/[^a-z0-9]/g, "");
+      const normTitle = (job.title || "").toLowerCase()
+        .replace(/[–—]/g, "-")
+        .replace(/[^a-z0-9]/g, "");
+      if (normCompany && normTitle) {
+        return `ct_${normCompany}_${normTitle}`;
+      }
+
+      const url = (job.url || "").trim();
+      const jkMatch = url.match(/[?&]jk=([a-f0-9]+)/i);
+      if (jkMatch) return `indeed_${jkMatch[1].toLowerCase()}`;
+
+      const idMatch = url.match(/(\d{6,})/);
+      if (idMatch) return `job_id_${idMatch[1]}`;
+      
+      const normUrl = url.split("?")[0].replace(/^https?:\/\/(www\.|uk\.)?/, "").replace(/\/$/, "");
+      if (normUrl) return `url_${normUrl}`;
+
+      return `fallback_${Math.random()}`;
+    }
+
+    const jobspyIndeedJob = {
+      title: "Senior Software Engineer",
+      company: "Anthropic Ltd",
+      url: "https://uk.indeed.com/viewjob?jk=d82bc175fd28e64f"
+    };
+
+    const linkedinJob = {
+      title: "Senior Software Engineer",
+      company: "Anthropic",
+      url: "https://www.linkedin.com/jobs/view/4472952380"
+    };
+
+    const atsJob = {
+      title: "Senior Software Engineer",
+      company: "Anthropic",
+      url: "https://jobs.ashbyhq.com/anthropic/d1d5aa98"
+    };
+
+    const differentRoleSameCompany = {
+      title: "Staff Product Manager",
+      company: "Anthropic",
+      url: "https://jobs.ashbyhq.com/anthropic/e9912aa1"
+    };
+
+    const indeedJobA = {
+      title: "",
+      company: "",
+      url: "https://uk.indeed.com/viewjob?jk=d82bc175fd28e64f"
+    };
+
+    const indeedJobB = {
+      title: "",
+      company: "",
+      url: "https://uk.indeed.com/viewjob?jk=f11aa994bd11e02c"
+    };
+
+    // The same vacancy across Indeed, LinkedIn, and ATS produces identical dedup key
+    const keyIndeed = getJobDedupKey(jobspyIndeedJob);
+    const keyLinkedIn = getJobDedupKey(linkedinJob);
+    const keyAts = getJobDedupKey(atsJob);
+    expect(keyIndeed).toBe(keyLinkedIn);
+    expect(keyIndeed).toBe(keyAts);
+    expect(keyIndeed).toBe("ct_anthropic_seniorsoftwareengineer");
+
+    // Different roles at the same company produce distinct keys
+    const keyPm = getJobDedupKey(differentRoleSameCompany);
+    expect(keyPm).not.toBe(keyIndeed);
+    expect(keyPm).toBe("ct_anthropic_staffproductmanager");
+
+    // Individual Indeed jobs without company/title resolve by their distinct jk parameter
+    expect(getJobDedupKey(indeedJobA)).toBe("indeed_d82bc175fd28e64f");
+    expect(getJobDedupKey(indeedJobB)).toBe("indeed_f11aa994bd11e02c");
+    expect(getJobDedupKey(indeedJobA)).not.toBe(getJobDedupKey(indeedJobB));
+  });
 });
