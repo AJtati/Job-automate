@@ -946,33 +946,109 @@ function extractAllSkillsFlat(skillsObj, keywords) {
   return Array.from(set);
 }
 
-function groupManualSkills(rawSkills, baseSkills) {
-  const skills = baseSkills ? JSON.parse(JSON.stringify(baseSkills)) : { cloud: [], devops: [], languages: [], tools: [] };
-  const existingSet = new Set(extractAllSkillsFlat(skills).map(s => s.toLowerCase()));
+function splitSkillsList(text) {
+  if (!text) return [];
+  const results = [];
+  let current = "";
+  let parenDepth = 0;
 
-  const cloudKw = ["aws", "azure", "gcp", "cloud", "google cloud", "bicep", "cloudformation"];
-  const langKw = ["python", "c#", ".net", "dotnet", "java", "typescript", "javascript", "golang", "go", "php", "ruby", "rust", "c++", "sql", "html", "css", "react", "angular", "vue", "fastapi", "django", "flask", "spring"];
-  const devopsKw = ["kubernetes", "k8s", "docker", "terraform", "ci/cd", "git", "ansible", "jenkins", "argocd", "linux", "dynamics", "power platform", "power apps", "power automate", "dataverse", "crm", "erp", "salesforce"];
-
-  for (const s of rawSkills) {
-    if (existingSet.has(s.toLowerCase())) continue;
-    const lower = s.toLowerCase();
-    if (cloudKw.some(k => lower.includes(k))) {
-      if (!skills.cloud) skills.cloud = [];
-      skills.cloud.push(s);
-    } else if (langKw.some(k => lower.includes(k))) {
-      if (!skills.languages) skills.languages = [];
-      skills.languages.push(s);
-    } else if (devopsKw.some(k => lower.includes(k))) {
-      if (!skills.devops) skills.devops = [];
-      skills.devops.push(s);
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "(" || ch === "[" || ch === "{") {
+      parenDepth++;
+      current += ch;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      if (parenDepth > 0) parenDepth--;
+      current += ch;
+    } else if (ch === "," && parenDepth === 0) {
+      const trimmed = current.trim();
+      if (trimmed) results.push(trimmed);
+      current = "";
     } else {
-      if (!skills.tools) skills.tools = [];
-      skills.tools.push(s);
+      current += ch;
     }
-    existingSet.add(s.toLowerCase());
   }
-  return skills;
+  const lastTrimmed = current.trim();
+  if (lastTrimmed) results.push(lastTrimmed);
+  return results;
+}
+
+function groupManualSkills(rawSkills, baseSkills) {
+  const rawTrimmed = (rawSkills || []).map(s => s.trim()).filter(Boolean);
+  const rawLowerMap = new Map();
+  for (const s of rawTrimmed) {
+    rawLowerMap.set(s.toLowerCase(), s);
+  }
+  const remaining = new Set(rawLowerMap.keys());
+
+  const result = {};
+  const knownCategories = baseSkills && typeof baseSkills === "object"
+    ? Object.keys(baseSkills)
+    : ["cloud", "containers", "iac", "cicd", "monitoring", "security", "languages", "devops", "tools"];
+
+  for (const cat of knownCategories) {
+    result[cat] = [];
+  }
+  if (!result.cloud) result.cloud = [];
+  if (!result.containers) result.containers = [];
+  if (!result.devops) result.devops = [];
+  if (!result.iac) result.iac = [];
+  if (!result.cicd) result.cicd = [];
+  if (!result.monitoring) result.monitoring = [];
+  if (!result.security) result.security = [];
+  if (!result.languages) result.languages = [];
+  if (!result.tools) result.tools = [];
+
+  // Filter existing categories: ONLY retain skills that the user kept in rawSkills
+  if (baseSkills && typeof baseSkills === "object") {
+    for (const [cat, arr] of Object.entries(baseSkills)) {
+      if (!Array.isArray(arr)) continue;
+      if (!result[cat]) result[cat] = [];
+      for (const item of arr) {
+        if (typeof item !== "string") continue;
+        const lower = item.trim().toLowerCase();
+        if (rawLowerMap.has(lower)) {
+          const userVersion = rawLowerMap.get(lower);
+          if (!result[cat].includes(userVersion)) {
+            result[cat].push(userVersion);
+          }
+          remaining.delete(lower);
+        }
+      }
+    }
+  }
+
+  // Categorize any newly added or renamed skills
+  const cloudKw = ["aws", "azure", "gcp", "cloud", "google cloud", "bicep", "cloudformation", "cloudfront", "route53", "vpc", "s3", "ec2", "parameter store", "secrets manager", "lambda", "rds", "iam", "irsa"];
+  const containerKw = ["kubernetes", "k8s", "docker", "helm", "argocd", "argo rollouts", "istio", "ecr", "container", "containerd", "podman"];
+  const iacKw = ["terraform", "cdk", "ansible", "cloudformation", "pulumi", "puppet", "chef", "bicep", "packer"];
+  const cicdKw = ["jenkins", "github actions", "gitlab", "concourse", "gocd", "git", "ci/cd", "artifactory", "nexus", "vsts", "bitbucket", "circleci", "travis"];
+  const monitorKw = ["prometheus", "grafana", "alertmanager", "splunk", "zabbix", "cloudwatch", "datadog", "dynatrace", "new relic", "pagerduty", "elk", "kibana", "loki", "opentelemetry"];
+  const secKw = ["sonatype", "veracode", "sonarqube", "waf", "vault", "trivy", "snyk", "zero trust", "cis", "nist", "iso27001"];
+  const langKw = ["python", "bash", "shell", "typescript", "javascript", "golang", "go", "php", "ruby", "rust", "c++", "c#", ".net", "dotnet", "java", "sql", "html", "css", "react", "angular", "vue", "fastapi", "django", "flask", "spring", "node", "next.js", "ffmpeg"];
+
+  for (const lower of remaining) {
+    const s = rawLowerMap.get(lower);
+    if (cloudKw.some(k => lower.includes(k))) {
+      result.cloud.push(s);
+    } else if (containerKw.some(k => lower.includes(k))) {
+      result.containers.push(s);
+    } else if (iacKw.some(k => lower.includes(k))) {
+      result.iac.push(s);
+    } else if (cicdKw.some(k => lower.includes(k))) {
+      result.cicd.push(s);
+    } else if (monitorKw.some(k => lower.includes(k))) {
+      result.monitoring.push(s);
+    } else if (secKw.some(k => lower.includes(k))) {
+      result.security.push(s);
+    } else if (langKw.some(k => lower.includes(k))) {
+      result.languages.push(s);
+    } else {
+      result.tools.push(s);
+    }
+  }
+
+  return result;
 }
 
 async function handleProfileModalAutofill(file) {
@@ -1136,7 +1212,7 @@ async function handleSaveProfileForm(e) {
   const visaSponsorshipRequired = document.getElementById("formVisaRequired").checked;
   const targetRoles = document.getElementById("formTargetRoles").value.split(",").map(s => s.trim()).filter(Boolean);
   const targetLocations = document.getElementById("formTargetLocations").value.split(",").map(s => s.trim()).filter(Boolean);
-  const rawSkills = document.getElementById("formSkills").value.split(",").map(s => s.trim()).filter(Boolean);
+  const rawSkills = splitSkillsList(document.getElementById("formSkills").value);
 
   // If country was not explicitly specified, derive it from the location and postcode provided:
   if (!country && (location || postcode || targetLocations.length)) {
@@ -1193,6 +1269,7 @@ async function handleSaveProfileForm(e) {
     targetRoles: targetRoles.length > 0 ? targetRoles : [headline],
     targetLocations: targetLocations.length > 0 ? targetLocations : ["Remote", location],
     skills: finalSkills,
+    keywords: [],
     experience: (pendingModalProfileData?.experience && pendingModalProfileData.experience.length > 0)
       ? pendingModalProfileData.experience
       : (existing?.experience || []),

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { ProfilesManager, type CandidateProfile } from "../profiles_manager";
+import { ProfilesManager, type CandidateProfile, splitSkillsList, groupManualSkills } from "../profiles_manager";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -212,5 +212,58 @@ describe("uploaded resume persistence", () => {
     expect(dynamicsMatch?.tracker?.["job_devops_1"]).toBeUndefined();
     expect(devopsMatch?.tracker?.["job_devops_1"]?.status).toBe("applied");
     expect(devopsMatch?.tracker?.["job_dyn_1"]).toBeUndefined();
+  });
+
+  test("splitSkillsList parses comma-separated skills while respecting nested parentheses", () => {
+    const raw = "AWS (EKS, EC2, S3), GCP, Azure, Kubernetes (EKS v1.26--v1.31), Docker, PagerDuty (On-call)";
+    const split = splitSkillsList(raw);
+    expect(split).toEqual([
+      "AWS (EKS, EC2, S3)",
+      "GCP",
+      "Azure",
+      "Kubernetes (EKS v1.26--v1.31)",
+      "Docker",
+      "PagerDuty (On-call)"
+    ]);
+  });
+
+  test("groupManualSkills prunes removed skills and does not revert deleted items", () => {
+    const baseSkills = {
+      cloud: ["AWS", "GCP", "Azure"],
+      containers: ["Kubernetes (EKS v1.26--v1.31)", "Docker", "Helm"],
+      devops: ["Kubernetes (EKS v1.26--v1.31)", "Docker"],
+      monitoring: ["Prometheus", "Zabbix", "Splunk"]
+    };
+
+    // User removes "Kubernetes (EKS v1.26--v1.31)" and "Zabbix"
+    const rawSkills = ["AWS", "GCP", "Azure", "Docker", "Helm", "Prometheus", "Splunk"];
+
+    const updated = groupManualSkills(rawSkills, baseSkills);
+
+    expect(updated.containers).not.toContain("Kubernetes (EKS v1.26--v1.31)");
+    expect(updated.devops).not.toContain("Kubernetes (EKS v1.26--v1.31)");
+    expect(updated.monitoring).not.toContain("Zabbix");
+
+    expect(updated.containers).toContain("Docker");
+    expect(updated.containers).toContain("Helm");
+    expect(updated.monitoring).toContain("Prometheus");
+    expect(updated.monitoring).toContain("Splunk");
+  });
+
+  test("groupManualSkills updates modified skills without leaving old versions behind", () => {
+    const baseSkills = {
+      containers: ["Kubernetes (EKS v1.26--v1.31)", "Docker"],
+      devops: ["Kubernetes (EKS v1.26--v1.31)"]
+    };
+
+    // User changes "Kubernetes (EKS v1.26--v1.31)" to "Kubernetes"
+    const rawSkills = ["Kubernetes", "Docker"];
+
+    const updated = groupManualSkills(rawSkills, baseSkills);
+
+    expect(updated.containers).not.toContain("Kubernetes (EKS v1.26--v1.31)");
+    expect(updated.devops).not.toContain("Kubernetes (EKS v1.26--v1.31)");
+    expect(updated.containers).toContain("Kubernetes");
+    expect(updated.containers).toContain("Docker");
   });
 });
