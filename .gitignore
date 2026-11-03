@@ -80,6 +80,7 @@ cover_letters/Cover_*.*
 # Studio App Data & AI Configuration (User API keys & active profiles)
 data/*.json
 !data/profiles.template.json
+!data/taxonomy_knowledge.json
 
 # Studio Native macOS Builds & Staging
 dist/

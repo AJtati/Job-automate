@@ -1,6 +1,7 @@
 import type { ApplicationAnalysis, JobInput } from "./application_engine";
 import { buildGroundedSummary, rankExperienceForJob } from "./application_engine";
 import type { CandidateProfile } from "./profiles_manager";
+import { sanitizeAndCategorizeSkills } from "./taxonomy";
 
 const TOKENS = {
   header: "%%CANDIDATE_HEADER%%",
@@ -590,7 +591,8 @@ function formatCategoryLabel(key: string): string {
 function skills(profile: CandidateProfile, analysis: ApplicationAnalysis, lang: SupportedLanguage = "en"): string {
   const pack = LANGUAGE_PACKS[lang] || LANGUAGE_PACKS.en;
   const matched = new Set((analysis.matchedKeywords || []).map(item => (item || "").toLowerCase()));
-  const s = (profile.skills as Record<string, string[]>) || {};
+  // Run self-healing taxonomy sanitization to guarantee clean categorization
+  const s = sanitizeAndCategorizeSkills((profile.skills as Record<string, string[]>) || {});
 
   const headlineLower = (profile.headline || "").toLowerCase();
   const isDevOpsOrCloud = /devops|cloud|platform|sre|infrastructure|kubernetes|sysadmin/i.test(headlineLower);
@@ -654,12 +656,129 @@ function skills(profile: CandidateProfile, analysis: ApplicationAnalysis, lang: 
   return `\\begin{itemize}[leftmargin=0.15in, label={}]\n  \\small{\\item{\n    ${skillLines}\n  }}\n\\end{itemize}`;
 }
 
+export function cleanEducationItem(item: {
+  degree?: string;
+  institution?: string;
+  startDate?: string;
+  endDate?: string;
+  details?: string;
+}): {
+  degree: string;
+  institution: string;
+  startDate: string;
+  endDate: string;
+  dates: string;
+  details: string;
+} {
+  let degree = (item.degree || "").trim();
+  let institution = (item.institution || "").trim();
+  let startDate = (item.startDate || "").trim();
+  let endDate = (item.endDate || "").trim();
+  let details = (item.details || "").trim();
+
+  // 1. Extract dates from institution or degree if missing or embedded
+  const dateRangeRegex = /\b(?:19|20)\d{2}\s*(?:--|–|—|-|to)\s*(?:(?:19|20)\d{2}|present)\b/i;
+  const singleYearRegex = /\b(19\d{2}|20\d{2})\b/g;
+
+  if (!startDate || !endDate) {
+    const combinedText = `${institution} ${degree}`;
+    const rangeMatch = combinedText.match(dateRangeRegex);
+    if (rangeMatch) {
+      const years = rangeMatch[0].match(/\b(?:19|20)\d{2}|present\b/gi);
+      if (years && years.length >= 2) {
+        if (!startDate) startDate = years[0];
+        if (!endDate) endDate = years[1];
+      }
+    } else {
+      const allYears = Array.from(combinedText.matchAll(singleYearRegex)).map(m => m[1]);
+      if (allYears.length >= 2) {
+        if (!startDate) startDate = allYears[0];
+        if (!endDate) endDate = allYears[1];
+      } else if (allYears.length === 1 && !endDate) {
+        endDate = allYears[0];
+      }
+    }
+  }
+
+  // Strip date ranges and standalone years from institution and degree
+  institution = institution.replace(dateRangeRegex, "").replace(singleYearRegex, "").replace(/\s*-\s*$/, "").trim();
+  degree = degree.replace(dateRangeRegex, "").replace(singleYearRegex, "").replace(/\s*-\s*$/, "").trim();
+
+  // 2. Strip degree/institution prefixes (e.g. "Bachelor's Degree:", "Master's Degree:", "Degree:", "Institution:")
+  const prefixRegex = /^(?:bachelor[’']?s?(?:\s+degree)?|master[’']?s?(?:\s+degree)?|doctor[’']?s?(?:\s+degree)?|ph\.?d(?:\s+degree)?|degree|institution|university)\s*:\s*/i;
+  institution = institution.replace(prefixRegex, "").trim();
+  degree = degree.replace(prefixRegex, "").trim();
+
+  // 3. Separate Degree vs Institution if they are glued into one line
+  // Example: "Bachelor of Technology (B.Tech) Jawaharlal Nehru Technological University Hyderabad (JNTUH)"
+  const degreeInstitSeparators = [
+    /^(.*?(?:bachelor|master|b\.?tech|m\.?tech|b\.?sc|m\.?sc|b\.?eng|m\.?eng|ph\.?d|diploma|associate|bba|mba|llb|llm|degree)[^)]*(?:\([^)]*\))?)\s+(.*(?:university|college|institute|polytechnic|academy|school|conservatory|ecole|hochschule|universit[aä]t|universidad).*)$/i,
+    /^(.*?(?:university|college|institute|polytechnic|academy|school|conservatory|ecole|hochschule|universit[aä]t|universidad)[^,]*),\s*(.*?(?:bachelor|master|b\.?tech|m\.?tech|b\.?sc|m\.?sc|b\.?eng|m\.?eng|ph\.?d|diploma|associate|bba|mba|llb|llm|degree).*)$/i
+  ];
+
+  for (const sep of degreeInstitSeparators) {
+    const match = institution.match(sep);
+    if (match) {
+      if (sep === degreeInstitSeparators[0]) {
+        if (!degree || degree === institution || degree.toLowerCase().includes(match[2].toLowerCase())) {
+          degree = match[1].trim();
+        }
+        institution = match[2].trim();
+      } else {
+        if (!degree || degree === institution) {
+          degree = match[2].trim();
+        }
+        institution = match[1].trim();
+      }
+      break;
+    }
+  }
+
+  // If degree also had the university glued onto it, strip it
+  if (institution && institution !== "University" && degree.toLowerCase().includes(institution.toLowerCase())) {
+    degree = degree.replace(new RegExp(institution.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "").trim();
+  }
+
+  // If institution still contains the degree, strip it
+  if (degree && degree !== "Degree" && institution.toLowerCase().includes(degree.toLowerCase())) {
+    institution = institution.replace(new RegExp(degree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "").trim();
+  }
+
+  // 4. Extract location/details (e.g. "Hyderabad, India" or "London, UK")
+  const locMatch = institution.match(/(?:,\s*|\s+)([A-Z][a-zA-Z\s]+,\s*[A-Z][a-zA-Z\s]+)$/);
+  if (locMatch && !details) {
+    details = locMatch[1].trim();
+    institution = institution.replace(locMatch[0], "").trim();
+  }
+
+  // Format parentheses spacing (e.g. ")Hyderabad" -> ") Hyderabad")
+  institution = institution.replace(/\)([A-Za-z])/g, ") $1").trim();
+  degree = degree.replace(/\)([A-Za-z])/g, ") $1").trim();
+
+  // Strip trailing colons, commas, or dashes
+  institution = institution.replace(/[:,\-\s]+$/, "").trim();
+  degree = degree.replace(/[:,\-\s]+$/, "").trim();
+
+  const dates = [startDate, endDate].filter(Boolean).join(" -- ");
+
+  return {
+    degree: degree || "Bachelor's Degree",
+    institution: institution || "University",
+    startDate,
+    endDate,
+    dates,
+    details
+  };
+}
+
 function education(profile: CandidateProfile): string {
-  return (profile.education || []).map(item => {
-    const institution = item.institution?.trim() || "University";
-    const degree = item.degree?.trim() || "Degree";
-    const dates = [item.startDate, item.endDate].filter(Boolean).join(" -- ");
-    return `\\resumeSubheading{${escapeLatex(institution)}}{}{${escapeLatex(degree)}}{${escapeLatex(dates)}}`;
+  return (profile.education || []).map(rawItem => {
+    const item = cleanEducationItem(rawItem);
+    const institution = item.institution || "University";
+    const degree = item.degree || "Degree";
+    const dates = item.dates || "";
+    const location = item.details || "";
+    return `\\resumeSubheading{${escapeLatex(institution)}}{${escapeLatex(location)}}{${escapeLatex(degree)}}{${escapeLatex(dates)}}`;
   }).join("\n");
 }
 
@@ -674,24 +793,15 @@ export function formatSummary(summaryText: string): string {
   if (!summaryText || !summaryText.trim()) return "";
   const trimmed = summaryText.trim();
 
-  const containsBulletChar = trimmed.includes("•") || /^[•\-\*]\s+/m.test(trimmed);
-  const lines = trimmed.split("\n").map(l => l.trim()).filter(Boolean);
+  // Clean bullet marks (•, \u2022, *, -) and normalize into a cohesive executive summary paragraph.
+  // This guarantees all candidate profiles (DevOps, Dynamics, Healthcare, etc.) render consistent,
+  // clean paragraph typography matching Harvard/Jake's ATS single-page standards.
+  const cleanParagraph = trimmed
+    .replace(/(?:^|\n)\s*[•\-\*]\s*|(?<=[^•\-\*])\s*•\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  if (containsBulletChar || (lines.length > 1 && lines.some(l => /^[•\-\*]/.test(l)))) {
-    const items = trimmed
-      .split(/(?:^|\n)\s*[•\-\*]\s*|(?<=[^•\-\*])\s*•\s*/g)
-      .map(s => s.trim())
-      .filter(s => s.length > 5);
-
-    if (items.length > 1) {
-      const itemsLatex = items
-        .map(item => `  \\resumeItem{${escapeLatex(item)}}`)
-        .join("\n");
-      return `\\resumeItemListStart\n${itemsLatex}\n\\resumeItemListEnd`;
-    }
-  }
-
-  return `\\small{${escapeLatex(trimmed)}}`;
+  return `\\small{${escapeLatex(cleanParagraph)}}`;
 }
 
 export function createLatexBackbone(): string {

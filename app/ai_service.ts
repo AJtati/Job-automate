@@ -8,6 +8,13 @@ import {
   detectLanguageDeterministically, type SupportedLanguage, LANGUAGE_PACKS,
 } from "./resume_engine";
 import { detectCandidateCountry, type CandidateCountryInfo } from "./job_sources";
+import {
+  alignSkillsForJob,
+  sanitizeAndCategorizeSkills,
+  detectProfessionDomain,
+  calculateTotalYearsExperience,
+  taxonomyStore,
+} from "./taxonomy";
 
 export interface DetectedCountryAndLanguage extends CandidateCountryInfo {
   countryCode: string;
@@ -2156,14 +2163,17 @@ ${(input.text || "").slice(0, 1500)}`;
     // If LLM available, prompt it for JSON extraction
     if (this.config.provider !== "builtin") {
       try {
-        const systemPrompt = `You are an expert resume parser. Extract structured candidate profile details from the resume below.
-The candidate may belong to ANY industry or profession (software, healthcare/nursing, finance/accounting, marketing, education, legal, HR, engineering, management, trades, etc.).
+        const systemPrompt = `You are an expert resume parser and skills taxonomy classifier. Extract structured candidate profile details from the resume below.
+The candidate may belong to ANY industry or profession (QA / Test Automation, Software Engineering, Dynamics 365 / Power Platform, Data Science / AI / ML, Cloud / DevOps / SRE, Cybersecurity, Healthcare / Nursing, Finance / Accounting, Product Management, etc.).
 Extract the candidate's genuine details accurately. Do not invent facts, but do extract and normalize the genuine details present in the resume.
+Accurately identify the profession domain, calculate total professional experience across all roles in years, categorize skills authentically into ATS-compliant categories matching their profession, and flag any novel skills for local taxonomy learning.
 
 Return a valid JSON object ONLY with the following schema:
 {
   "name": string,
   "headline": string,
+  "domain": string, // "qa", "software_engineering", "dynamics", "data_science", "devops", "cybersecurity", "healthcare", "finance", "product", or other specific profession
+  "totalYearsExperience": number, // total professional work experience in years calculated across roles
   "summary": string,
   "email": string,
   "phone": string,
@@ -2176,8 +2186,11 @@ Return a valid JSON object ONLY with the following schema:
   "minSalary": number,
   "keySkills": string[],
   "skills": {
-    [category: string]: string[]
+    [category: string]: string[] // authentic domain categories, e.g. for QA: "Test Automation", "Manual Testing", "API & Performance", "Defect Tracking & Tools"; for SE: "Languages", "Frameworks", "Databases", "Cloud & Infra"
   },
+  "learnedSkills": [
+    { "skill": string, "category": string, "domain": string }
+  ],
   "experience": [
     {
       "company": string,
@@ -2219,6 +2232,11 @@ Return a valid JSON object ONLY with the following schema:
         if (match) {
           const parsed = JSON.parse(match[0]);
           const fallback = parseResumeDeterministically(rawText).profile;
+
+          // Record any newly identified skills into local taxonomy knowledge store
+          if (Array.isArray(parsed.learnedSkills) && parsed.learnedSkills.length > 0) {
+            taxonomyStore.recordLearnedSkills(parsed.learnedSkills);
+          }
 
           // Process skills across all categories
           const parsedSkills = (parsed.skills && typeof parsed.skills === "object") ? parsed.skills : {};
@@ -2286,10 +2304,31 @@ Return a valid JSON object ONLY with the following schema:
             text: rawText
           });
 
+          // Detect profession domain and calculate total experience years
+          const candidateDomain = (parsed.domain && typeof parsed.domain === "string" && parsed.domain.trim())
+            ? parsed.domain.trim()
+            : detectProfessionDomain(candidateHeadline, rawText, dynamicSkills);
+
+          const totalExp = (typeof parsed.totalYearsExperience === "number" && parsed.totalYearsExperience > 0)
+            ? parsed.totalYearsExperience
+            : calculateTotalYearsExperience(Array.isArray(parsed.experience) && parsed.experience.length ? parsed.experience : (fallback.experience || []));
+
+          // Sanitize and organize skills according to domain context
+          const categorizedSkills = sanitizeAndCategorizeSkills(dynamicSkills, candidateDomain);
+          if (categorizedSkills.containers || categorizedSkills.iac || categorizedSkills.cicd) {
+            categorizedSkills.devops = [
+              ...(categorizedSkills.containers || []),
+              ...(categorizedSkills.iac || []),
+              ...(categorizedSkills.cicd || [])
+            ];
+          }
+
           return {
             ...fallback,
             name: cleanStr(parsed.name, fallback.name || ""),
             headline: candidateHeadline,
+            domain: candidateDomain,
+            totalExperienceYears: totalExp,
             summary: cleanStr(parsed.summary, fallback.summary || ""),
             email: cleanStr(parsed.email, fallback.email || ""),
             phone: cleanStr(parsed.phone, fallback.phone || ""),
@@ -2304,13 +2343,7 @@ Return a valid JSON object ONLY with the following schema:
             github: cleanStr(parsed.github, fallback.github || ""),
             targetRoles: combinedTargetRoles.length ? combinedTargetRoles : (fallback.targetRoles || []),
             targetLocations: combinedLocations.length ? combinedLocations : (fallback.targetLocations || []),
-            skills: {
-              cloud: dynamicSkills.cloud || [],
-              devops: dynamicSkills.devops || [],
-              languages: dynamicSkills.languages || [],
-              tools: dynamicSkills.tools || [],
-              ...dynamicSkills
-            },
+            skills: categorizedSkills,
             keywords: allKeywords,
             experience: (Array.isArray(parsed.experience) && parsed.experience.length > 0) ? parsed.experience : (fallback.experience || []),
             projects: (Array.isArray(parsed.projects) && parsed.projects.length > 0) ? parsed.projects : (fallback.projects || []),
@@ -2514,88 +2547,29 @@ Return a valid JSON object ONLY with the following schema:
     const isAws = /\b(?:aws|eks|lambda|cloudformation|ecs|fargate)\b/i.test(jdText);
     const isGcp = /\b(?:gcp|google\s*cloud|gke|cloud\s*run|bigquery)\b/i.test(jdText);
 
-    // 2. Align and prioritize technical skills (only for candidates in tech/cloud or with existing cloud/devops skills)
-    const s = aligned.skills || {};
-    const hasTechOrCloud =
-      Boolean(s.cloud?.length || s.containers?.length || s.devops?.length || s.iac?.length || s.cicd?.length) ||
-      /\b(cloud|devops|sre|platform|infrastructure|kubernetes|software|engineer|developer|sysadmin|fullstack|backend|frontend)\b/i.test(aligned.headline || "");
-
-    if (hasTechOrCloud) {
-      if (isAzure) {
-        const existingCloud = s.cloud || [];
-        const withoutAzure = existingCloud.filter(c => !/azure/i.test(c));
-        s.cloud = ["Azure", ...withoutAzure];
-
-        const existingContainers = s.containers || s.devops || [];
-        const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
-        s.containers = ["Kubernetes (AKS)", ...withoutK8s];
-
-        const existingCicd = s.cicd || [];
-        if (!existingCicd.some(c => /azure\s*devops/i.test(c))) {
-          s.cicd = ["Azure DevOps", ...existingCicd];
-        }
-      } else if (isAws) {
-        const existingCloud = s.cloud || [];
-        const withoutAws = existingCloud.filter(c => !/aws/i.test(c));
-        s.cloud = ["AWS", ...withoutAws];
-
-        const existingContainers = s.containers || s.devops || [];
-        const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
-        s.containers = ["Kubernetes (EKS)", ...withoutK8s];
-      } else if (isGcp) {
-        const existingCloud = s.cloud || [];
-        const withoutGcp = existingCloud.filter(c => !/gcp|google/i.test(c));
-        s.cloud = ["GCP", ...withoutGcp];
-
-        const existingContainers = s.containers || s.devops || [];
-        const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
-        s.containers = ["Kubernetes (GKE)", ...withoutK8s];
-      }
-    }
-
-    // 2b. Integrate employer target competencies & gap keywords into candidate skill taxonomy
+    // 2. Align and prioritize skills dynamically using shared taxonomy
     const gaps = (analysis.gapKeywords || []).map(g => g.trim()).filter(Boolean);
-    this.lastBridgedGaps = [...gaps];
-    const addedSkills: string[] = [];
+    const domainContext = aligned.domain || detectProfessionDomain(aligned.headline, jdText, aligned.skills);
+    const sanitizedBaseSkills = sanitizeAndCategorizeSkills(aligned.skills || {}, domainContext);
+    const alignmentResult = alignSkillsForJob(sanitizedBaseSkills, jdText, gaps, domainContext);
+    aligned.skills = alignmentResult.skills;
+    this.lastAddedSkills = alignmentResult.addedSkills;
+    this.lastBridgedGaps = alignmentResult.bridgedGaps;
 
-    for (const gap of gaps) {
-      const lowerGap = gap.toLowerCase();
-      // Skip pure behavioral traits from the technical skills list
-      if (["collaboration", "communication", "mentoring", "leadership", "ownership"].includes(lowerGap)) continue;
-
-      let formatted = gap;
-      if (lowerGap === "intune" || lowerGap.includes("intune")) formatted = "Microsoft Intune";
-      else if (lowerGap.includes("process") && lowerGap.includes("improve")) formatted = "Process Improvement";
-      else if (lowerGap.includes("test") && lowerGap.includes("auto")) formatted = "Test Automation";
-      else if (lowerGap === "devops") formatted = "DevOps";
-      else if (lowerGap === "cloud") formatted = "Cloud Infrastructure";
-      else if (lowerGap === "automation") formatted = "Automation & Scripting";
-      else {
-        formatted = gap.replace(/[-_]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-      }
-
-      const allExisting = Object.values(s).flatMap(v => Array.isArray(v) ? v : []).map(x => String(x).toLowerCase());
-      if (!allExisting.some(ex => ex.includes(formatted.toLowerCase()) || formatted.toLowerCase().includes(ex))) {
-        if (!s.tools) s.tools = [];
-        s.tools = [formatted, ...s.tools];
-        addedSkills.push(formatted);
-      }
-    }
-    this.lastAddedSkills = addedSkills;
-    aligned.skills = s;
-
-    // Align summary if present
+    // Align summary if present (only apply cloud-specific substitutions if candidate is in devops/cloud)
     if (aligned.summary) {
       let sum = aligned.summary;
-      if (isAzure) {
-        sum = sum.replace(/\bon AWS and Kubernetes\b/g, "across Azure, AWS, and Kubernetes (AKS)");
-        sum = sum.replace(/\bAWS and Kubernetes\b/g, "Azure and Kubernetes");
-        sum = sum.replace(/\bmulti-cluster EKS infrastructure\b/g, "multi-cluster cloud Kubernetes infrastructure (AKS, EKS)");
-        sum = sum.replace(/\bTerraform and AWS CDK\b/g, "Terraform, Azure DevOps, and cloud");
-      } else if (isAws) {
-        sum = sum.replace(/\bon Azure and Kubernetes\b/g, "across AWS and Kubernetes (EKS)");
-      } else if (isGcp) {
-        sum = sum.replace(/\bon AWS and Kubernetes\b/g, "across GCP, hybrid cloud, and Kubernetes (GKE)");
+      if (domainContext === "devops" || domainContext === "cloud") {
+        if (isAzure) {
+          sum = sum.replace(/\bon AWS and Kubernetes\b/g, "across Azure, AWS, and Kubernetes (AKS)");
+          sum = sum.replace(/\bAWS and Kubernetes\b/g, "Azure and Kubernetes");
+          sum = sum.replace(/\bmulti-cluster EKS infrastructure\b/g, "multi-cluster cloud Kubernetes infrastructure (AKS, EKS)");
+          sum = sum.replace(/\bTerraform and AWS CDK\b/g, "Terraform, Azure DevOps, and cloud");
+        } else if (isAws) {
+          sum = sum.replace(/\bon Azure and Kubernetes\b/g, "across AWS and Kubernetes (EKS)");
+        } else if (isGcp) {
+          sum = sum.replace(/\bon AWS and Kubernetes\b/g, "across GCP, hybrid cloud, and Kubernetes (GKE)");
+        }
       }
       aligned.summary = sum;
     }
@@ -2998,8 +2972,7 @@ Strict Humanizer Rules:
     const safePortfolio = profile.portfolio ? ` $|$ \\href{${profile.portfolio}}{\\underline{portfolio}}` : "";
 
     // Tailored Summary
-    const baseSummary = profile.summary || 
-      `Senior ${safeHeadlineRole} based in ${safeLocation} with over eight years of experience architecting and maintaining production cloud systems on AWS and Kubernetes. Currently managing multi-cluster EKS infrastructure, GitOps automation pipelines, and SRE incident reliability. Proven track record leading zero-downtime cluster lifecycle upgrades, infrastructure as code with Terraform and AWS CDK, container platforms, and full-stack software applications.`;
+    const baseSummary = profile.summary || buildGroundedSummary(profile, jobInput, analysis, resolvedLang);
     const safeSummary = baseSummary.replace(/&/g, "\\&").replace(/%/g, "\\%");
 
     // Format Experience entries with all high-impact technical bullets

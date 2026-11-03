@@ -209,6 +209,7 @@ ALLOWED_IGNORE_NEGATIONS = {
     "!documents/**/.gitkeep",
     "!cv/jake_master.tex",
     "!data/profiles.template.json",
+    "!data/taxonomy_knowledge.json",
 }
 
 # Hook commands the template legitimately ships, as "<Event>:<command>" strings.

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "
 import { join } from "path";
 import { createLatexBackbone } from "./resume_engine";
 import { detectCandidateCountry } from "./job_sources";
+import { sanitizeAndCategorizeSkills, detectProfessionDomain, calculateTotalYearsExperience } from "./taxonomy";
 
 export interface WorkExperience {
   company: string;
@@ -75,6 +76,8 @@ export interface CandidateProfile {
     tools?: string[];
     [key: string]: string[] | undefined;
   };
+  domain?: string;
+  totalExperienceYears?: number;
   experience: WorkExperience[];
   projects?: ProjectItem[];
   education: EducationItem[];
@@ -264,24 +267,40 @@ export class ProfilesManager {
     if (!derivedCountry && (profile.location?.trim() || profile.postcode?.trim() || (profile.targetLocations && profile.targetLocations.length))) {
       derivedCountry = detectCandidateCountry(profile.location, profile.targetLocations, profile.postcode).countryName;
     }
+    const domain = profile.domain || detectProfessionDomain(profile.headline, "", profile.skills);
+    const totalExp = (typeof profile.totalExperienceYears === "number" && profile.totalExperienceYears > 0)
+      ? profile.totalExperienceYears
+      : calculateTotalYearsExperience(profile.experience || []);
+
+    const isTech = domain === "devops" || domain === "software_engineering" || domain === "data_science" || domain === "cybersecurity";
+    const baseSkills = profile.skills || {};
+    const normalizedSkills = isTech
+      ? {
+          ...baseSkills,
+          cloud: baseSkills.cloud || [],
+          containers: baseSkills.containers || [],
+          devops: baseSkills.devops || [],
+          iac: baseSkills.iac || [],
+          cicd: baseSkills.cicd || [],
+          monitoring: baseSkills.monitoring || [],
+          security: baseSkills.security || [],
+          languages: baseSkills.languages || [],
+          tools: baseSkills.tools || [],
+        }
+      : {
+          ...baseSkills,
+          tools: baseSkills.tools || [],
+        };
+
     return {
       ...profile,
+      domain,
+      totalExperienceYears: totalExp,
       country: derivedCountry || "",
       minSalary: (typeof profile.minSalary === "number") ? profile.minSalary : 0,
       targetRoles: profile.targetRoles || [],
       targetLocations: profile.targetLocations || [],
-      skills: {
-        ...(profile.skills || {}),
-        cloud: profile.skills?.cloud || [],
-        containers: profile.skills?.containers || [],
-        devops: profile.skills?.devops || [],
-        iac: profile.skills?.iac || [],
-        cicd: profile.skills?.cicd || [],
-        monitoring: profile.skills?.monitoring || [],
-        security: profile.skills?.security || [],
-        languages: profile.skills?.languages || [],
-        tools: profile.skills?.tools || [],
-      },
+      skills: normalizedSkills,
       experience: profile.experience || [],
       projects: profile.projects || [],
       education: profile.education || [],
@@ -634,79 +653,23 @@ export function groupManualSkills(
   rawSkills: string[],
   baseSkills?: CandidateProfile["skills"]
 ): CandidateProfile["skills"] {
-  const rawTrimmed = (rawSkills || []).map(s => s.trim()).filter(Boolean);
-  const rawLowerMap = new Map<string, string>();
-  for (const s of rawTrimmed) {
-    rawLowerMap.set(s.toLowerCase(), s);
-  }
-  const remaining = new Set(rawLowerMap.keys());
-
-  const result: Record<string, string[]> = {};
-  const knownCategories = baseSkills && typeof baseSkills === "object"
-    ? Object.keys(baseSkills)
-    : ["cloud", "containers", "iac", "cicd", "monitoring", "security", "languages", "devops", "tools"];
-
-  for (const cat of knownCategories) {
-    result[cat] = [];
-  }
-  if (!result.cloud) result.cloud = [];
-  if (!result.containers) result.containers = [];
-  if (!result.devops) result.devops = [];
-  if (!result.iac) result.iac = [];
-  if (!result.cicd) result.cicd = [];
-  if (!result.monitoring) result.monitoring = [];
-  if (!result.security) result.security = [];
-  if (!result.languages) result.languages = [];
-  if (!result.tools) result.tools = [];
-
-  // Filter existing categories: ONLY retain skills that the user kept in rawSkills
-  if (baseSkills && typeof baseSkills === "object") {
-    for (const [cat, arr] of Object.entries(baseSkills)) {
-      if (!Array.isArray(arr)) continue;
-      if (!result[cat]) result[cat] = [];
-      for (const item of arr) {
-        if (typeof item !== "string") continue;
-        const lower = item.trim().toLowerCase();
-        if (rawLowerMap.has(lower)) {
-          const userVersion = rawLowerMap.get(lower)!;
-          if (!result[cat].includes(userVersion)) {
-            result[cat].push(userVersion);
-          }
-          remaining.delete(lower);
-        }
-      }
-    }
+  const domain = detectProfessionDomain("", "", baseSkills);
+  const result = sanitizeAndCategorizeSkills(rawSkills, domain) as CandidateProfile["skills"];
+  const isTech = domain === "devops" || domain === "software_engineering" || domain === "data_science" || domain === "cybersecurity";
+  if (isTech) {
+    if (!result.cloud) result.cloud = [];
+    if (!result.containers) result.containers = [];
+    if (!result.devops) result.devops = [];
+    if (!result.iac) result.iac = [];
+    if (!result.cicd) result.cicd = [];
+    if (!result.monitoring) result.monitoring = [];
+    if (!result.security) result.security = [];
+    if (!result.languages) result.languages = [];
+    if (!result.tools) result.tools = [];
+    result.devops = [...(result.containers || []), ...(result.iac || []), ...(result.cicd || [])];
+  } else {
+    if (!result.tools) result.tools = [];
   }
 
-  // Categorize any newly added or renamed skills
-  const cloudKw = ["aws", "azure", "gcp", "cloud", "google cloud", "bicep", "cloudformation", "cloudfront", "route53", "vpc", "s3", "ec2", "parameter store", "secrets manager", "lambda", "rds", "iam", "irsa"];
-  const containerKw = ["kubernetes", "k8s", "docker", "helm", "argocd", "argo rollouts", "istio", "ecr", "container", "containerd", "podman"];
-  const iacKw = ["terraform", "cdk", "ansible", "cloudformation", "pulumi", "puppet", "chef", "bicep", "packer"];
-  const cicdKw = ["jenkins", "github actions", "gitlab", "concourse", "gocd", "git", "ci/cd", "artifactory", "nexus", "vsts", "bitbucket", "circleci", "travis"];
-  const monitorKw = ["prometheus", "grafana", "alertmanager", "splunk", "zabbix", "cloudwatch", "datadog", "dynatrace", "new relic", "pagerduty", "elk", "kibana", "loki", "opentelemetry"];
-  const secKw = ["sonatype", "veracode", "sonarqube", "waf", "vault", "trivy", "snyk", "zero trust", "cis", "nist", "iso27001"];
-  const langKw = ["python", "bash", "shell", "typescript", "javascript", "golang", "go", "php", "ruby", "rust", "c++", "c#", ".net", "dotnet", "java", "sql", "html", "css", "react", "angular", "vue", "fastapi", "django", "flask", "spring", "node", "next.js", "ffmpeg"];
-
-  for (const lower of remaining) {
-    const s = rawLowerMap.get(lower)!;
-    if (cloudKw.some(k => lower.includes(k))) {
-      result.cloud.push(s);
-    } else if (containerKw.some(k => lower.includes(k))) {
-      result.containers.push(s);
-    } else if (iacKw.some(k => lower.includes(k))) {
-      result.iac.push(s);
-    } else if (cicdKw.some(k => lower.includes(k))) {
-      result.cicd.push(s);
-    } else if (monitorKw.some(k => lower.includes(k))) {
-      result.monitoring.push(s);
-    } else if (secKw.some(k => lower.includes(k))) {
-      result.security.push(s);
-    } else if (langKw.some(k => lower.includes(k))) {
-      result.languages.push(s);
-    } else {
-      result.tools.push(s);
-    }
-  }
-
-  return result as CandidateProfile["skills"];
+  return result;
 }

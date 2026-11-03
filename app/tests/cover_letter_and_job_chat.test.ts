@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { renderGroundedCoverLetter, renderTailoredResume, LANGUAGE_PACKS } from "../resume_engine";
+import { renderGroundedCoverLetter, renderTailoredResume, cleanEducationItem, formatSummary, LANGUAGE_PACKS } from "../resume_engine";
+import { isProfileOwnerOfFile } from "../server";
 import {
   AIService,
   stripThinkingProcess,
@@ -705,5 +706,73 @@ Sincerely,
     const aligned = await aiService.deepAlignCandidateExperience(nurseProfile, azureMedicalJob as any, analysis as any, "en");
     expect(aligned.skills.containers || []).not.toContain("Kubernetes (AKS)");
     expect(aligned.skills.cicd || []).not.toContain("Azure DevOps");
+  });
+
+  test("cleanEducationItem separates combined degree and university, stripping prefixes and trailing dates", () => {
+    // Malformed input from resume parser / raw profile import
+    const rawEducation = {
+      degree: "Bachelor of Technology (B.Tech) Jawaharlal Nehru Technological University Hyderabad (JNTUH)",
+      institution: "Bachelor’s Degree: Bachelor of Technology (B.Tech) Jawaharlal Nehru Technological University Hyderabad (JNTUH) 2014 - 2018",
+      startDate: "2014",
+      endDate: "2018",
+      details: ""
+    };
+
+    const cleaned = cleanEducationItem(rawEducation);
+
+    // Degree and institution are cleanly separated
+    expect(cleaned.degree).toBe("Bachelor of Technology (B.Tech)");
+    expect(cleaned.institution).toBe("Jawaharlal Nehru Technological University Hyderabad (JNTUH)");
+    expect(cleaned.dates).toBe("2014 -- 2018");
+
+    // Strictly verify no prefixes like "Bachelor's Degree:" remain
+    expect(cleaned.institution).not.toContain("Bachelor’s Degree:");
+    expect(cleaned.institution).not.toContain("2014 - 2018");
+    expect(cleaned.degree).not.toContain("Jawaharlal Nehru Technological University");
+  });
+
+  test("formatSummary normalizes bulleted summary into a single cohesive paragraph", () => {
+    const bulletedSummary = "• Senior Dynamics Developer with six years of experience. • Proficient in C# plugins and Dataverse. • Skilled in Power Platform.";
+    const formatted = formatSummary(bulletedSummary);
+
+    // Formats as clean \small{...} paragraph, never as a bullet list
+    expect(formatted.startsWith("\\small{")).toBe(true);
+    expect(formatted).not.toContain("\\resumeItemListStart");
+    expect(formatted).not.toContain("\\resumeItem");
+    expect(formatted).not.toContain("•");
+    expect(formatted).toContain("Senior Dynamics Developer with six years of experience");
+    expect(formatted).toContain("Proficient in C\\# plugins and Dataverse");
+  });
+
+  test("isProfileOwnerOfFile strictly prevents cross-profile CV and cover letter leakage", () => {
+    const profileAjith = {
+      id: "ajith-surya-thati",
+      name: "Ajith Surya Thati",
+      tracker: {}
+    } as any;
+
+    const profileManju = {
+      id: "manjubhargavi-cherupally-dynamics",
+      name: "Manjubhargavi Cherupally",
+      tracker: {}
+    } as any;
+
+    const allProfiles = [profileAjith, profileManju];
+
+    const ajithCv = "cv/main_ajith_surya_thati_opencast_software_senior_devops_engineer.tex";
+    const ajithCover = "cover_letters/cover_ajith_surya_thati_opencast_software_senior_devops_engineer.tex";
+    const manjuCv = "cv/main_manjubhargavi_cherupally_srg_dynamics_365_developer.tex";
+
+    // Ajith owns his CV
+    expect(isProfileOwnerOfFile(ajithCv, profileAjith, allProfiles)).toBe(true);
+    expect(isProfileOwnerOfFile(ajithCover, profileAjith, allProfiles)).toBe(true);
+
+    // Manju must NEVER be assigned Ajith's CV
+    expect(isProfileOwnerOfFile(ajithCv, profileManju, allProfiles)).toBe(false);
+    expect(isProfileOwnerOfFile(ajithCover, profileManju, allProfiles)).toBe(false);
+
+    // Manju owns her CV
+    expect(isProfileOwnerOfFile(manjuCv, profileManju, allProfiles)).toBe(true);
+    expect(isProfileOwnerOfFile(manjuCv, profileAjith, allProfiles)).toBe(false);
   });
 });

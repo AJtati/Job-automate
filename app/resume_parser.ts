@@ -1,4 +1,6 @@
 import type { CandidateProfile, EducationItem, ProjectItem, WorkExperience } from "./profiles_manager";
+import { cleanEducationItem } from "./resume_engine";
+import { sanitizeAndCategorizeSkills, detectProfessionDomain, calculateTotalYearsExperience } from "./taxonomy";
 
 export interface ResumeParseResult {
   profile: Partial<CandidateProfile>;
@@ -249,21 +251,29 @@ function skillGroups(rawText: string) {
     }
   }
 
-  // Heuristic classification across standard ATS categories
-  const isCloud = (s: string) => /aws|amazon|azure|gcp|google cloud|cloudflare/i.test(s);
-  const isDevops = (s: string) => /devops|ci\/cd|pipeline|pac cli|docker|kubernetes|terraform|terragrunt|ansible|helm|argocd|gitops|openshift|pulumi|jenkins|agile|scrum/i.test(s);
-  const isLang = (s: string) => /c#|\.net|dotnet|javascript|typescript|python|x\+\+|sql|html|css|powershell|bash|java|golang|go|rust|ruby|php|kotlin|swift|scala/i.test(s);
-  const isTool = (s: string) => /dynamics|crm|power apps|power automate|power platform|dataverse|power bi|ssrs|dax|copilot|nunit|jasmine|tdd|rsat|git/i.test(s);
+  // Classification across canonical and custom ATS categories
+  const sanitized = sanitizeAndCategorizeSkills(Object.keys(customGroups).length > 0 ? customGroups : allParsedSkills);
 
-  const cloud = [...new Set(allParsedSkills.filter(isCloud))];
-  const devops = [...new Set(allParsedSkills.filter(isDevops))];
-  const languages = [...new Set(allParsedSkills.filter(isLang))];
-  const tools = [...new Set(allParsedSkills.filter(isTool))];
+  const cloud = sanitized.cloud || [];
+  const containers = sanitized.containers || [];
+  const iac = sanitized.iac || [];
+  const cicd = sanitized.cicd || [];
+  const monitoring = sanitized.monitoring || [];
+  const security = sanitized.security || [];
+  const languages = sanitized.languages || [];
+  const devops = containers.length ? containers : (sanitized.devops || []);
+  const tools = sanitized.tools || [];
 
   return {
+    ...sanitized,
     cloud,
-    devops,
+    containers,
+    iac,
+    cicd,
+    monitoring,
+    security,
     languages,
+    devops,
     tools,
     custom: customGroups,
     raw: text,
@@ -280,21 +290,25 @@ function educationItems(rawText: string): EducationItem[] {
   let degree = lines.find(line => /bsc|msc|bachelor|master|degree|diploma|phd|b\.?tech/i.test(line)) || lines[0] || "";
   let institution = lines.find(line => /university|college|institute|school/i.test(line)) || lines[1] || "";
 
-  // Clean degree line (remove "Bachelor's Degree:" prefix or date ranges trailing)
-  degree = degree
-    .replace(/^bachelor[’']?s\s+degree\s*:\s*/i, "")
-    .replace(/\s*(?:19|20)\d{2}\s*(?:--|–|—|-|to)\s*(?:(?:19|20)\d{2}|present)/gi, "")
-    .trim();
+  const remainingDetails = lines
+    .filter((_, index) => index !== dateIndex && lines[index] !== degree && lines[index] !== institution)
+    .slice(0, 3)
+    .join("; ");
 
-  // If institution contains city/country after parentheses, format cleanly
-  institution = institution.replace(/\)([A-Za-z])/g, ") $1").trim();
-
-  return [{
-    degree: degree || "Bachelor's Degree",
-    institution: institution || "University",
+  const cleaned = cleanEducationItem({
+    degree,
+    institution,
     startDate: dates[0] || "",
     endDate: dates[1] || dates[0] || "",
-    details: lines.filter((_, index) => index !== dateIndex && lines[index] !== degree && lines[index] !== institution).slice(2).join("; "),
+    details: remainingDetails
+  });
+
+  return [{
+    degree: cleaned.degree,
+    institution: cleaned.institution,
+    startDate: cleaned.startDate,
+    endDate: cleaned.endDate,
+    details: cleaned.details
   }];
 }
 
@@ -529,14 +543,46 @@ export function parseResumeDeterministically(rawText: string): ResumeParseResult
       targetLocations,
       preferredRadiusMiles: 70,
       minSalary,
+      domain: detectProfessionDomain(headline, rawText, groupedSkills.custom),
+      totalExperienceYears: calculateTotalYearsExperience(experiences),
       keywords: allUniqueSkills,
-      skills: {
-        ...groupedSkills.custom,
-        cloud: groupedSkills.cloud.length ? groupedSkills.cloud : (groupedSkills.custom.cloud || []),
-        devops: groupedSkills.devops.length ? groupedSkills.devops : (groupedSkills.custom.devops || []),
-        languages: groupedSkills.languages.length ? groupedSkills.languages : (groupedSkills.custom.languages || []),
-        tools: groupedSkills.tools.length ? groupedSkills.tools : (groupedSkills.custom.tools || []),
-      },
+      skills: (() => {
+        const domain = detectProfessionDomain(headline, rawText, groupedSkills.custom);
+        const cat = sanitizeAndCategorizeSkills({
+          ...groupedSkills.custom,
+          cloud: groupedSkills.cloud,
+          containers: groupedSkills.containers,
+          iac: groupedSkills.iac,
+          cicd: groupedSkills.cicd,
+          monitoring: groupedSkills.monitoring,
+          security: groupedSkills.security,
+          languages: groupedSkills.languages,
+          tools: groupedSkills.tools,
+        }, domain);
+        const isTechCandidate = Boolean(
+          cat.cloud?.length || cat.containers?.length || cat.iac?.length ||
+          cat.cicd?.length || cat.monitoring?.length || groupedSkills.cloud?.length || groupedSkills.devops?.length
+        );
+        if (isTechCandidate) {
+          return {
+            ...groupedSkills.custom,
+            ...cat,
+            cloud: cat.cloud || [],
+            containers: cat.containers || [],
+            iac: cat.iac || [],
+            cicd: cat.cicd || [],
+            monitoring: cat.monitoring || [],
+            security: cat.security || [],
+            languages: cat.languages || [],
+            devops: [...(cat.containers || []), ...(cat.iac || []), ...(cat.cicd || [])],
+            tools: cat.tools || [],
+          };
+        }
+        return {
+          ...groupedSkills.custom,
+          ...cat,
+        };
+      })(),
       experience: experiences,
       projects,
       education: educationItems(rawText),

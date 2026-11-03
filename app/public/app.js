@@ -927,21 +927,64 @@ async function switchActiveProfile(profileId) {
   }
 }
 
-function extractAllSkillsFlat(skillsObj, keywords) {
-  const set = new Set();
-  if (Array.isArray(keywords)) {
-    for (const k of keywords) {
-      if (typeof k === "string" && k.trim()) set.add(k.trim());
+function unwrapCompoundSkillItem(raw) {
+  if (!raw || typeof raw !== "string") return [];
+  const trimmed = raw.trim();
+  if (!trimmed.includes("(") && !trimmed.includes(",")) return [trimmed];
+
+  const stripped = trimmed.replace(/^.*?\{:\s*/, "").replace(/\}\s*$/, "").trim();
+  const parenMatch = stripped.match(/^([A-Za-z0-9\s/]+)\s*\(([\s\S]*)\)$/);
+  if (parenMatch) {
+    const prefix = parenMatch[1].trim();
+    const inner = parenMatch[2].trim();
+    const hasCrossCategory = /\b(?:kubernetes|docker|helm|argocd|terraform|ansible|jenkins|github\s*actions|prometheus|grafana|sonarqube|python|bash|typescript)\b/i.test(inner);
+    if (hasCrossCategory && (inner.includes(",") || inner.length > 40)) {
+      const items = inner.split(/,(?![^(]*\))/g).map(s => s.trim()).filter(Boolean);
+      if (/^(?:aws|azure|gcp)$/i.test(prefix)) {
+        const cloudServices = [];
+        const otherSkills = [];
+        for (const item of items) {
+          if (/^(?:eks|ec2|vpc|rds|lambda|nlb|alb|nlb\/alb|cloudfront|s3|iam|irsa|route53|secrets\s*manager|ssm|parameter\s*store|sqs|sns)$/i.test(item.toLowerCase())) {
+            cloudServices.push(item);
+          } else {
+            otherSkills.push(item);
+          }
+        }
+        const res = otherSkills;
+        if (cloudServices.length > 0) res.unshift(`${prefix.toUpperCase()} (${cloudServices.join(", ")})`);
+        else res.unshift(prefix.toUpperCase());
+        return res;
+      }
+      return items;
     }
   }
+
+  if (stripped.includes("(") && !stripped.includes(")") && stripped.length > 30) {
+    return stripped.split(/[,()]/g).map(s => s.trim()).filter(Boolean);
+  }
+
+  return [stripped];
+}
+
+function extractAllSkillsFlat(skillsObj, keywords) {
+  const set = new Set();
+  const addSkill = (raw) => {
+    if (typeof raw !== "string" || !raw.trim()) return;
+    const items = unwrapCompoundSkillItem(raw);
+    for (const item of items) {
+      if (item && item.trim()) set.add(item.trim());
+    }
+  };
+
   if (skillsObj && typeof skillsObj === "object") {
     for (const [key, val] of Object.entries(skillsObj)) {
       if (Array.isArray(val)) {
-        for (const s of val) {
-          if (typeof s === "string" && s.trim()) set.add(s.trim());
-        }
+        for (const s of val) addSkill(s);
       }
     }
+  }
+  if (Array.isArray(keywords)) {
+    for (const k of keywords) addSkill(k);
   }
   return Array.from(set);
 }
@@ -951,26 +994,48 @@ function splitSkillsList(text) {
   const results = [];
   let current = "";
   let parenDepth = 0;
+  let charsSinceParen = 0;
 
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (ch === "(" || ch === "[" || ch === "{") {
       parenDepth++;
+      charsSinceParen = 0;
       current += ch;
     } else if (ch === ")" || ch === "]" || ch === "}") {
       if (parenDepth > 0) parenDepth--;
+      charsSinceParen = 0;
       current += ch;
-    } else if (ch === "," && parenDepth === 0) {
-      const trimmed = current.trim();
-      if (trimmed) results.push(trimmed);
-      current = "";
+    } else if (ch === ",") {
+      // Check if text immediately after comma looks like a new top-level skill
+      const remainder = text.slice(i + 1).trim();
+      const nextWord = remainder.split(/[\s,()]/)[0].toLowerCase();
+      const topLevelKeywords = ["aws", "azure", "gcp", "docker", "kubernetes", "k8s", "helm", "terraform", "ansible", "jenkins", "gitlab", "github", "prometheus", "grafana", "splunk", "python", "bash", "typescript", "react", "c#", ".net", "dynamics", "power", "sql"];
+      const isNextKeyword = topLevelKeywords.includes(nextWord);
+
+      if (parenDepth > 0 && (charsSinceParen > 40 || isNextKeyword)) {
+        parenDepth = 0;
+      }
+
+      if (parenDepth === 0) {
+        const trimmed = current.trim();
+        if (trimmed) results.push(trimmed);
+        current = "";
+        charsSinceParen = 0;
+      } else {
+        current += ch;
+        charsSinceParen++;
+      }
     } else {
       current += ch;
+      if (parenDepth > 0) charsSinceParen++;
     }
   }
   const lastTrimmed = current.trim();
   if (lastTrimmed) results.push(lastTrimmed);
-  return results;
+
+  // Clean dangling unmatched leading closing parens and extra commas
+  return results.flatMap(s => unwrapCompoundSkillItem(s.replace(/^\s*\)+\s*/, "").replace(/^[,\s]+|[,\s]+$/g, ""))).filter(Boolean);
 }
 
 function groupManualSkills(rawSkills, baseSkills) {
@@ -1018,7 +1083,11 @@ function groupManualSkills(rawSkills, baseSkills) {
     }
   }
 
-  // Categorize any newly added or renamed skills
+  // Categorize any newly added or renamed skills across technical, cloud, enterprise, and domain categories
+  const dynamicsKw = ["dynamics", "power platform", "dataverse", "power apps", "power automate", "x++", "d365", "crm", "power bi", "pac cli"];
+  const qaKw = ["selenium", "cypress", "playwright", "appium", "cucumber", "postman", "jmeter", "soapui", "k6", "testrail", "xray", "zephyr", "istqb", "manual test", "functional test", "automation test", "regression"];
+  const healthKw = ["nursing", "clinical", "triage", "patient care", "medication", "ehr", "epic", "cerner", "wound care", "bls", "acls", "phlebotomy"];
+  const financeKw = ["accounting", "financial", "audit", "tax", "gaap", "ifrs", "ledger", "payroll", "cpa", "acca", "sap fico", "quickbooks"];
   const cloudKw = ["aws", "azure", "gcp", "cloud", "google cloud", "bicep", "cloudformation", "cloudfront", "route53", "vpc", "s3", "ec2", "parameter store", "secrets manager", "lambda", "rds", "iam", "irsa"];
   const containerKw = ["kubernetes", "k8s", "docker", "helm", "argocd", "argo rollouts", "istio", "ecr", "container", "containerd", "podman"];
   const iacKw = ["terraform", "cdk", "ansible", "cloudformation", "pulumi", "puppet", "chef", "bicep", "packer"];
@@ -1029,7 +1098,23 @@ function groupManualSkills(rawSkills, baseSkills) {
 
   for (const lower of remaining) {
     const s = rawLowerMap.get(lower);
-    if (cloudKw.some(k => lower.includes(k))) {
+    if (dynamicsKw.some(k => lower.includes(k))) {
+      const dynCat = Object.keys(result).find(k => /dynamics|power\s*platform|crm/i.test(k));
+      if (dynCat) result[dynCat].push(s);
+      else result.tools.push(s);
+    } else if (qaKw.some(k => lower.includes(k))) {
+      const qaCat = Object.keys(result).find(k => /qa|test|automation/i.test(k));
+      if (qaCat) result[qaCat].push(s);
+      else result.tools.push(s);
+    } else if (healthKw.some(k => lower.includes(k))) {
+      const hCat = Object.keys(result).find(k => /clinical|nursing|health|patient/i.test(k));
+      if (hCat) result[hCat].push(s);
+      else result.tools.push(s);
+    } else if (financeKw.some(k => lower.includes(k))) {
+      const fCat = Object.keys(result).find(k => /finance|accounting|audit|tax/i.test(k));
+      if (fCat) result[fCat].push(s);
+      else result.tools.push(s);
+    } else if (cloudKw.some(k => lower.includes(k))) {
       result.cloud.push(s);
     } else if (containerKw.some(k => lower.includes(k))) {
       result.containers.push(s);
@@ -1045,6 +1130,13 @@ function groupManualSkills(rawSkills, baseSkills) {
       result.languages.push(s);
     } else {
       result.tools.push(s);
+    }
+  }
+
+  // Remove empty categories so non-devops candidates are not polluted
+  for (const cat of Object.keys(result)) {
+    if (!result[cat] || result[cat].length === 0) {
+      delete result[cat];
     }
   }
 
@@ -2722,6 +2814,116 @@ function selectJob(job) {
   renderStudioTabContent();
 }
 
+function formatSummaryClient(text) {
+  if (!text) return "";
+  return text
+    .replace(/\\resumeItemListStart|\\resumeItemListEnd/g, "")
+    .replace(/\\resumeItem\{([^}]*)\}/g, "$1 ")
+    .replace(/(?:^|\n)\s*[•\-\*]\s*|(?<=[^•\-\*])\s*•\s*/g, " ")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanEducationItemClient(item) {
+  let degree = (item.degree || "").trim();
+  let institution = (item.institution || "").trim();
+  let startDate = (item.startDate || "").trim();
+  let endDate = (item.endDate || "").trim();
+  let details = (item.details || "").trim();
+
+  const dateRangeRegex = /\b(?:19|20)\d{2}\s*(?:--|–|—|-|to)\s*(?:(?:19|20)\d{2}|present)\b/i;
+  const singleYearRegex = /\b(19\d{2}|20\d{2})\b/g;
+
+  if (!startDate || !endDate) {
+    const combined = `${institution} ${degree}`;
+    const rangeMatch = combined.match(dateRangeRegex);
+    if (rangeMatch) {
+      const years = rangeMatch[0].match(/\b(?:19|20)\d{2}|present\b/gi);
+      if (years && years.length >= 2) {
+        if (!startDate) startDate = years[0];
+        if (!endDate) endDate = years[1];
+      }
+    } else {
+      const allYears = Array.from(combined.matchAll(singleYearRegex)).map(m => m[1]);
+      if (allYears.length >= 2) {
+        if (!startDate) startDate = allYears[0];
+        if (!endDate) endDate = allYears[1];
+      } else if (allYears.length === 1 && !endDate) {
+        endDate = allYears[0];
+      }
+    }
+  }
+
+  institution = institution.replace(dateRangeRegex, "").replace(singleYearRegex, "").replace(/\s*-\s*$/, "").trim();
+  degree = degree.replace(dateRangeRegex, "").replace(singleYearRegex, "").replace(/\s*-\s*$/, "").trim();
+
+  const prefixRegex = /^(?:bachelor[’']?s?(?:\s+degree)?|master[’']?s?(?:\s+degree)?|doctor[’']?s?(?:\s+degree)?|ph\.?d(?:\s+degree)?|degree|institution|university)\s*:\s*/i;
+  institution = institution.replace(prefixRegex, "").trim();
+  degree = degree.replace(prefixRegex, "").trim();
+
+  const degreeInstitSeparators = [
+    /^(.*?(?:bachelor|master|b\.?tech|m\.?tech|b\.?sc|m\.?sc|b\.?eng|m\.?eng|ph\.?d|diploma|associate|bba|mba|llb|llm|degree)[^)]*(?:\([^)]*\))?)\s+(.*(?:university|college|institute|polytechnic|academy|school|hochschule|universit[aä]t|universidad).*)$/i,
+    /^(.*?(?:university|college|institute|polytechnic|academy|school|hochschule|universit[aä]t|universidad)[^,]*),\s*(.*?(?:bachelor|master|b\.?tech|m\.?tech|b\.?sc|m\.?sc|b\.?eng|m\.?eng|ph\.?d|diploma|associate|bba|mba|llb|llm|degree).*)$/i
+  ];
+
+  for (const sep of degreeInstitSeparators) {
+    const match = institution.match(sep);
+    if (match) {
+      if (sep === degreeInstitSeparators[0]) {
+        if (!degree || degree === institution || degree.toLowerCase().includes(match[2].toLowerCase())) {
+          degree = match[1].trim();
+        }
+        institution = match[2].trim();
+      } else {
+        if (!degree || degree === institution) {
+          degree = match[2].trim();
+        }
+        institution = match[1].trim();
+      }
+      break;
+    }
+  }
+
+  for (const sep of degreeInstitSeparators) {
+    const match = degree.match(sep);
+    if (match) {
+      if (sep === degreeInstitSeparators[0]) {
+        if (!institution || institution === "University" || institution === degree) {
+          institution = match[2].trim();
+        }
+        degree = match[1].trim();
+      }
+      break;
+    }
+  }
+
+  if (institution && institution !== "University" && degree.toLowerCase().includes(institution.toLowerCase())) {
+    degree = degree.replace(new RegExp(institution.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "").trim();
+  }
+  if (degree && degree !== "Degree" && institution.toLowerCase().includes(degree.toLowerCase())) {
+    institution = institution.replace(new RegExp(degree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "").trim();
+  }
+
+  const locMatch = institution.match(/(?:,\s*|\s+)([A-Z][a-zA-Z\s]+,\s*[A-Z][a-zA-Z\s]+)$/);
+  if (locMatch && !details) {
+    details = locMatch[1].trim();
+    institution = institution.replace(locMatch[0], "").trim();
+  }
+
+  institution = institution.replace(/\)([A-Za-z])/g, ") $1").replace(/[:,\-\s]+$/, "").trim();
+  degree = degree.replace(/\)([A-Za-z])/g, ") $1").replace(/[:,\-\s]+$/, "").trim();
+
+  const dates = [startDate, endDate].filter(Boolean).join(" – ");
+
+  return {
+    degree: degree || "Bachelor's Degree",
+    institution: institution || "University",
+    dates,
+    details
+  };
+}
+
 function renderStudioTabContent() {
   if (!selectedJob) return;
 
@@ -2756,6 +2958,9 @@ async function renderCVTab() {
   const targetJob = selectedJob;
   if (!targetJob) return;
   if (isTailoringActive) {
+    if (!document.querySelector(".tailoring-loader-card")) {
+      renderTailoringProgressCard();
+    }
     return;
   }
   const thisJobId = targetJob.id;
@@ -2768,6 +2973,9 @@ async function renderCVTab() {
 
   if (!cvPath) {
     if (isTailoringActive) {
+      if (!document.querySelector(".tailoring-loader-card")) {
+        renderTailoringProgressCard();
+      }
       return;
     }
     studioContent.innerHTML = `
@@ -2810,6 +3018,12 @@ async function renderCVTab() {
   }
 
   if (selectedJob?.id !== thisJobId) return;
+  if (isTailoringActive) {
+    if (!document.querySelector(".tailoring-loader-card")) {
+      renderTailoringProgressCard();
+    }
+    return;
+  }
 
   if (!texCode) {
     studioContent.innerHTML = `
@@ -2960,7 +3174,7 @@ async function renderCVTab() {
       ${summaryToRender ? `
       <div class="doc-section">
         <div class="doc-section-title">${isGermanDoc ? 'Profil' : 'Professional Summary'}</div>
-        <p style="font-size: 12px; color: #1f2937; line-height: 1.55;">${escapeHtml(summaryToRender)}</p>
+        <p style="font-size: 12px; color: #1f2937; line-height: 1.55;">${escapeHtml(formatSummaryClient(summaryToRender))}</p>
       </div>` : ''}
 
       ${expToRender.length > 0 ? `
@@ -2986,7 +3200,16 @@ async function renderCVTab() {
       ${skillsTextToRender ? `
       <div class="doc-section">
         <div class="doc-section-title">${isGermanDoc ? 'Kenntnisse und Fähigkeiten' : 'Technical Skills'}</div>
-        <div style="font-size: 12px; color: #1f2937; line-height: 1.6; white-space: pre-line;">${escapeHtml(skillsTextToRender)}</div>
+        <div style="font-size: 12px; color: #1f2937; line-height: 1.6;">
+          ${(parsed.skillsCategories && parsed.skillsCategories.length > 0)
+            ? parsed.skillsCategories.map(c => `
+                <div style="margin-bottom: 4px;">
+                  ${c.category ? `<span style="font-weight: 700; color: #111827;">${escapeHtml(c.category)}:</span>` : ''}
+                  <span style="color: #374151;"> ${escapeHtml(c.items)}</span>
+                </div>
+              `).join("")
+            : `<div style="white-space: pre-line;">${escapeHtml(skillsTextToRender)}</div>`}
+        </div>
       </div>` : ''}
 
       ${projectsToRender.length > 0 ? `
@@ -3008,13 +3231,16 @@ async function renderCVTab() {
       ${(activeProfile?.education || []).length > 0 ? `
       <div class="doc-section">
         <div class="doc-section-title">${isGermanDoc ? 'Ausbildung' : 'Education'}</div>
-        ${activeProfile.education.map(edu => `
-          <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12.5px; color: #111827; margin-top: 6px;">
-            <span>${escapeHtml(edu.institution)}</span>
-            <span>${escapeHtml([edu.startDate, edu.endDate].filter(Boolean).join(" – "))}</span>
-          </div>
-          <div style="font-style: italic; font-size: 11.5px; color: #4b5563;">${escapeHtml(edu.degree)}</div>
-        `).join("")}
+        ${activeProfile.education.map(rawEdu => {
+          const cleanEdu = cleanEducationItemClient(rawEdu);
+          return `
+            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12.5px; color: #111827; margin-top: 6px;">
+              <span>${escapeHtml(cleanEdu.institution || "University")}${cleanEdu.details ? ` · <span style="font-weight: 400; color: #6b7280;">${escapeHtml(cleanEdu.details)}</span>` : ""}</span>
+              <span>${escapeHtml(cleanEdu.dates || "")}</span>
+            </div>
+            <div style="font-style: italic; font-size: 11.5px; color: #4b5563;">${escapeHtml(cleanEdu.degree || "Degree")}</div>
+          `;
+        }).join("")}
       </div>` : ''}
 
       ${(activeProfile?.certifications || []).length > 0 ? `
@@ -3209,7 +3435,16 @@ async function renderCoverTab() {
       </div>
 
       ${coverParagraphs.length
-        ? coverParagraphs.map((paragraph, index) => `<p style="margin-bottom:${index === coverParagraphs.length - 1 ? "24px" : "14px"};">${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`).join("")
+        ? coverParagraphs.map((paragraph, index) => {
+            let pClean = escapeHtml(paragraph).replace(/\n/g, "<br>");
+            const signoffMatch = paragraph.match(/^(Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet),?\s*(?:\[[^\]]*\])?\s*(.*)$/i);
+            if (signoffMatch) {
+              const signWord = escapeHtml(signoffMatch[1]);
+              const signName = escapeHtml(signoffMatch[2].replace(/\[[^\]]*\]/g, "").trim() || activeProfile?.name || "");
+              pClean = `${signWord},${signName ? `<br><br><strong>${signName}</strong>` : ""}`;
+            }
+            return `<p style="margin-bottom:${index === coverParagraphs.length - 1 ? "24px" : "14px"};">${pClean}</p>`;
+          }).join("")
         : `<p style="margin-bottom:24px;">The generated cover letter could not be previewed. Switch to Raw LaTeX to review the source.</p>`}
     </div>
   `;
@@ -5405,15 +5640,19 @@ function parseLatexCV(latex) {
     }
 
     // 1. Summary: support English, German, Spanish, French, Italian, Dutch
-    const summaryMatch = latex.match(/\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}[\s\S]*?\\small\{([\s\S]*?)\}/i) ||
+    const summaryMatch = latex.match(/\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}[\s\S]*?\\(?:small|resumeItemListStart)\{?([\s\S]*?)\}?(?:\\resumeItemListEnd|\\section)/i) ||
                          latex.match(/\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}([\s\S]*?)(?:\\section|$)/i);
     if (summaryMatch) {
       result.summary = summaryMatch[1]
+        .replace(/\\resumeItemListStart|\\resumeItemListEnd/g, "")
+        .replace(/\\resumeItem\{([^}]*)\}/g, "$1 ")
         .replace(/\\small\{/g, "")
-        .replace(/\}/g, "")
+        .replace(/[{}]/g, "")
         .replace(/\\&/g, "&")
         .replace(/\\%/g, "%")
         .replace(/\\_/g, "_")
+        .replace(/(?:^|\n)\s*[•\-\*]\s*/g, " ")
+        .replace(/\s+/g, " ")
         .trim();
     }
 
@@ -5474,12 +5713,48 @@ function parseLatexCV(latex) {
     const skillsMatch = latex.match(/\\section\{(?:Technical\s+Skills|Skills|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}[\s\S]*?\\begin\{itemize\}[\s\S]*?\\small\{\\item\{([\s\S]*?)\}\}\s*\\end\{itemize\}/i) ||
                         latex.match(/\\section\{(?:Technical\s+Skills|Skills|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}[\s\S]*?\\begin\{itemize\}[\s\S]*?\\item\{([\s\S]*?)\}\s*\\end\{itemize\}/i);
     if (skillsMatch) {
-      result.skillsHtml = skillsMatch[1]
-        .replace(/\\textbf\{([^}]*)\}/g, "$1")
-        .replace(/\\\\/g, "\n")
-        .replace(/\\&/g, "&")
-        .replace(/\\_/g, "_")
-        .trim();
+      const rawBlock = skillsMatch[1];
+      const rawLines = rawBlock.split(/\\\\/g).map(l => l.trim()).filter(Boolean);
+      const parsedCategories = [];
+
+      for (const line of rawLines) {
+        // Matches \textbf{Category}{: items} or \textbf{Category}: items or Category{: items} or Category: items
+        const m = line.match(/^(?:\\textbf\{([^}]+)\}|([^:{]+))\s*(?:\{:\s*|:\s*|\s*)\s*([\s\S]*)/);
+        if (m) {
+          const cat = (m[1] || m[2] || "")
+            .replace(/\\textbf\{([^}]+)\}/g, "$1")
+            .replace(/\\&/g, "&")
+            .replace(/\\_/g, "_")
+            .replace(/[{}]/g, "")
+            .trim();
+          let itemsStr = (m[3] || "")
+            .replace(/^\{:\s*/, "")
+            .replace(/^\s*:\s*/, "")
+            .replace(/\}\s*$/, "")
+            .replace(/\\&/g, "&")
+            .replace(/\\%/g, "%")
+            .replace(/\\#/g, "#")
+            .replace(/\\_/g, "_")
+            .replace(/[{}]/g, "")
+            .trim();
+          if (cat || itemsStr) {
+            parsedCategories.push({ category: cat, items: itemsStr });
+          }
+        } else {
+          const fallbackClean = line
+            .replace(/\\textbf\{([^}]+)\}/g, "$1")
+            .replace(/\{:\s*/g, ": ")
+            .replace(/[\{\}]/g, "")
+            .replace(/\\&/g, "&")
+            .replace(/\\_/g, "_")
+            .trim();
+          if (fallbackClean) {
+            parsedCategories.push({ category: "", items: fallbackClean });
+          }
+        }
+      }
+      result.skillsCategories = parsedCategories;
+      result.skillsHtml = parsedCategories.map(c => c.category ? `${c.category}: ${c.items}` : c.items).join("\n");
     }
   } catch (err) {
     console.error("LaTeX parse error:", err);

@@ -201,60 +201,71 @@ swiftc -target "$SWIFT_TARGET" -framework Cocoa "$REPO_DIR/tools/generate_dmg_ba
 "$DIST_DIR/generate_dmg_background" "$DIST_DIR/dmg_background.tiff"
 rm -f "$DIST_DIR/generate_dmg_background"
 
-# 5. Build Styled macOS DMG Package using Python dmgbuild (.DS_Store native generator)
+# 5. Build Styled macOS DMG Package using Native Finder AppleScript
 echo "Creating styled macOS DMG installer..."
 rm -f "$DMG_PATH"
+TMP_DMG="$DIST_DIR/temp_rw.dmg"
+rm -f "$TMP_DMG"
+hdiutil detach "/Volumes/$APP_NAME" 2>/dev/null || true
 
-python3 - <<PYEOF
-import os, sys
-
-try:
-    import dmgbuild
-except ImportError:
-    print("Installing dmgbuild helper...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "dmgbuild"])
-    import dmgbuild
-
-dmg_path = "$DMG_PATH"
-app_name = "$APP_NAME"
-app_bundle = "$APP_BUNDLE"
-bg_path = "$DIST_DIR/dmg_background.tiff"
-icon_path = "$APP_BUNDLE/Contents/Resources/app.icns"
-
-if os.path.exists(dmg_path):
-    os.remove(dmg_path)
-
-settings = {
-    'files': [app_bundle],
-    'symlinks': {'Applications': '/Applications'},
-    'icon': icon_path if os.path.exists(icon_path) else None,
-    'badge_icon': icon_path if os.path.exists(icon_path) else None,
-    'background': bg_path if os.path.exists(bg_path) else None,
-    'show_status_bar': False,
-    'show_tab_view': False,
-    'show_toolbar': False,
-    'show_pathbar': False,
-    'show_sidebar': False,
-    'arrange_by': None,
-    'icon_size': 128.0,
-    'text_size': 13.0,
-    'window_rect': ((200, 120), (660, 440)),
-    'default_view': 'icon-view',
-    'icon_locations': {
-        f'{app_name}.app': (170, 200),
-        'Applications': (490, 200)
-    },
-    'hide_extensions': [f'{app_name}.app'],
-    'format': 'UDZO'
-}
-
-dmgbuild.build_dmg(dmg_path, app_name, settings=settings)
-print("Styled DMG successfully created!")
-PYEOF
-
-rm -f "$DIST_DIR"/dmg_background*
+# Prepare staging
 rm -rf "$STAGING_DIR"
+mkdir -p "$STAGING_DIR/.background"
+cp -R "$APP_BUNDLE" "$STAGING_DIR/"
+ln -s /Applications "$STAGING_DIR/Applications"
+cp "$DIST_DIR/dmg_background.tiff" "$STAGING_DIR/.background/dmg_background.tiff"
+cp "$DIST_DIR/dmg_background.png" "$STAGING_DIR/.background/dmg_background.png"
+
+# Calculate size needed
+APP_SIZE_MB=$(du -sm "$APP_BUNDLE" | cut -f1)
+DMG_SIZE_MB=$((APP_SIZE_MB + 50))
+
+echo "Creating writable disk image (${DMG_SIZE_MB}MB)..."
+hdiutil create -srcfolder "$STAGING_DIR" -size "${DMG_SIZE_MB}m" -volname "$APP_NAME" -fs HFS+ -format UDRW -ov "$TMP_DMG"
+rm -rf "$STAGING_DIR"
+
+echo "Mounting writable disk image..."
+DEV=$(hdiutil attach "$TMP_DMG" -readwrite -noautoopen | awk 'NR==1{print $1}')
+
+# Custom volume icon
+if [ -f "$APP_BUNDLE/Contents/Resources/app.icns" ]; then
+    cp "$APP_BUNDLE/Contents/Resources/app.icns" "/Volumes/$APP_NAME/.VolumeIcon.icns"
+    if [ -x "/usr/bin/SetFile" ]; then
+        /usr/bin/SetFile -a C "/Volumes/$APP_NAME" 2>/dev/null || true
+    fi
+fi
+
+# Configure Finder layout via native AppleScript
+echo "Configuring Finder window layout..."
+osascript << APPLESCRIPT
+tell application "Finder"
+    tell disk "$APP_NAME"
+        open
+        set current view of container window to icon view
+        set toolbar visible of container window to false
+        set statusbar visible of container window to false
+        set the bounds of container window to {200, 150, 860, 590}
+        set theViewOptions to the icon view options of container window
+        set arrangement of theViewOptions to not arranged
+        set icon size of theViewOptions to 120
+        set background picture of theViewOptions to (POSIX file "/Volumes/$APP_NAME/.background/dmg_background.tiff" as alias)
+        set position of item "$APP_NAME.app" of container window to {170, 205}
+        set position of item "Applications" of container window to {490, 205}
+        close
+        open
+        update without registering applications
+        delay 1
+    end tell
+end tell
+APPLESCRIPT
+
+sync
+echo "Detaching writable disk image..."
+hdiutil detach "$DEV" || hdiutil detach "$DEV" -force
+
+echo "Converting to final compressed DMG..."
+hdiutil convert "$TMP_DMG" -format UDZO -ov -o "$DMG_PATH"
+rm -f "$TMP_DMG" "$DIST_DIR"/dmg_background*
 
 echo "=========================================================="
 echo "🎉 SUCCESS: Styled Native macOS DMG created!"
