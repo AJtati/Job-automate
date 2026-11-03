@@ -183,7 +183,7 @@ describe("Multilingual Language Detection and Localized Resumes", () => {
   });
 
   test("AIService.detectCountryAndLanguage resolves country, currency, and language", async () => {
-    const aiService = new AIService();
+    const aiService = new AIService({ provider: "builtin" });
     const resultDe = await aiService.detectCountryAndLanguage({
       location: "Berlin, Germany",
       text: "Berufserfahrung als Software-Entwickler in München."

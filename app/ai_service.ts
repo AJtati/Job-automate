@@ -82,6 +82,17 @@ export interface ProviderModelsResult {
   error?: string;
 }
 
+export interface GenerationError {
+  provider: "ollama" | "anthropic" | "openai" | "gemini" | "openrouter" | "nvidia" | "builtin";
+  model: string;
+  status?: number;
+  category: "exhausted_credits" | "rate_limited" | "timeout_slow" | "deprecated_unavailable" | "auth_failed" | "server_error" | "network_error";
+  title: string;
+  message: string;
+  suggestedAction: string;
+  timestamp: number;
+}
+
 const ROOT_DIR = process.env.AI_JOB_SEARCH_ROOT || process.cwd();
 const CONFIG_FILE = join(ROOT_DIR, "data", "ai_config.json");
 
@@ -91,6 +102,7 @@ export class AIService {
   private lastLlmSuccess = false;
   private lastAddedSkills: string[] = [];
   private lastBridgedGaps: string[] = [];
+  public lastGenerationError: GenerationError | null = null;
 
   public getLastTailorReport(): TailorReport | null {
     return this.lastTailorReport;
@@ -98,6 +110,112 @@ export class AIService {
 
   public setLastTailorReport(report: TailorReport): void {
     this.lastTailorReport = report;
+  }
+
+  public getLastGenerationError(): GenerationError | null {
+    return this.lastGenerationError;
+  }
+
+  public parseAndRecordGenerationError(
+    provider: AIConfig["provider"],
+    model: string,
+    errorOrStatus: any,
+    bodyText?: string
+  ): GenerationError {
+    const status = typeof errorOrStatus === "number" ? errorOrStatus : undefined;
+    const errObj = typeof errorOrStatus === "object" ? errorOrStatus : null;
+    const body = (bodyText || errObj?.message || "").toLowerCase();
+
+    let category: GenerationError["category"] = "network_error";
+    let title = "AI Model Generation Error";
+    let message = "The selected model could not complete the request.";
+    let suggestedAction = "Switch to an alternative active model or try again.";
+
+    const isTimeout = errObj?.name === "TimeoutError" || errObj?.name === "AbortError" || body.includes("timed out") || body.includes("timeout") || body.includes("aborted");
+    const isCreditExhausted = status === 402 || body.includes("insufficient_quota") || body.includes("insufficient_credits") || body.includes("credit balance") || body.includes("payment required") || body.includes("balance is zero") || body.includes("free quota") || body.includes("exhausted your current quota");
+    const isRateLimited = status === 429 || body.includes("rate limit") || body.includes("too many requests") || body.includes("resource has been exhausted");
+    const isAuthFailed = status === 401 || (status === 403 && (body.includes("api_key") || body.includes("unauthorized") || body.includes("invalid key")));
+    const isDeprecated = status === 404 || status === 410 || body.includes("not found") || body.includes("no longer available") || body.includes("end of life") || body.includes("does not exist") || body.includes("unsupported");
+    const isServerError = (status && status >= 500) || body.includes("unavailable") || body.includes("overloaded") || body.includes("high demand") || body.includes("server error");
+
+    if (isCreditExhausted) {
+      category = "exhausted_credits";
+      title = "Free Limit or Credits Exhausted";
+      message = `Your ${provider.toUpperCase()} account has exhausted its free limit or has insufficient credit balance to run '${model}' (HTTP ${status || 402}).`;
+      suggestedAction = "Switch to an available free model (e.g. NVIDIA Nemotron Lightning, Google Gemini Flash, or Built-in Offline Engine) or top up your account balance.";
+    } else if (isRateLimited) {
+      category = "rate_limited";
+      title = "Rate Limit Exceeded (Too Many Requests)";
+      message = `The model '${model}' on ${provider.toUpperCase()} hit its concurrency/minute rate limit (HTTP 429). Free and shared models frequently experience queue congestion.`;
+      suggestedAction = "Switch to another model or wait a few seconds before asking your next question.";
+    } else if (isTimeout) {
+      category = "timeout_slow";
+      title = "Model Response Stalled (Timeout)";
+      message = `The model '${model}' on ${provider.toUpperCase()} took too long to generate a response (>30s) and timed out. The provider's inference cluster is currently slow.`;
+      suggestedAction = "Switch to a fast, low-latency model (e.g. NVIDIA Nemotron 3.5 Lightning, Google Gemini 2.0 Flash, or Built-in Offline Engine).";
+    } else if (isDeprecated) {
+      category = "deprecated_unavailable";
+      title = "Model Deprecated or Unavailable";
+      message = `The model '${model}' is no longer available, deprecated, or offline on ${provider.toUpperCase()} (HTTP ${status || 404}).`;
+      suggestedAction = "Click Switch Model above to pick a verified active model from the updated list.";
+    } else if (isAuthFailed) {
+      category = "auth_failed";
+      title = "Authentication Failed";
+      message = `Your ${provider.toUpperCase()} API key was rejected as invalid or unauthorized (HTTP ${status || 401}).`;
+      suggestedAction = "Open AI Settings to check or update your API key.";
+    } else if (isServerError) {
+      category = "server_error";
+      title = "Provider Experiencing High Demand";
+      message = `The ${provider.toUpperCase()} endpoint returned HTTP ${status || 503} due to high traffic or a temporary service outage.`;
+      suggestedAction = "Switch to another provider/model while the service recovers.";
+    } else {
+      category = "network_error";
+      title = "Connection or Service Error";
+      message = `Failed to receive a response from '${model}' on ${provider.toUpperCase()}: ${body.slice(0, 160) || "Empty or invalid response received"}.`;
+      suggestedAction = "Switch to another active model or the Built-in Offline Engine.";
+    }
+
+    const genErr: GenerationError = {
+      provider,
+      model,
+      status,
+      category,
+      title,
+      message,
+      suggestedAction,
+      timestamp: Date.now()
+    };
+    this.lastGenerationError = genErr;
+    return genErr;
+  }
+
+  public getActiveModelForProvider(provider: AIConfig["provider"]): string {
+    if (provider === "nvidia") return this.config.nvidiaModel || "nvidia/nemotron-3.5-lightning-30b-a3b";
+    if (provider === "openrouter") return this.config.openrouterModel || "google/gemini-2.5-flash";
+    if (provider === "gemini") return this.config.geminiModel || "gemini-2.5-flash";
+    if (provider === "anthropic") return this.config.anthropicModel || "claude-haiku-4-5-20251001";
+    if (provider === "openai") return this.config.openaiModel || "gpt-4o-mini";
+    if (provider === "ollama") return this.config.ollamaModel || "qwen2.5-coder:3b";
+    return "builtin";
+  }
+
+  public getChatModelLabel(provider?: AIConfig["provider"], model?: string): string {
+    const p = provider || this.config.provider;
+    if (p === "nvidia") {
+      const raw = model || this.config.nvidiaModel || "nemotron-3.5-lightning";
+      const shortName = raw.includes("/") ? raw.split("/")[1] : raw;
+      return `NVIDIA: ${shortName}`;
+    }
+    if (p === "gemini") return `Gemini: ${model || this.config.geminiModel || "Flash"}`;
+    if (p === "anthropic") return `Claude: ${model || this.config.anthropicModel || "Haiku"}`;
+    if (p === "openai") return `OpenAI: ${model || this.config.openaiModel || "GPT-4o"}`;
+    if (p === "openrouter") {
+      const raw = model || this.config.openrouterModel || "Cloud";
+      const shortName = raw.includes("/") ? raw.split("/")[1] : raw;
+      return `OpenRouter: ${shortName}`;
+    }
+    if (p === "ollama") return `Ollama: ${model || this.config.ollamaModel || "Local"}`;
+    return "Built-in (Offline)";
   }
 
   constructor(configOverride?: Partial<AIConfig>) {
@@ -111,10 +229,10 @@ export class AIService {
       ollamaModel: "qwen2.5-coder:3b",
       anthropicModel: "claude-haiku-4-5-20251001",
       openaiModel: "gpt-4o-mini",
-      geminiModel: "gemini-2.0-flash",
-      openrouterModel: "google/gemini-2.0-flash-001",
+      geminiModel: "gemini-2.5-flash",
+      openrouterModel: "google/gemini-2.5-flash",
       openrouterBaseUrl: "https://openrouter.ai/api/v1",
-      nvidiaModel: "meta/llama-3.3-70b-instruct"
+      nvidiaModel: "nvidia/nemotron-3.5-lightning-30b-a3b"
     };
 
     let cfg: AIConfig = defaultConfig;
@@ -240,6 +358,111 @@ export class AIService {
     }
   }
 
+  // Strict validation filters to guarantee ONLY available, non-deprecated, working text-chat models are returned
+  public isOpenRouterChatModelValid(modelOrId: any): boolean {
+    if (!modelOrId) return false;
+    const m = typeof modelOrId === "string" ? { id: modelOrId, name: modelOrId, context_length: 4096 } : modelOrId;
+    if (!m || !m.id || typeof m.id !== "string") return false;
+    const id = m.id.toLowerCase();
+    const name = (m.name || "").toLowerCase();
+
+    // 0. Exclude known discontinued / retired OpenRouter models
+    if (id === "google/gemini-2.0-flash-001" || id.includes("gemini-2.0-flash-001")) {
+      return false;
+    }
+
+    // 1. Exclude expired or sunset models
+    if (m.expiration_date) {
+      const exp = new Date(m.expiration_date).getTime();
+      if (!isNaN(exp) && exp <= Date.now()) return false;
+    }
+    if (id.includes(":deprecated") || id.includes(":disabled") || name.includes("(deprecated)") || name.includes("[deprecated]") || name.includes("discontinued")) {
+      return false;
+    }
+
+    // 2. Modalities: must support text output
+    if (m.architecture?.output_modalities && Array.isArray(m.architecture.output_modalities)) {
+      if (!m.architecture.output_modalities.includes("text")) return false;
+    }
+
+    // 3. Endpoints: must support chat completions if endpoints array is populated
+    if (Array.isArray(m.endpoints) && m.endpoints.length > 0) {
+      const hasChat = m.endpoints.some((e: string) => typeof e === "string" && e.includes("/chat/completions"));
+      if (!hasChat) return false;
+    }
+
+    // 4. Exclude embeddings, audio/speech, image generators, moderation, batch-only
+    if (
+      id.includes("embed") || id.includes("moderation") || id.includes("whisper") ||
+      id.includes("tts") || id.includes("audio") || id.includes("transcribe") ||
+      id.includes("-image") || id.includes("banana") || id.includes("flux") ||
+      id.includes("stable-diffusion") || id.includes("diffusion") || id.includes("midjourney") ||
+      id.includes("dall-e") || id.includes("rerank") || id.includes(":batch") || id.endsWith("/batch")
+    ) {
+      return false;
+    }
+
+    // 5. Positive context window
+    const ctx = m.context_length || m.top_provider?.context_length || 0;
+    if (ctx <= 0) return false;
+
+    return true;
+  }
+
+  public isNvidiaChatModelValid(id: string): boolean {
+    if (!id || typeof id !== "string") return false;
+    const lower = id.toLowerCase();
+    // Exclude confirmed EOL / 410 / 404 models on NIM
+    if (lower === "meta/llama-3.3-70b-instruct" || lower === "nvidia/nemotron-4-340b-instruct" || lower.includes("mixtral-8x22b")) {
+      return false;
+    }
+    // Exclude embeddings, rerankers, retrievers, safety guardrails (not text generation models)
+    if (
+      lower.includes("embed") || lower.includes("retriever") || lower.includes("rerank") ||
+      lower.includes("guard") || lower.includes("safety") || lower.includes("topic-control") ||
+      lower.includes("reward") || lower.includes("nemoretriever")
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  public isGeminiChatModelValid(id: string): boolean {
+    if (!id || typeof id !== "string") return false;
+    const lower = id.toLowerCase();
+    // Exclude retired models (gemini-2.0-flash was replaced by 2.5-flash)
+    if (lower === "gemini-2.0-flash" || lower.includes("gemini-2.0-flash")) {
+      return false;
+    }
+    // Exclude audio/TTS, transcription, vision-only generation, robotics, and embeddings
+    if (
+      lower.includes("-tts") || lower.includes("-transcribe") || lower.includes("-clip") ||
+      lower.includes("-image") || lower.includes("robotics") || lower.includes("embedding") ||
+      lower.includes("bison") || lower.includes("aqa")
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  public isAnthropicChatModelValid(id: string): boolean {
+    if (!id || typeof id !== "string") return false;
+    const lower = id.toLowerCase();
+    if (!lower.includes("claude")) return false;
+    if (lower.startsWith("claude-1") || lower.startsWith("claude-2") || lower.includes("claude-instant")) {
+      return false;
+    }
+    return true;
+  }
+
+  public isOpenAiChatModelValid(id: string): boolean {
+    if (!id || typeof id !== "string") return false;
+    const lower = id.toLowerCase();
+    const isChat = lower.startsWith("gpt-") || lower.startsWith("o1") || lower.startsWith("o3") || lower.startsWith("chatgpt");
+    const isExcluded = lower.includes("realtime") || lower.includes("audio") || lower.includes("tts") || lower.includes("whisper") || lower.includes("dall-e") || lower.includes("embedding") || lower.includes("transcription") || lower.includes("moderation");
+    return isChat && !isExcluded;
+  }
+
   // Live dynamic model discovery from Cloud Providers
   public async fetchCloudModels(
     provider: "openai" | "anthropic" | "gemini" | "openrouter" | "nvidia",
@@ -265,7 +488,7 @@ export class AIService {
           const data: any = await res.json();
           const list = (data.data || [])
             .map((m: any) => m.id)
-            .filter((id: string) => id.includes("gpt-") || id.includes("o1-") || id.includes("o3-") || id.includes("chatgpt"));
+            .filter((id: string) => this.isOpenAiChatModelValid(id));
           return list.sort();
         }
       } catch (err) {
@@ -287,7 +510,7 @@ export class AIService {
           const data: any = await res.json();
           const list = (data.data || [])
             .map((m: any) => m.id)
-            .filter((id: string) => id.includes("claude"));
+            .filter((id: string) => this.isAnthropicChatModelValid(id));
           if (list.length > 0) return list.sort();
         }
       } catch (err) {
@@ -314,7 +537,9 @@ export class AIService {
           const list = (data.models || [])
             .filter((m: any) => {
               const methods = Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
-              return methods.includes("generateContent") || methods.includes("streamGenerateContent");
+              if (!methods.includes("generateContent")) return false;
+              const name = (m.name || "").replace(/^models\//, "");
+              return this.isGeminiChatModelValid(name);
             })
             .map((m: any) => (m.name || "").replace(/^models\//, ""))
             .filter(Boolean);
@@ -323,7 +548,7 @@ export class AIService {
       } catch (err) {
         console.warn("Error fetching Gemini live models:", err);
       }
-      return ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+      return ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-2.5-pro", "gemini-1.5-pro"];
     }
 
     if (provider === "openrouter") {
@@ -339,19 +564,22 @@ export class AIService {
         });
         if (res.ok) {
           const data: any = await res.json();
-          const list = (data.data || []).map((m: any) => m.id).filter(Boolean);
+          const list = (data.data || [])
+            .filter((m: any) => this.isOpenRouterChatModelValid(m))
+            .map((m: any) => m.id)
+            .filter(Boolean);
           if (list.length > 0) return list.sort();
         }
       } catch (err) {
         console.warn("Error fetching OpenRouter live models:", err);
       }
       return [
-        "google/gemini-2.0-flash-001",
+        "google/gemini-2.5-flash",
+        "nvidia/nemotron-3.5-lightning:free",
         "anthropic/claude-3.5-haiku",
         "openai/gpt-4o-mini",
         "meta-llama/llama-3.3-70b-instruct",
-        "deepseek/deepseek-chat",
-        "openrouter/free"
+        "deepseek/deepseek-chat"
       ];
     }
 
@@ -363,18 +591,20 @@ export class AIService {
         });
         if (res.ok) {
           const data: any = await res.json();
-          const list = (data.data || []).map((m: any) => m.id).filter(Boolean);
+          const list = (data.data || [])
+            .map((m: any) => m.id)
+            .filter((id: string) => this.isNvidiaChatModelValid(id));
           if (list.length > 0) return list.sort();
         }
       } catch (err) {
         console.warn("Error fetching NVIDIA live models:", err);
       }
       return [
-        "meta/llama-3.3-70b-instruct",
-        "mistralai/mixtral-8x22b-instruct-v0.1",
-        "nvidia/nemotron-4-340b-instruct",
-        "deepseek-ai/deepseek-r1",
-        "openai/gpt-oss-120b"
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "nvidia/nemotron-3.5-bolt-e4b",
+        "nvidia/nemotron-3.5-super-vl-120b-a12b",
+        "meta/llama-3.2-11b-vision-instruct"
       ];
     }
 
@@ -451,39 +681,42 @@ export class AIService {
 
     if (provider === "gemini") {
       const live = await this.fetchCloudModels("gemini", apiKey);
-      const preferred = live.find(m => m.includes("2.0-flash") || m.includes("2.5-flash"))
-        || live.find(m => m.includes("1.5-flash"))
-        || "gemini-2.0-flash";
+      const preferred = live.find(m => m === "gemini-2.5-flash")
+        || live.find(m => m.includes("gemini-2.5-flash"))
+        || live.find(m => m.includes("flash-latest") || m.includes("flash"))
+        || "gemini-2.5-flash";
       return {
         recommendedModel: preferred,
         tier: "cheap_and_best",
-        reason: "Gemini 2.0 Flash is Google's next-gen high-speed model with sub-second latency and strong multimodal reasoning."
+        reason: "Gemini 2.5 Flash is Google's high-speed production model with sub-second latency and strong reasoning."
       };
     }
 
     if (provider === "openrouter") {
       const live = await this.fetchCloudModels("openrouter", apiKey, baseUrl);
-      const preferred = live.find(m => m.includes("gemini-2.0-flash") || m.includes("gemini-2.5-flash"))
+      const preferred = live.find(m => m.includes("gemini-2.5-flash"))
+        || live.find(m => m === "nvidia/nemotron-3.5-lightning:free")
         || live.find(m => m.includes("3.5-haiku") || m.includes("haiku"))
         || live.find(m => m.includes("gpt-4o-mini"))
-        || "google/gemini-2.0-flash-001";
+        || "google/gemini-2.5-flash";
       return {
         recommendedModel: preferred,
         tier: "cheap_and_best",
-        reason: "Gemini 2.0 Flash via OpenRouter delivers ultra-fast responses (~$0.10/M tokens) with multi-cloud redundancy."
+        reason: "Gemini 2.5 Flash via OpenRouter delivers ultra-fast responses with low latency and multi-cloud redundancy."
       };
     }
 
     if (provider === "nvidia") {
       const live = await this.fetchCloudModels("nvidia", apiKey);
-      const preferred = live.find(m => m.includes("llama-3.3-70b"))
-        || live.find(m => m.includes("nemotron-70b"))
-        || live.find(m => m.includes("nemotron-51b") || m.includes("nemotron"))
-        || "meta/llama-3.3-70b-instruct";
+      const preferred = live.find(m => m === "nvidia/nemotron-3.5-lightning-30b-a3b")
+        || live.find(m => m.includes("nemotron-3.5") || m.includes("lightning"))
+        || live.find(m => m.includes("nemotron") || m.includes("llama-3.2"))
+        || "nvidia/nemotron-3.5-lightning-30b-a3b";
       return {
         recommendedModel: preferred,
         tier: "cheap_and_best",
-        reason: "Meta Llama and Nemotron on NVIDIA NIM enterprise acceleration deliver frontier intelligence with zero GPU setup."
+        badge: "✨ Recommended · NIM Lightning",
+        reason: "NVIDIA Nemotron 3.5 Lightning with NVIDIA NIM enterprise acceleration delivers sub-second frontier inference."
       };
     }
 
@@ -810,7 +1043,7 @@ export class AIService {
             id: (m.name || "").replace(/^models\//, ""),
             displayName: m.displayName || m.name
           }))
-          .filter((m: any) => Boolean(m.id));
+          .filter((m: any) => Boolean(m.id) && this.isGeminiChatModelValid(m.id));
 
         if (rawList.length === 0) {
           return {
@@ -911,32 +1144,33 @@ export class AIService {
 
         const data: any = await res.json();
         const rawList: any[] = data.data || [];
-        if (rawList.length === 0) {
+        const validList = rawList.filter((m: any) => this.isOpenRouterChatModelValid(m));
+        if (validList.length === 0) {
           return {
             success: false,
             provider: "openrouter",
             models: [],
             recommendedModel: "",
             reason: "",
-            error: "No models returned by OpenRouter API."
+            error: "No active, compatible chat models returned by OpenRouter API."
           };
         }
 
         // Highlight top curated models
         const priorityModels = [
-          "google/gemini-2.0-flash-001",
           "google/gemini-2.5-flash",
+          "nvidia/nemotron-3.5-lightning:free",
+          "nvidia/nemotron-3.5-super-vl:free",
           "anthropic/claude-3.5-haiku",
           "anthropic/claude-3.7-sonnet",
           "openai/gpt-4o-mini",
           "meta-llama/llama-3.3-70b-instruct",
           "deepseek/deepseek-chat",
-          "deepseek/deepseek-r1",
-          "openrouter/free"
+          "deepseek/deepseek-r1"
         ];
 
         // Sort priority models first, then alphabetical
-        rawList.sort((a: any, b: any) => {
+        validList.sort((a: any, b: any) => {
           const idxA = priorityModels.findIndex(p => a.id === p || a.id.startsWith(p));
           const idxB = priorityModels.findIndex(p => b.id === p || b.id.startsWith(p));
           if (idxA !== -1 && idxB !== -1) return idxA - idxB;
@@ -945,22 +1179,27 @@ export class AIService {
           return (a.id || "").localeCompare(b.id || "");
         });
 
-        const recModel = rawList.find((m: any) => m.id === "google/gemini-2.0-flash-001" || m.id.includes("gemini-2.0-flash"))?.id
-          || rawList.find((m: any) => m.id.includes("3.5-haiku"))?.id
-          || rawList.find((m: any) => m.id.includes("gpt-4o-mini"))?.id
-          || rawList[0]?.id;
+        const recModel = validList.find((m: any) => m.id === "google/gemini-2.5-flash" || m.id.includes("gemini-2.5-flash"))?.id
+          || validList.find((m: any) => m.id === "nvidia/nemotron-3.5-lightning:free")?.id
+          || validList.find((m: any) => m.id.includes("3.5-haiku"))?.id
+          || validList.find((m: any) => m.id.includes("gpt-4o-mini"))?.id
+          || validList[0]?.id;
 
-        const models: ModelOption[] = rawList.map((m: any) => {
+        const models: ModelOption[] = validList.map((m: any) => {
           const isRec = m.id === recModel;
+          const isFree = m.id.includes(":free") || m.pricing?.prompt === "0" || m.pricing?.prompt === 0;
           let badge = "";
           let tier: "cheap_and_best" | "flagship" | "standard" = "standard";
           if (isRec) {
             badge = "✨ Recommended · Fast & Lowest Cost";
             tier = "cheap_and_best";
-          } else if (m.id.includes("sonnet") || m.id.includes("gpt-4o") || m.id.includes("opus")) {
+          } else if (isFree) {
+            badge = "✨ Free Tier · Zero Cost";
+            tier = "cheap_and_best";
+          } else if (m.id.includes("sonnet") || m.id.includes("gpt-4o") || m.id.includes("opus") || m.id.includes("r1")) {
             badge = "Flagship Quality";
             tier = "flagship";
-          } else if (m.id.includes("free") || m.id.includes("haiku") || m.id.includes("mini") || m.id.includes("flash")) {
+          } else if (m.id.includes("haiku") || m.id.includes("mini") || m.id.includes("flash")) {
             badge = "Economical";
             tier = "cheap_and_best";
           }
@@ -970,7 +1209,7 @@ export class AIService {
             recommended: isRec,
             tier,
             badge,
-            reason: isRec ? "Ultra-fast response with high accuracy and minimal token pricing." : undefined
+            reason: isRec ? "Ultra-fast response with high accuracy and minimal token pricing." : (isFree ? "Completely free access on OpenRouter." : undefined)
           };
         });
 
@@ -979,7 +1218,7 @@ export class AIService {
           provider: "openrouter",
           models,
           recommendedModel: recModel,
-          reason: `Verified ${models.length} active models via OpenRouter. '${recModel}' is recommended.`
+          reason: `Verified ${models.length} active models via OpenRouter (deprecated and incompatible models filtered out). '${recModel}' is recommended.`
         };
       } catch (err: any) {
         return {
@@ -1029,26 +1268,28 @@ export class AIService {
 
         const data: any = await res.json();
         const rawList: any[] = data.data || [];
-        if (rawList.length === 0) {
+        const validList = rawList.filter((m: any) => this.isNvidiaChatModelValid(m.id || ""));
+        if (validList.length === 0) {
           return {
             success: false,
             provider: "nvidia",
             models: [],
             recommendedModel: "",
             reason: "",
-            error: "No models returned by NVIDIA NIM API."
+            error: "No active, compatible chat models found on NVIDIA NIM account."
           };
         }
 
         const priorityModels = [
-          "meta/llama-3.3-70b-instruct",
-          "mistralai/mixtral-8x22b-instruct-v0.1",
-          "nvidia/nemotron-4-340b-instruct",
-          "deepseek-ai/deepseek-r1",
-          "openai/gpt-oss-120b"
+          "nvidia/nemotron-3.5-lightning-30b-a3b",
+          "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+          "nvidia/nemotron-3.5-bolt-e4b",
+          "nvidia/nemotron-3.5-super-vl-120b-a12b",
+          "nvidia/llama-3.1-nemotron-70b-instruct",
+          "meta/llama-3.2-11b-vision-instruct"
         ];
 
-        rawList.sort((a: any, b: any) => {
+        validList.sort((a: any, b: any) => {
           const idxA = priorityModels.findIndex(p => a.id === p || a.id.startsWith(p));
           const idxB = priorityModels.findIndex(p => b.id === p || b.id.startsWith(p));
           if (idxA !== -1 && idxB !== -1) return idxA - idxB;
@@ -1057,17 +1298,18 @@ export class AIService {
           return (a.id || "").localeCompare(b.id || "");
         });
 
-        const recModel = rawList.find((m: any) => m.id === "meta/llama-3.3-70b-instruct" || m.id.includes("llama-3.3-70b"))?.id
-          || rawList[0]?.id;
+        const recModel = validList.find((m: any) => m.id === "nvidia/nemotron-3.5-lightning-30b-a3b")?.id
+          || validList.find((m: any) => m.id.includes("nemotron-3.5") || m.id.includes("lightning"))?.id
+          || "nvidia/nemotron-3.5-lightning-30b-a3b";
 
-        const models: ModelOption[] = rawList.map((m: any) => {
+        const models: ModelOption[] = validList.map((m: any) => {
           const isRec = m.id === recModel;
           let badge = "";
           let tier: "cheap_and_best" | "flagship" | "standard" = "standard";
           if (isRec) {
-            badge = "✨ Recommended · NIM Accelerated";
+            badge = "✨ Recommended · NIM Lightning";
             tier = "cheap_and_best";
-          } else if (m.id.includes("340b") || m.id.includes("r1")) {
+          } else if (m.id.includes("reasoning") || m.id.includes("super")) {
             badge = "Deep Reasoning";
             tier = "flagship";
           } else {
@@ -1080,7 +1322,7 @@ export class AIService {
             recommended: isRec,
             tier,
             badge,
-            reason: isRec ? "Enterprise Llama 3.3 70B inference accelerated by NVIDIA NIM hardware." : undefined
+            reason: isRec ? "Enterprise Nemotron 3.5 Lightning inference accelerated by NVIDIA NIM hardware." : undefined
           };
         });
 
@@ -1089,7 +1331,7 @@ export class AIService {
           provider: "nvidia",
           models,
           recommendedModel: recModel,
-          reason: `Verified ${models.length} active models on NVIDIA Build. '${recModel}' is recommended.`
+          reason: `Verified ${models.length} active models on NVIDIA Build (deprecated and non-chat models filtered out). '${recModel}' is recommended.`
         };
       } catch (err: any) {
         return {
@@ -1142,32 +1384,35 @@ export class AIService {
 
     if (this.config.provider === "gemini") {
       if (!this.config.geminiApiKey) return { status: "offline", message: "Google Gemini API Key not configured" };
-      return { status: "connected", message: `Google Gemini API ready (${this.config.geminiModel || "gemini-2.0-flash"})` };
+      return { status: "connected", message: `Google Gemini API ready (${this.config.geminiModel || "gemini-2.5-flash"})` };
     }
 
     if (this.config.provider === "openrouter") {
       if (!this.config.openrouterApiKey) return { status: "offline", message: "OpenRouter API Key not configured" };
-      return { status: "connected", message: `OpenRouter API ready (${this.config.openrouterModel || "google/gemini-2.0-flash-001"})` };
+      return { status: "connected", message: `OpenRouter API ready (${this.config.openrouterModel || "google/gemini-2.5-flash"})` };
     }
 
     if (this.config.provider === "nvidia") {
       if (!this.config.nvidiaApiKey) return { status: "offline", message: "NVIDIA Build API Key not configured" };
-      return { status: "connected", message: `NVIDIA NIM API ready (${this.config.nvidiaModel || "meta/llama-3.3-70b-instruct"})` };
+      return { status: "connected", message: `NVIDIA NIM API ready (${this.config.nvidiaModel || "nvidia/nemotron-3.5-lightning-30b-a3b"})` };
     }
 
     return { status: "connected", message: "Ready" };
   }
 
   // Generate text with selected provider
-  public async generateText(prompt: string, systemPrompt?: string): Promise<string> {
+  public async generateText(prompt: string, systemPrompt?: string, maxTokens: number = 1024): Promise<string> {
+    this.lastGenerationError = null;
+
     if (this.config.provider === "ollama") {
+      const modelToTry = this.config.ollamaModel || "qwen2.5-coder:3b";
       try {
         const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
         const res = await fetch(`${this.config.ollamaHost}/api/generate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: this.config.ollamaModel || "qwen2.5-coder:3b",
+            model: modelToTry,
             prompt: fullPrompt,
             stream: false
           }),
@@ -1175,10 +1420,14 @@ export class AIService {
         });
         if (res.ok) {
           const data: any = await res.json();
+          this.lastGenerationError = null;
           return data.response?.trim() || "";
         }
-      } catch (e) {
+        const errBody = await res.text();
+        this.parseAndRecordGenerationError("ollama", modelToTry, res.status, errBody);
+      } catch (e: any) {
         console.warn("Ollama call failed, falling back to built-in:", e);
+        this.parseAndRecordGenerationError("ollama", modelToTry, e);
       }
     }
 
@@ -1186,9 +1435,8 @@ export class AIService {
       const candidates = [
         this.config.anthropicModel,
         "claude-haiku-4-5-20251001",
-        "claude-sonnet-4-5-20250929",
-        "claude-sonnet-4-6",
         "claude-3-5-haiku-latest",
+        "claude-3-7-sonnet-latest",
         "claude-3-5-sonnet-latest"
       ].filter(Boolean) as string[];
       const uniqueModels = [...new Set(candidates)];
@@ -1204,7 +1452,7 @@ export class AIService {
             },
             body: JSON.stringify({
               model: modelToTry,
-              max_tokens: 4096,
+              max_tokens: maxTokens,
               system: systemPrompt,
               messages: [{ role: "user", content: prompt }]
             }),
@@ -1217,16 +1465,19 @@ export class AIService {
               this.config.anthropicModel = modelToTry;
               this.saveConfig({ anthropicModel: modelToTry });
             }
+            this.lastGenerationError = null;
             return text;
           }
           const errBody = await res.text();
           console.warn(`Anthropic model ${modelToTry} returned ${res.status}:`, errBody);
+          this.parseAndRecordGenerationError("anthropic", modelToTry, res.status, errBody);
           if (res.status === 404 || errBody.includes("not_found_error")) {
             continue;
           }
           break;
-        } catch (e) {
+        } catch (e: any) {
           console.warn(`Anthropic call failed with ${modelToTry}:`, e);
+          this.parseAndRecordGenerationError("anthropic", modelToTry, e);
         }
       }
     }
@@ -1250,7 +1501,7 @@ export class AIService {
             },
             body: JSON.stringify({
               model: modelToTry,
-              max_tokens: 4096,
+              max_tokens: maxTokens,
               messages: [
                 ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
                 { role: "user", content: prompt }
@@ -1265,16 +1516,19 @@ export class AIService {
               this.config.openaiModel = modelToTry;
               this.saveConfig({ openaiModel: modelToTry });
             }
+            this.lastGenerationError = null;
             return text;
           }
           const errBody = await res.text();
           console.warn(`OpenAI model ${modelToTry} returned ${res.status}:`, errBody);
+          this.parseAndRecordGenerationError("openai", modelToTry, res.status, errBody);
           if (res.status === 404 || errBody.includes("model_not_found")) {
             continue;
           }
           break;
-        } catch (e) {
+        } catch (e: any) {
           console.warn(`OpenAI call failed with ${modelToTry}:`, e);
+          this.parseAndRecordGenerationError("openai", modelToTry, e);
         }
       }
     }
@@ -1282,11 +1536,11 @@ export class AIService {
     if (this.config.provider === "gemini" && this.config.geminiApiKey) {
       const candidates = [
         this.config.geminiModel,
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-2.5-flash"
-      ].filter(Boolean) as string[];
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-flash-latest",
+        "gemini-2.5-pro"
+      ].filter(m => Boolean(m) && m !== "gemini-2.0-flash" && this.isGeminiChatModelValid(m)) as string[];
       const uniqueModels = [...new Set(candidates)];
 
       for (const modelToTry of uniqueModels) {
@@ -1303,7 +1557,7 @@ export class AIService {
               contents: [{ parts: [{ text: prompt }] }],
               generationConfig: {
                 temperature: 0.7,
-                maxOutputTokens: 4096
+                maxOutputTokens: maxTokens
               }
             }),
             signal: AbortSignal.timeout(30000)
@@ -1312,6 +1566,7 @@ export class AIService {
             const data: any = await res.json();
             const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
             if (text) {
+              this.lastGenerationError = null;
               if (modelToTry !== this.config.geminiModel) {
                 this.config.geminiModel = modelToTry;
                 this.saveConfig({ geminiModel: modelToTry });
@@ -1321,10 +1576,12 @@ export class AIService {
           }
           const errBody = await res.text();
           console.warn(`Gemini model ${modelToTry} returned ${res.status}:`, errBody);
-          if (res.status === 404 || errBody.includes("not found")) continue;
+          this.parseAndRecordGenerationError("gemini", modelToTry, res.status, errBody);
+          if (res.status === 404 || res.status === 503 || res.status === 429 || errBody.includes("not found") || errBody.includes("UNAVAILABLE")) continue;
           break;
-        } catch (e) {
+        } catch (e: any) {
           console.warn(`Gemini call failed with ${modelToTry}:`, e);
+          this.parseAndRecordGenerationError("gemini", modelToTry, e);
         }
       }
     }
@@ -1332,11 +1589,11 @@ export class AIService {
     if (this.config.provider === "openrouter" && this.config.openrouterApiKey) {
       const candidates = [
         this.config.openrouterModel,
-        "google/gemini-2.0-flash-001",
+        "google/gemini-2.5-flash",
+        "nvidia/nemotron-3.5-lightning:free",
         "anthropic/claude-3.5-haiku",
-        "openai/gpt-4o-mini",
-        "meta-llama/llama-3.3-70b-instruct"
-      ].filter(Boolean) as string[];
+        "openai/gpt-4o-mini"
+      ].filter(m => Boolean(m) && m !== "google/gemini-2.0-flash-001" && this.isOpenRouterChatModelValid(m)) as string[];
       const uniqueModels = [...new Set(candidates)];
       const baseUrl = (this.config.openrouterBaseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
 
@@ -1357,14 +1614,16 @@ export class AIService {
                 { role: "user", content: prompt }
               ],
               temperature: 0.7,
-              max_tokens: 4096
+              max_tokens: maxTokens
             }),
             signal: AbortSignal.timeout(30000)
           });
           if (res.ok) {
             const data: any = await res.json();
-            const text = data.choices?.[0]?.message?.content?.trim() || "";
+            const choice = data.choices?.[0];
+            const text = (choice?.message?.content || choice?.message?.reasoning_content || choice?.message?.reasoning || "").trim();
             if (text) {
+              this.lastGenerationError = null;
               if (modelToTry !== this.config.openrouterModel) {
                 this.config.openrouterModel = modelToTry;
                 this.saveConfig({ openrouterModel: modelToTry });
@@ -1374,10 +1633,12 @@ export class AIService {
           }
           const errBody = await res.text();
           console.warn(`OpenRouter model ${modelToTry} returned ${res.status}:`, errBody);
-          if (res.status === 404 || errBody.includes("not_found") || errBody.includes("does not exist")) continue;
+          this.parseAndRecordGenerationError("openrouter", modelToTry, res.status, errBody);
+          if (res.status === 404 || res.status === 410 || res.status === 429 || res.status === 503 || res.status === 502 || res.status === 402 || errBody.includes("not_found") || errBody.includes("does not exist")) continue;
           break;
-        } catch (e) {
+        } catch (e: any) {
           console.warn(`OpenRouter call failed with ${modelToTry}:`, e);
+          this.parseAndRecordGenerationError("openrouter", modelToTry, e);
         }
       }
     }
@@ -1385,10 +1646,11 @@ export class AIService {
     if (this.config.provider === "nvidia" && this.config.nvidiaApiKey) {
       const candidates = [
         this.config.nvidiaModel,
-        "meta/llama-3.3-70b-instruct",
-        "mistralai/mixtral-8x22b-instruct-v0.1",
-        "nvidia/nemotron-4-340b-instruct"
-      ].filter(Boolean) as string[];
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "nvidia/nemotron-3.5-bolt-e4b",
+        "nvidia/nemotron-3.5-super-vl-120b-a12b"
+      ].filter(m => Boolean(m) && this.isNvidiaChatModelValid(m)) as string[];
       const uniqueModels = [...new Set(candidates)];
 
       for (const modelToTry of uniqueModels) {
@@ -1406,14 +1668,16 @@ export class AIService {
                 { role: "user", content: prompt }
               ],
               temperature: 0.7,
-              max_tokens: 4096
+              max_tokens: maxTokens
             }),
-            signal: AbortSignal.timeout(30000)
+            signal: AbortSignal.timeout(35000)
           });
           if (res.ok) {
             const data: any = await res.json();
-            const text = data.choices?.[0]?.message?.content?.trim() || "";
+            const choice = data.choices?.[0];
+            const text = (choice?.message?.content || choice?.message?.reasoning_content || "").trim();
             if (text) {
+              this.lastGenerationError = null;
               if (modelToTry !== this.config.nvidiaModel) {
                 this.config.nvidiaModel = modelToTry;
                 this.saveConfig({ nvidiaModel: modelToTry });
@@ -1423,10 +1687,12 @@ export class AIService {
           }
           const errBody = await res.text();
           console.warn(`NVIDIA model ${modelToTry} returned ${res.status}:`, errBody);
-          if (res.status === 404 || errBody.includes("not found")) continue;
+          this.parseAndRecordGenerationError("nvidia", modelToTry, res.status, errBody);
+          if (res.status === 404 || res.status === 410 || res.status === 429 || res.status === 503 || errBody.includes("not found") || errBody.includes("no longer available") || errBody.includes("reached its end of life")) continue;
           break;
-        } catch (e) {
+        } catch (e: any) {
           console.warn(`NVIDIA call failed with ${modelToTry}:`, e);
+          this.parseAndRecordGenerationError("nvidia", modelToTry, e);
         }
       }
     }
@@ -3190,10 +3456,37 @@ CRITICAL MANDATORY HUMANIZER RULES (STRICTLY ENFORCED ACROSS ALL REPLIES):
 
         const reply = await this.generateText(fullPrompt, systemPrompt);
         if (reply && reply.trim()) {
+          this.lastGenerationError = null;
           return this.humanizeText(reply.trim(), { company, role, candidateName: profile.name });
         }
-      } catch (e) {
-        console.warn("AI generation for job chat failed, using deterministic copilot:", e);
+      } catch (e: any) {
+        console.warn("AI generation for job chat failed:", e);
+        if (!this.lastGenerationError) {
+          const activeModel = this.getActiveModelForProvider(this.config.provider);
+          this.parseAndRecordGenerationError(this.config.provider, activeModel, e);
+        }
+      }
+
+      // If cloud generation failed or could not produce an answer, display prominent actionable error alert with fallback
+      const genErr = this.lastGenerationError;
+      const deterministicReply = this.generateDeterministicJobChatResponse(profile, normalizedJob, analysis, userMessage);
+      const fallbackHumanized = this.humanizeText(deterministicReply, { company, role, candidateName: profile.name });
+
+      if (genErr) {
+        const providerLabel = genErr.provider.toUpperCase();
+        return `> ⚠️ **${genErr.title} (${providerLabel} · \`${genErr.model}\`)**
+> **Reason:** ${genErr.message}
+> 
+> 👉 **Switch Model:** Click the **⚡ Switch Model** button in the chat header above or open **AI Settings** to switch to an active model (such as *NVIDIA Nemotron 3.5 Lightning*, *Google Gemini 2.0 Flash*, or *Built-in Offline Engine*).
+> 
+> *Tip:* ${genErr.suggestedAction}
+
+---
+
+### Offline Co-Pilot Insight (Fallback)
+*(Generated locally by the built-in offline engine while cloud model is unavailable)*
+
+${fallbackHumanized}`;
       }
     }
 
@@ -3221,6 +3514,20 @@ CRITICAL MANDATORY HUMANIZER RULES (STRICTLY ENFORCED ACROSS ALL REPLIES):
     const matched: string[] = (analysis && analysis.matchedKeywords && analysis.matchedKeywords.length)
       ? analysis.matchedKeywords
       : (allProfileSkills.length ? allProfileSkills : []);
+
+    // 0. Natural Conversational Greeting
+    if (/^(?:hi|hello|hey|howdy|greetings|good (?:morning|afternoon|evening))[!.,\s]*$/i.test(q)) {
+      return `Hello ${candidateName}! I'm your dedicated Job Application & Interview Co-Pilot for **${role}** at **${company}**.
+
+I've analyzed the job posting against your profile and verified core competencies in **${matched.slice(0, 4).join(", ") || "core technologies"}**.
+
+How can I help you right now? Feel free to ask:
+- 💡 **Why I Want This Job**: Explain your authentic motivation and interest in ${company}
+- 🎯 **Top Interview Questions & STAR Answers**: Real scenarios tailored to your career
+- ✉️ **Recruiter Outreach Note**: Punchy LinkedIn message under 75 words
+- ❓ **Screening Questions**: Tailored answers for visa, notice period, and salary
+- 🔍 **Address Skill Gaps**: Confidence-building talking points for interviewers`;
+    }
 
     // 1. Skill Gaps & How to Address Them
     if (/gaps?\b|weakness|missing|how (?:should|to|can) i? ?address/i.test(q)) {

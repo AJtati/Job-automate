@@ -2076,7 +2076,8 @@ serve({
         };
 
         const reply = await aiService.generateJobChatResponse(activeProfile, jobForChat, message, history || []);
-        return Response.json({ success: true, reply });
+        const aiError = aiService.getLastGenerationError();
+        return Response.json({ success: true, reply, aiError });
       } catch (err: any) {
         return Response.json({ success: false, error: err.message }, { status: 500 });
       }

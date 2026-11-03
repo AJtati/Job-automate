@@ -1616,9 +1616,9 @@ function openAiModal() {
       ollamaModel: "qwen2.5-coder:3b",
       anthropicModel: "claude-haiku-4-5-20251001",
       openaiModel: "gpt-4o-mini",
-      geminiModel: "gemini-2.0-flash",
-      openrouterModel: "google/gemini-2.0-flash-001",
-      nvidiaModel: "meta/llama-3.3-70b-instruct"
+      geminiModel: "gemini-2.5-flash",
+      openrouterModel: "openai/gpt-4o-mini",
+      nvidiaModel: "nvidia/nemotron-3.5-lightning-30b-a3b"
     };
     fetchAiConfig().catch(console.error);
   }
@@ -1766,10 +1766,10 @@ async function saveAiConfig() {
     ollamaModel: aiOllamaModelSelect.value,
     anthropicModel: anthropicModelSelect?.value || "claude-haiku-4-5-20251001",
     openaiModel: openAiModelSelect?.value || "gpt-4o-mini",
-    geminiModel: geminiModelSelect?.value || "gemini-2.0-flash",
-    openrouterModel: openrouterModelSelect?.value || "google/gemini-2.0-flash-001",
+    geminiModel: geminiModelSelect?.value || "gemini-2.5-flash",
+    openrouterModel: openrouterModelSelect?.value || "openai/gpt-4o-mini",
     openrouterBaseUrl: aiOpenrouterBaseUrl?.value.trim() || "https://openrouter.ai/api/v1",
-    nvidiaModel: nvidiaModelSelect?.value || "meta/llama-3.3-70b-instruct"
+    nvidiaModel: nvidiaModelSelect?.value || "nvidia/nemotron-3.5-lightning-30b-a3b"
   };
   if (aiAnthropicKey.value.trim()) payload.anthropicApiKey = aiAnthropicKey.value.trim();
   if (aiOpenAiKey.value.trim()) payload.openaiApiKey = aiOpenAiKey.value.trim();
@@ -1789,6 +1789,7 @@ async function saveAiConfig() {
       aiConfigModal.style.display = "none";
       showToast("AI engine configuration saved!");
       await fetchAiConfig();
+      if (currentTab === "tab-chat") renderJobChatTab();
     } else {
       showToast(data.error || "Failed to save AI configuration");
     }
@@ -3226,6 +3227,16 @@ function formatMarkdownToHtml(markdown) {
 
   // Blockquotes
   html = html.replace(/^&gt; (.*?)$/gm, "<blockquote>$1</blockquote>");
+  html = html.replace(/(<blockquote>.*?<\/blockquote>\s*)+/g, (match) => {
+    const inner = match.replace(/<\/?blockquote>/g, "\n").trim();
+    if (inner.includes("⚠️")) {
+      return `<div class="chat-warning-callout" style="background: rgba(239, 68, 68, 0.12); border-left: 3px solid #ef4444; border-radius: 6px; padding: 10px 14px; margin: 8px 0; color: #fca5a5;">${inner.replace(/\n/g, "<br>")}</div>`;
+    }
+    return `<blockquote>${inner.replace(/\n/g, "<br>")}</blockquote>`;
+  });
+
+  // Action links
+  html = html.replace(/\[⚡ Switch Model\]\(#switch-model\)/g, '<button class="btn-chat-switch-model" style="display:inline-flex; align-items:center; gap:4px; margin: 4px 0; padding: 3px 8px; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 4px; color: #38bdf8; font-size: 11px; font-weight: 600; cursor: pointer;">⚡ Switch Model</button>');
 
   // Bold & Italics
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -3247,6 +3258,26 @@ function formatMarkdownToHtml(markdown) {
   }).join("\n");
 
   return html;
+}
+
+function getChatModelLabel() {
+  if (!aiConfig) return "AI Model";
+  const p = aiConfig.provider;
+  if (p === "nvidia") {
+    const raw = aiConfig.nvidiaModel || "nemotron-3.5-lightning";
+    const shortName = raw.includes("/") ? raw.split("/")[1] : raw;
+    return `NVIDIA: ${shortName}`;
+  }
+  if (p === "gemini") return `Gemini: ${aiConfig.geminiModel || "Flash"}`;
+  if (p === "anthropic") return `Claude: ${aiConfig.anthropicModel || "Haiku"}`;
+  if (p === "openai") return `OpenAI: ${aiConfig.openaiModel || "GPT-4o"}`;
+  if (p === "openrouter") {
+    const raw = aiConfig.openrouterModel || "Cloud";
+    const shortName = raw.includes("/") ? raw.split("/")[1] : raw;
+    return `OpenRouter: ${shortName}`;
+  }
+  if (p === "ollama") return `Ollama: ${aiConfig.ollamaModel || "Local"}`;
+  return "Built-in (Offline)";
 }
 
 function renderJobChatTab() {
@@ -3273,6 +3304,9 @@ function renderJobChatTab() {
               <span class="meta-pill" style="font-size: 11px; padding: 2px 8px; background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.35); color: #38bdf8;">
                 ${escapeHtml(company)} · ${escapeHtml(role)}
               </span>
+              <button class="meta-pill" id="btnChatSwitchModel" style="font-size: 11px; padding: 2px 8px; cursor: pointer; background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.3); color: #34d399; display: inline-flex; align-items: center; gap: 4px;" title="Click to view or change AI model in AI Settings">
+                ⚡ ${escapeHtml(getChatModelLabel())} <span style="font-size: 9px; opacity: 0.7;">⚙️</span>
+              </button>
             </h3>
             <div class="job-chat-header-sub" style="margin-top: 3px;">
               Grounded in candidate <b>${escapeHtml(activeProfile?.name || "Candidate")}</b> and full job description · <b>${selectedJob.tailored_score && selectedJob.baseline_score && selectedJob.tailored_score !== selectedJob.baseline_score ? `${selectedJob.baseline_score}% Baseline ➔ ${selectedJob.tailored_score}% Tailored ATS Match` : `${fitScore}% Match`}</b>
@@ -3408,6 +3442,14 @@ function renderJobChatTab() {
       }
     }
   });
+
+  document.getElementById("btnChatSwitchModel")?.addEventListener("click", openAiModal);
+  messagesCont?.querySelectorAll(".btn-chat-switch-model, [data-action='open-ai-modal']").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      openAiModal();
+    });
+  });
 }
 
 async function sendJobChatMessage(text) {
@@ -3477,6 +3519,9 @@ async function sendJobChatMessage(text) {
     const data = await res.json();
     if (data.success && data.reply) {
       history.push({ role: "assistant", content: data.reply, time: Date.now() });
+      if (data.aiError) {
+        showToast(`⚠️ ${data.aiError.title}: Click model badge to switch.`, "warning");
+      }
     } else {
       history.push({ role: "assistant", content: `⚠️ ${data.error || "Could not generate a response. Please try again."}`, time: Date.now() });
     }
