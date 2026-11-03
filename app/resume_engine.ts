@@ -54,20 +54,41 @@ export const LANGUAGE_PACKS: Record<SupportedLanguage, LanguagePack> = {
     coreCompetenciesLabel: "Core Competencies",
     dearHiringManager: "Dear Hiring Team,",
     applyingSentence: (role, company) => `I am writing to apply for the ${role} position at ${company}.`,
-    matchingSentence: "My engineering background aligns directly with what you are looking for.",
+    matchingSentence: "My professional background aligns directly with what you are looking for.",
     closingSentence: "I would welcome the opportunity to discuss how my background fits your team.",
     yoursSincerely: "Sincerely,",
-    curiosityHook: (role, company, domainOrHeadline) =>
-      `I am writing to apply for the ${role} position at ${company}. My background as a ${domainOrHeadline || "software engineer"} centers on building reliable infrastructure and supporting development teams, and your focus on stable, scalable systems matches what I do day-to-day. I know ${company}'s work and would welcome the chance to contribute to your engineering goals.`,
-    evidenceNarrative: (role, company, recentTitle, recentCompany, skills, achievement) => {
-      const skillsPhrase = skills.length ? `working extensively with ${skills.join(", ")}` : "managing cloud infrastructure and deployment pipelines";
-      const winPhrase = achievement ? `For example, ${achievement.replace(/\.$/, "")}.` : "I focused on keeping systems stable, reducing operational toil, and ensuring deployments ran smoothly.";
-      return `Most recently as ${recentTitle} at ${recentCompany}, my work focused on ${skillsPhrase}. ${winPhrase} I care about solid automation, clear observability, and making sure engineers can deploy software without friction.`;
+    curiosityHook: (role, company, domainOrHeadline) => {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|engineer|developer|sysadmin/i.test(`${domainOrHeadline} ${role}`);
+      if (isTech) {
+        return `I am writing to apply for the ${role} position at ${company}. My background as a ${domainOrHeadline || "software engineer"} centers on building reliable infrastructure and supporting development teams, and your focus on stable, scalable systems matches what I do day-to-day. I know ${company}'s work and would welcome the chance to contribute to your engineering goals.`;
+      }
+      return `I am writing to apply for the ${role} position at ${company}. My background as a ${domainOrHeadline || "dedicated professional"} centers on delivering reliable outcomes and supporting team goals, and your focus on quality and dependable execution matches what I do day-to-day. I know ${company}'s work and would welcome the chance to contribute to your objectives.`;
     },
-    philosophyFit: (role, company, headline) =>
-      `My approach to engineering is straightforward: understand the operational reality before adding new tools, keep architectures simple to run, and document decisions so the team can maintain them easily. I enjoy collaborating directly with developers, identifying where workflows slow down, and fixing those bottlenecks at the source.`,
-    forwardClosing: (role, company) =>
-      `I would welcome the opportunity to discuss your current infrastructure roadmap and where you need the most support. Thank you for your time and consideration.`
+    evidenceNarrative: (role, company, recentTitle, recentCompany, skills, achievement) => {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|engineer|developer|sysadmin/i.test(`${recentTitle} ${role}`);
+      if (isTech) {
+        const skillsPhrase = skills.length ? `working extensively with ${skills.join(", ")}` : "managing cloud infrastructure and deployment pipelines";
+        const winPhrase = achievement ? `For example, ${achievement.replace(/\.$/, "")}.` : "I focused on keeping systems stable, reducing operational toil, and ensuring deployments ran smoothly.";
+        return `Most recently as ${recentTitle} at ${recentCompany}, my work focused on ${skillsPhrase}. ${winPhrase} I care about solid automation, clear observability, and making sure engineers can deploy software without friction.`;
+      }
+      const skillsPhrase = skills.length ? `working extensively with ${skills.join(", ")}` : "streamlining workflows and delivering dependable results";
+      const winPhrase = achievement ? `For example, ${achievement.replace(/\.$/, "")}.` : "I focused on keeping operations dependable, reducing friction, and ensuring work ran smoothly.";
+      return `Most recently as ${recentTitle} at ${recentCompany}, my work focused on ${skillsPhrase}. ${winPhrase} I care about clear communication, structured execution, and ensuring teams can operate without friction.`;
+    },
+    philosophyFit: (role, company, headline) => {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|engineer|developer|sysadmin/i.test(`${headline} ${role}`);
+      if (isTech) {
+        return `My approach to engineering is straightforward: understand the operational reality before adding new tools, keep architectures simple to run, and document decisions so the team can maintain them easily. I enjoy collaborating directly with developers, identifying where workflows slow down, and fixing those bottlenecks at the source.`;
+      }
+      return `My approach to work is straightforward: understand operational reality before introducing new tools or processes, keep workflows simple to execute, and document decisions so the team can maintain them easily. I enjoy collaborating directly with colleagues, identifying where processes slow down, and fixing those bottlenecks at the source.`;
+    },
+    forwardClosing: (role, company, headline) => {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|engineer|developer|sysadmin/i.test(`${headline || ""} ${role}`);
+      if (isTech) {
+        return `I would welcome the opportunity to discuss your current infrastructure roadmap and where you need the most support. Thank you for your time and consideration.`;
+      }
+      return `I would welcome the opportunity to discuss your team's upcoming priorities and where my background could offer the most support. Thank you for your time and consideration.`;
+    }
   },
   de: {
     code: "de",
@@ -83,20 +104,41 @@ export const LANGUAGE_PACKS: Record<SupportedLanguage, LanguagePack> = {
     coreCompetenciesLabel: "Kernkompetenzen",
     dearHiringManager: "Sehr geehrte Damen und Herren,",
     applyingSentence: (role, company) => `hiermit bewerbe ich mich um die Position als ${role} bei ${company}.`,
-    matchingSentence: "Mein technischer Hintergrund und meine praktische Erfahrung entsprechen den Anforderungen dieser Position.",
+    matchingSentence: "Mein beruflicher Hintergrund und meine praktische Erfahrung entsprechen den Anforderungen dieser Position.",
     closingSentence: "Ich freue mich auf die Gelegenheit, mich in einem persönlichen Gespräch vorzustellen.",
     yoursSincerely: "Mit freundlichen Grüßen,",
-    curiosityHook: (role, company, domainOrHeadline) =>
-      `ich bewerbe mich um die Stelle als ${role} bei ${company}. Als ${domainOrHeadline || "Software- und Plattform-Ingenieur"} liegt mein Schwerpunkt auf verlässlichen Cloud-Infrastrukturen und automatisierter Bereitstellung. Die Anforderungen Ihres Teams passen genau zu den Aufgaben, die ich im Arbeitsalltag gerne löse.`,
-    evidenceNarrative: (role, company, recentTitle, recentCompany, skills, achievement) => {
-      const skillsPhrase = skills.length ? `Lösungen mit ${skills.join(", ")} umzusetzen` : "stabile Cloud-Systeme und automatisierte Pipelines zu betreiben";
-      const winPhrase = achievement ? `Zum Beispiel: ${achievement.replace(/\.$/, "")}.` : "Mein Schwerpunkt lag darauf, Systeme zuverlässig zu halten und operative Hürden für das Team abzubauen.";
-      return `Zuletzt war ich als ${recentTitle} bei ${recentCompany} tätig, wo ich mich vor allem darauf konzentriert habe, ${skillsPhrase}. ${winPhrase} Mir ist wichtig, Infrastruktur einfach und transparent zu halten, damit Entwickler zügig und sicher arbeiten können.`;
+    curiosityHook: (role, company, domainOrHeadline) => {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|ingenieur|entwickler/i.test(`${domainOrHeadline} ${role}`);
+      if (isTech) {
+        return `ich bewerbe mich um die Stelle als ${role} bei ${company}. Als ${domainOrHeadline || "Software- und Plattform-Ingenieur"} liegt mein Schwerpunkt auf verlässlichen Cloud-Infrastrukturen und automatisierter Bereitstellung. Die Anforderungen Ihres Teams passen genau zu den Aufgaben, die ich im Arbeitsalltag gerne löse.`;
+      }
+      return `ich bewerbe mich um die Stelle als ${role} bei ${company}. Als ${domainOrHeadline || "erfahrene Fachkraft"} liegt mein Schwerpunkt auf verlässlicher Umsetzung und der nachhaltigen Unterstützung meines Teams. Die Anforderungen Ihrer Ausschreibung passen genau zu den Aufgaben, die ich im Arbeitsalltag gerne und erfolgreich löse.`;
     },
-    philosophyFit: (role, company, headline) =>
-      `Gute Ingenieurarbeit bedeutet für mich klare Kommunikation, saubere Dokumentation und pragmatische Entscheidungen ohne unnötige Komplexität. Ich arbeite gerne direkt mit den Entwicklern zusammen, um Reibungspunkte in den Abläufen an der Wurzel zu beheben.`,
-    forwardClosing: (role, company) =>
-      `Ich freue mich über die Gelegenheit, mich persönlich mit Ihnen über Ihre aktuellen technischen Vorhaben auszutauschen. Vielen Dank für Ihre Zeit und die Prüfung meiner Unterlagen.`
+    evidenceNarrative: (role, company, recentTitle, recentCompany, skills, achievement) => {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|ingenieur|entwickler/i.test(`${recentTitle} ${role}`);
+      if (isTech) {
+        const skillsPhrase = skills.length ? `Lösungen mit ${skills.join(", ")} umzusetzen` : "stabile Cloud-Systeme und automatisierte Pipelines zu betreiben";
+        const winPhrase = achievement ? `Zum Beispiel: ${achievement.replace(/\.$/, "")}.` : "Mein Schwerpunkt lag darauf, Systeme zuverlässig zu halten und operative Hürden für das Team abzubauen.";
+        return `Zuletzt war ich als ${recentTitle} bei ${recentCompany} tätig, wo ich mich vor allem darauf konzentriert habe, ${skillsPhrase}. ${winPhrase} Mir ist wichtig, Infrastruktur einfach und transparent zu halten, damit Entwickler zügig und sicher arbeiten können.`;
+      }
+      const skillsPhrase = skills.length ? `Lösungen mit ${skills.join(", ")} umzusetzen` : "Arbeitsabläufe zu optimieren und verlässliche Ergebnisse zu erzielen";
+      const winPhrase = achievement ? `Zum Beispiel: ${achievement.replace(/\.$/, "")}.` : "Mein Schwerpunkt lag darauf, Abläufe zuverlässig zu gestalten und operative Hürden für das Team abzubauen.";
+      return `Zuletzt war ich als ${recentTitle} bei ${recentCompany} tätig, wo ich mich vor allem darauf konzentriert habe, ${skillsPhrase}. ${winPhrase} Mir ist wichtig, Prozesse klar und transparent zu halten, damit alle Beteiligten zügig und sicher arbeiten können.`;
+    },
+    philosophyFit: (role, company, headline) => {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|ingenieur|entwickler/i.test(`${headline} ${role}`);
+      if (isTech) {
+        return `Gute Ingenieurarbeit bedeutet für mich klare Kommunikation, saubere Dokumentation und pragmatische Entscheidungen ohne unnötige Komplexität. Ich arbeite gerne direkt mit den Entwicklern zusammen, um Reibungspunkte in den Abläufen an der Wurzel zu beheben.`;
+      }
+      return `Gute professionelle Arbeit bedeutet für mich klare Kommunikation, saubere Dokumentation und pragmatische Entscheidungen ohne unnötige Komplexität. Ich arbeite gerne direkt mit Kollegen zusammen, um Reibungspunkte in den Abläufen an der Wurzel zu beheben.`;
+    },
+    forwardClosing: (role, company, headline) => {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|ingenieur|entwickler/i.test(`${headline || ""} ${role}`);
+      if (isTech) {
+        return `Ich freue mich über die Gelegenheit, mich persönlich mit Ihnen über Ihre aktuellen technischen Vorhaben auszutauschen. Vielen Dank für Ihre Zeit und die Prüfung meiner Unterlagen.`;
+      }
+      return `Ich freue mich über die Gelegenheit, mich persönlich mit Ihnen über Ihre aktuellen Prioritäten und Vorhaben auszutauschen. Vielen Dank für Ihre Zeit und die Prüfung meiner Unterlagen.`;
+    }
   },
   es: {
     code: "es",
@@ -112,20 +154,20 @@ export const LANGUAGE_PACKS: Record<SupportedLanguage, LanguagePack> = {
     coreCompetenciesLabel: "Competencias Principales",
     dearHiringManager: "Estimado equipo de selección,",
     applyingSentence: (role, company) => `Les escribo para presentar mi candidatura al puesto de ${role} en ${company}.`,
-    matchingSentence: "Mi formación técnica y experiencia práctica responden directamente a los requisitos de esta posición.",
+    matchingSentence: "Mi formación y experiencia práctica responden directamente a los requisitos de esta posición.",
     closingSentence: "Quedo a su disposición para mantener una entrevista y ampliar cualquier detalle sobre mi perfil.",
     yoursSincerely: "Atentamente,",
     curiosityHook: (role, company, domainOrHeadline) =>
-      `Les escribo para presentar mi candidatura al puesto de ${role} en ${company}. Como ${domainOrHeadline || "ingeniero de software y plataformas"}, mi trabajo se centra en construir infraestructuras cloud fiables y apoyar a los equipos de desarrollo. Los retos técnicos descritos en su oferta coinciden con lo que hago a diario.`,
+      `Les escribo para presentar mi candidatura al puesto de ${role} en ${company}. Como ${domainOrHeadline || "profesional especializado"}, mi trabajo se centra en ofrecer resultados fiables y apoyar los objetivos del equipo. Los retos descritos en su oferta coinciden con lo que hago a diario.`,
     evidenceNarrative: (role, company, recentTitle, recentCompany, skills, achievement) => {
-      const skillsPhrase = skills.length ? `trabajar ampliamente con ${skills.join(", ")}` : "administrar infraestructuras cloud y pipelines de despliegue";
-      const winPhrase = achievement ? `Por ejemplo: ${achievement.replace(/\.$/, "")}.` : "Me enfoqué en mantener la estabilidad de los sistemas y eliminar fricciones operativas.";
-      return `En mi puesto más reciente como ${recentTitle} en ${recentCompany}, mi trabajo se centró en ${skillsPhrase}. ${winPhrase} Priorizo la automatización sólida y una observabilidad clara para que los equipos puedan desplegar con confianza.`;
+      const skillsPhrase = skills.length ? `trabajar ampliamente con ${skills.join(", ")}` : "optimizar procesos y garantizar resultados fiables";
+      const winPhrase = achievement ? `Por ejemplo: ${achievement.replace(/\.$/, "")}.` : "Me enfoqué en mantener la eficiencia operativa y eliminar fricciones en el día a día.";
+      return `En mi puesto más reciente como ${recentTitle} en ${recentCompany}, mi trabajo se centró en ${skillsPhrase}. ${winPhrase} Priorizo una comunicación clara y una ejecución metódica para que los equipos puedan avanzar con confianza.`;
     },
     philosophyFit: (role, company, headline) =>
-      `Mi enfoque de trabajo es directo: entender el problema operativo antes de añadir nuevas herramientas, mantener los sistemas sencillos de operar y documentar las decisiones para que el equipo pueda mantenerlos fácilmente. Me gusta trabajar codo con codo con los desarrolladores para resolver cuellos de botella en el flujo de trabajo.`,
+      `Mi enfoque de trabajo es directo: entender la realidad operativa antes de añadir nuevas herramientas o procesos, mantener los métodos sencillos y documentar las decisiones para que el equipo pueda mantenerlos fácilmente. Me gusta colaborar estrechamente con el equipo para resolver cuellos de botella.`,
     forwardClosing: (role, company) =>
-      `Estaré encantado de conversar con su equipo sobre su hoja de ruta técnica y los puntos en los que necesitan mayor apoyo. Agradezco sinceramente su tiempo y valoración.`
+      `Estaré encantado de conversar con su equipo sobre sus prioridades actuales y los puntos en los que mi experiencia puede aportar mayor valor. Agradezco sinceramente su tiempo y valoración.`
   },
   fr: {
     code: "fr",
@@ -141,20 +183,20 @@ export const LANGUAGE_PACKS: Record<SupportedLanguage, LanguagePack> = {
     coreCompetenciesLabel: "Compétences Clés",
     dearHiringManager: "Madame, Monsieur,",
     applyingSentence: (role, company) => `Je vous adresse ma candidature pour le poste de ${role} au sein de ${company}.`,
-    matchingSentence: "Mon expertise technique et pratique répond directement aux exigences du poste.",
+    matchingSentence: "Mon expertise et mon parcours pratique répondent directement aux exigences du poste.",
     closingSentence: "Je reste à votre disposition pour un entretien afin d'échanger sur cette opportunité.",
     yoursSincerely: "Bien cordialement,",
     curiosityHook: (role, company, domainOrHeadline) =>
-      `Je vous adresse ma candidature pour le poste de ${role} au sein de ${company}. En tant que ${domainOrHeadline || "ingénieur logiciel et plateforme"}, mon activité quotidienne consiste à concevoir des infrastructures fiables et à soutenir les équipes de développement. Les priorités techniques présentées dans votre offre correspondent à mon cœur de métier.`,
+      `Je vous adresse ma candidature pour le poste de ${role} au sein de ${company}. En tant que ${domainOrHeadline || "professionnel expérimenté"}, mon activité quotidienne consiste à garantir des résultats rigoureux et à soutenir les objectifs de l'équipe. Les priorités présentées dans votre offre correspondent à mon cœur de métier.`,
     evidenceNarrative: (role, company, recentTitle, recentCompany, skills, achievement) => {
-      const skillsPhrase = skills.length ? `travailler activement avec ${skills.join(", ")}` : "administrer des infrastructures cloud et des pipelines d'intégration continue";
-      const winPhrase = achievement ? `Par exemple : ${achievement.replace(/\.$/, "")}.` : "Mon action a consisté à garantir la stabilité des services et à simplifier le quotidien des équipes opérationnelles.";
-      return `Récemment, en tant que ${recentTitle} chez ${recentCompany}, j'ai principalement axé mon travail sur ${skillsPhrase}. ${winPhrase} J'accorde une importance essentielle à l'automatisation rigoureuse pour permettre des déploiements fluides et prévisibles.`;
+      const skillsPhrase = skills.length ? `travailler activement avec ${skills.join(", ")}` : "optimiser les processus et délivrer des résultats fiables";
+      const winPhrase = achievement ? `Par exemple : ${achievement.replace(/\.$/, "")}.` : "Mon action a consisté à garantir la régularité des opérations et à simplifier le quotidien des équipes.";
+      return `Récemment, en tant que ${recentTitle} chez ${recentCompany}, j'ai principalement axé mon travail sur ${skillsPhrase}. ${winPhrase} J'accorde une importance essentielle à une communication claire et à une organisation rigoureuse pour permettre un travail fluide et prévisible.`;
     },
     philosophyFit: (role, company, headline) =>
-      `J'aborde l'ingénierie avec une démarche pragmatique : bien comprendre les besoins avant d'ajouter de nouveaux outils, garder les architectures simples à exploiter et documenter les choix pour faciliter le travail d'équipe. J'apprécie collaborer directement avec les développeurs pour lever les blocages à la source.`,
+      `J'aborde mon métier avec une démarche pragmatique : bien comprendre les besoins du terrain avant d'ajouter de nouveaux outils ou méthodes, garder des processus simples et documenter les choix pour faciliter le travail d'équipe. J'apprécie collaborer directement avec mes collègues pour lever les blocages à la source.`,
     forwardClosing: (role, company) =>
-      `Je serais ravi d'échanger avec votre équipe sur vos chantiers techniques actuels et sur la façon dont je peux vous accompagner. Je vous remercie pour l'attention portée à ma candidature.`
+      `Je serais ravi d'échanger avec votre équipe sur vos priorités actuelles et sur la façon dont mon profil peut vous accompagner. Je vous remercie pour l'attention portée à ma candidature.`
   },
   it: {
     code: "it",
@@ -170,20 +212,20 @@ export const LANGUAGE_PACKS: Record<SupportedLanguage, LanguagePack> = {
     coreCompetenciesLabel: "Competenze Principali",
     dearHiringManager: "Gentile team di selezione,",
     applyingSentence: (role, company) => `Desidero sottoporre la mia candidatura per la posizione di ${role} presso ${company}.`,
-    matchingSentence: "La mia esperienza tecnica e professionale risponde direttamente ai requisiti richiesti.",
+    matchingSentence: "La mia esperienza professionale risponde direttamente ai requisiti richiesti.",
     closingSentence: "Resto a disposizione per un colloquio conoscitivo per approfondire la mia candidatura.",
     yoursSincerely: "Cordiali saluti,",
     curiosityHook: (role, company, domainOrHeadline) =>
-      `Desidero sottoporre la mia candidatura per la posizione di ${role} presso ${company}. Come ${domainOrHeadline || "ingegnere di piattaforme"}, il mio lavoro quotidiano consiste nel mantenere infrastrutture cloud stabili e nell'aiutare i team di sviluppo a lavorare con efficienza. Gli obiettivi tecnici descritti nella vostra posizione riflettono fedelmente le sfide che affronto regolarmente.`,
+      `Desidero sottoporre la mia candidatura per la posizione di ${role} presso ${company}. Come ${domainOrHeadline || "professionista qualificato"}, il mio lavoro quotidiano consiste nel garantire risultati solidi e nell'aiutare il team a raggiungere i propri obiettivi. I compiti descritti nella vostra posizione riflettono fedelmente le sfide che affronto regolarmente.`,
     evidenceNarrative: (role, company, recentTitle, recentCompany, skills, achievement) => {
-      const skillsPhrase = skills.length ? `lavorare assiduamente con ${skills.join(", ")}` : "gestire infrastrutture cloud e pipeline CI/CD";
-      const winPhrase = achievement ? `Ad esempio: ${achievement.replace(/\.$/, "")}.` : "Il mio focus è sempre stato ridurre le frizioni operative e garantire rilasci affidabili.";
-      return `Nel mio ruolo più recente come ${recentTitle} presso ${recentCompany}, mi sono dedicato principalmente a ${skillsPhrase}. ${winPhrase} Ritengo fondamentale costruire automazioni chiare e monitoraggi solidi per consentire agli ingegneri di rilasciare in sicurezza.`;
+      const skillsPhrase = skills.length ? `lavorare assiduamente con ${skills.join(", ")}` : "ottimizzare i flussi di lavoro e garantire risultati affidabili";
+      const winPhrase = achievement ? `Ad esempio: ${achievement.replace(/\.$/, "")}.` : "Il mio focus è sempre stato ridurre le frizioni operative e assicurare risultati costanti.";
+      return `Nel mio ruolo più recente come ${recentTitle} presso ${recentCompany}, mi sono dedicato principalmente a ${skillsPhrase}. ${winPhrase} Ritengo fondamentale comunicare chiaramente ed eseguire con metodo per consentire al team di operare in sicurezza.`;
     },
     philosophyFit: (role, company, headline) =>
-      `Il mio approccio all'ingegneria è concreto: comprendere a fondo le problematiche operative prima di introdurre nuovi strumenti, mantenere i sistemi facili da gestire e documentare le scelte architetturali. Mi piace lavorare a stretto contatto con gli sviluppatori per eliminare i colli di bottiglia nei flussi di lavoro.`,
+      `Il mio approccio al lavoro è concreto: comprendere a fondo le problematiche operative prima di introdurre nuovi strumenti o processi, mantenere le soluzioni facili da gestire e documentare le scelte condivise. Mi piace lavorare a stretto contatto con i colleghi per eliminare i colli di bottiglia nei flussi di lavoro.`,
     forwardClosing: (role, company) =>
-      `Sarei lieto di approfondire le vostre priorità tecniche attuali e capire dove posso offrire il supporto più utile. Vi ringrazio per il tempo dedicato alla valutazione del mio profilo.`
+      `Sarei lieto di approfondire le vostre priorità attuali e capire dove posso offrire il supporto più utile. Vi ringrazio per il tempo dedicato alla valutazione del mio profilo.`
   },
   nl: {
     code: "nl",
@@ -199,20 +241,20 @@ export const LANGUAGE_PACKS: Record<SupportedLanguage, LanguagePack> = {
     coreCompetenciesLabel: "Kerncompetenties",
     dearHiringManager: "Beste selectiecommissie,",
     applyingSentence: (role, company) => `Hierbij solliciteer ik naar de functie van ${role} bij ${company}.`,
-    matchingSentence: "Mijn technische vaardigheden en praktijkervaring sluiten nauw aan bij het profiel.",
+    matchingSentence: "Mijn vaardigheden en praktijkervaring sluiten nauw aan bij het profiel.",
     closingSentence: "Graag licht ik mijn motivatie en ervaring toe in een persoonlijk gesprek.",
     yoursSincerely: "Met vriendelijke groet,",
     curiosityHook: (role, company, domainOrHeadline) =>
-      `Hierbij solliciteer ik naar de functie van ${role} bij ${company}. Als ${domainOrHeadline || "platform engineer"} richt mijn dagelijkse werk zich op het bouwen van betrouwbare cloud-infrastructuur en het ondersteunen van developmentteams. De technische uitdagingen in uw vacature sluiten direct aan bij wat ik graag doe.`,
+      `Hierbij solliciteer ik naar de functie van ${role} bij ${company}. Als ${domainOrHeadline || "ervaren professional"} richt mijn dagelijkse werk zich op het leveren van betrouwbare resultaten en het ondersteunen van teamdoelen. De uitdagingen in uw vacature sluiten direct aan bij wat ik graag doe.`,
     evidenceNarrative: (role, company, recentTitle, recentCompany, skills, achievement) => {
-      const skillsPhrase = skills.length ? `intensief werken met ${skills.join(", ")}` : "het beheren van cloud-infrastructuur en deployment pipelines";
-      const winPhrase = achievement ? `Bijvoorbeeld: ${achievement.replace(/\.$/, "")}.` : "Mijn aandacht ging uit naar een stabiele werking en het verminderen van handmatig beheer.";
-      return `In mijn recente functie als ${recentTitle} bij ${recentCompany} lag mijn focus op ${skillsPhrase}. ${winPhrase} Ik hecht veel waarde aan duidelijke automatisering en goede monitoring, zodat teams zonder belemmeringen kunnen releasen.`;
+      const skillsPhrase = skills.length ? `intensief werken met ${skills.join(", ")}` : "het stroomlijnen van werkprocessen en het leveren van betrouwbare resultaten";
+      const winPhrase = achievement ? `Bijvoorbeeld: ${achievement.replace(/\.$/, "")}.` : "Mijn aandacht ging uit naar een stabiele werking en het verminderen van operationele frictie.";
+      return `In mijn recente functie als ${recentTitle} bij ${recentCompany} lag mijn focus op ${skillsPhrase}. ${winPhrase} Ik hecht veel waarde aan duidelijke communicatie en gestructureerde uitvoering, zodat teams zonder belemmeringen kunnen presteren.`;
     },
     philosophyFit: (role, company, headline) =>
-      `Mijn benadering van engineering is nuchter: eerst het operationele probleem begrijpen voordat er nieuwe tools worden gekozen, systemen beheersbaar houden en beslissingen helder vastleggen voor het team. Ik werk graag samen met developers om bottlenecks in hun workflow direct op te lossen.`,
+      `Mijn benadering van werk is nuchter: eerst het operationele probleem begrijpen voordat er nieuwe tools of processen worden gekozen, methoden beheersbaar houden en beslissingen helder vastleggen voor het team. Ik werk graag samen met collega's om bottlenecks in de dagelijkse praktijk direct op te lossen.`,
     forwardClosing: (role, company) =>
-      `Ik ga graag met uw team in gesprek over uw huidige plannen voor de infrastructuur en waar u de meeste ondersteuning nodig heeft. Hartelijk dank voor uw tijd en aandacht.`
+      `Ik ga graag met uw team in gesprek over uw huidige prioriteiten en waar mijn achtergrond de meeste ondersteuning kan bieden. Hartelijk dank voor uw tijd en aandacht.`
   }
 };
 
@@ -549,30 +591,50 @@ function skills(profile: CandidateProfile, analysis: ApplicationAnalysis, lang: 
   const pack = LANGUAGE_PACKS[lang] || LANGUAGE_PACKS.en;
   const matched = new Set((analysis.matchedKeywords || []).map(item => (item || "").toLowerCase()));
   const s = (profile.skills as Record<string, string[]>) || {};
-  const standardKeys = new Set(["cloud", "containers", "devops", "iac", "cicd", "monitoring", "observability", "security", "languages", "tools"]);
 
-  const customCategories: Array<[string, string[]]> = [];
-  for (const [key, values] of Object.entries(s)) {
-    if (!standardKeys.has(key.toLowerCase()) && Array.isArray(values) && values.length > 0) {
-      customCategories.push([formatCategoryLabel(key), values]);
+  const headlineLower = (profile.headline || "").toLowerCase();
+  const isDevOpsOrCloud = /devops|cloud|platform|sre|infrastructure|kubernetes|sysadmin/i.test(headlineLower);
+  const isTechInGeneral = isDevOpsOrCloud || /software|developer|engineer|fullstack|backend|frontend|data|qa|tester|security/i.test(headlineLower);
+
+  const standardKeyOrder = [
+    "cloud",
+    "containers",
+    "devops",
+    "iac",
+    "cicd",
+    "monitoring",
+    "observability",
+    "security",
+    "languages",
+    "tools"
+  ];
+  const standardKeySet = new Set(standardKeyOrder);
+
+  const categoriesToRender: Array<[string, string[]]> = [];
+  const processedKeys = new Set<string>();
+
+  // If standard keys exist with content, render them in logical order
+  for (const key of standardKeyOrder) {
+    const values = s[key];
+    if (Array.isArray(values) && values.length > 0) {
+      let label = formatCategoryLabel(key);
+      if (!isTechInGeneral) {
+        if (key === "tools") label = "Tools \\& Technologies";
+        if (key === "languages") label = "Languages";
+        if (key === "security") label = "Compliance \\& Standards";
+      }
+      categoriesToRender.push([label, values]);
+      processedKeys.add(key.toLowerCase());
     }
   }
 
-  let categoriesToRender: Array<[string, string[]]> = [];
-  if (customCategories.length >= 2) {
-    categoriesToRender = customCategories;
-  } else {
-    categoriesToRender = [
-      ["Cloud Platforms", s.cloud || []],
-      ["Containers \\& GitOps", s.containers?.length ? s.containers : s.devops || []],
-      ["Infrastructure as Code", s.iac || []],
-      ["CI/CD \\& Build Tools", s.cicd || []],
-      ["Monitoring \\& SRE", s.monitoring || s.observability || []],
-      ["Security", s.security || []],
-      ["Languages \\& Frameworks", s.languages || []],
-      ["Tools \\& Automation", s.tools || []],
-      ...customCategories
-    ];
+  // Render any domain-specific or custom categories (e.g. clinical, finance, legal, sales, management)
+  for (const [key, values] of Object.entries(s)) {
+    if (processedKeys.has(key.toLowerCase())) continue;
+    if (Array.isArray(values) && values.length > 0) {
+      categoriesToRender.push([formatCategoryLabel(key), values]);
+      processedKeys.add(key.toLowerCase());
+    }
   }
 
   const filtered = categoriesToRender.filter(([_, values]) => values && values.length > 0);
@@ -895,7 +957,7 @@ export function renderGroundedCoverLetter(
 
   // 4. Closing & Visa Status (if applicable)
   let p4_closing = pack.forwardClosing
-    ? pack.forwardClosing(escapeLatex(roleClean), escapeLatex(companyClean))
+    ? pack.forwardClosing(escapeLatex(roleClean), escapeLatex(companyClean), escapeLatex(headlineClean))
     : pack.closingSentence;
 
   if (profile.visaSponsorshipRequired) {

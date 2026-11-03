@@ -2918,10 +2918,16 @@ async function renderCVTab() {
 
   let summaryToRender = parsed.summary;
   if (!summaryToRender) {
-    if (isGermanDoc) {
-      summaryToRender = "DevOps und Cloud Engineer mit fundierter Praxiserfahrung in CI/CD-Pipelines, Infrastructure as Code und Containerisierung in AWS und Azure. Fokus auf zuverlässige Systemarchitekturen und Automatisierung.";
+    if (activeProfile?.summary) {
+      summaryToRender = activeProfile.summary;
+    } else if (isGermanDoc) {
+      summaryToRender = activeProfile?.headline
+        ? `${activeProfile.headline} mit fundierter Praxiserfahrung und Fokus auf verlässliche Ergebnisse.`
+        : "Erfahrene Fachkraft mit strukturierter Arbeitsweise und Fokus auf verlässliche Ergebnisse.";
     } else {
-      summaryToRender = activeProfile?.summary || "";
+      summaryToRender = activeProfile?.headline
+        ? `${activeProfile.headline} experienced in delivering dependable outcomes and collaborating effectively with multidisciplinary teams.`
+        : "";
     }
   }
 
@@ -2930,15 +2936,12 @@ async function renderCVTab() {
   if (!skillsTextToRender && activeProfile?.skills) {
     const s = activeProfile.skills;
     const parts = [];
-    if (s.cloud && s.cloud.length) parts.push(`Cloud Platforms: ${s.cloud.join(", ")}`);
-    if (s.containers && s.containers.length) parts.push(`Containers & GitOps: ${s.containers.join(", ")}`);
-    else if (s.devops && s.devops.length) parts.push(`Containers & GitOps: ${s.devops.join(", ")}`);
-    if (s.iac && s.iac.length) parts.push(`Infrastructure as Code: ${s.iac.join(", ")}`);
-    if (s.cicd && s.cicd.length) parts.push(`CI/CD & Build Tools: ${s.cicd.join(", ")}`);
-    if (s.monitoring && s.monitoring.length) parts.push(`Monitoring & SRE: ${s.monitoring.join(", ")}`);
-    if (s.security && s.security.length) parts.push(`Security: ${s.security.join(", ")}`);
-    if (s.languages && s.languages.length) parts.push(`Languages & Frameworks: ${s.languages.join(", ")}`);
-    if (s.tools && s.tools.length) parts.push(`Tools & Automation: ${s.tools.join(", ")}`);
+    for (const [cat, items] of Object.entries(s)) {
+      if (Array.isArray(items) && items.length) {
+        const catLabel = cat.replace(/[_-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        parts.push(`${catLabel}: ${items.join(", ")}`);
+      }
+    }
     skillsTextToRender = parts.join("\n");
   }
 

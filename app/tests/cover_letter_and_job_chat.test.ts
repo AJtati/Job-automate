@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderGroundedCoverLetter, LANGUAGE_PACKS } from "../resume_engine";
+import { renderGroundedCoverLetter, renderTailoredResume, LANGUAGE_PACKS } from "../resume_engine";
 import {
   AIService,
   stripThinkingProcess,
@@ -587,5 +587,123 @@ Sincerely,
     expect(resolved).toContain("Dear Hiring Team,");
     expect(resolved).toContain("bcn group");
     expect(resolved).toContain("Ajith Surya Thati");
+  });
+
+  test("Universal multi-profession adaptability: Healthcare profile produces domain-authentic materials without DevOps leakage", async () => {
+    const nurseProfile: CandidateProfile = {
+      id: "nurse-candidate",
+      name: "Sarah Jenkins",
+      headline: "Registered Nurse - Intensive Care",
+      email: "sarah.jenkins@example.com",
+      phone: "+44 7987 654321",
+      location: "Newcastle, UK",
+      postcode: "NE1",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: ["ICU Staff Nurse"],
+      targetLocations: ["Newcastle"],
+      preferredRadiusMiles: 25,
+      minSalary: 38000,
+      skills: {
+        clinical: ["Patient Triage", "Critical Care", "IV Cannulation"],
+        compliance: ["NMC Standards", "Infection Control"],
+        tools: ["Epic EHR", "Cerner"]
+      },
+      experience: [
+        {
+          company: "Royal Victoria Infirmary",
+          role: "ICU Staff Nurse",
+          location: "Newcastle, UK",
+          startDate: "2021",
+          endDate: "Present",
+          bullets: [
+            "Coordinated patient care for high-dependency ICU admissions with zero protocol breaches.",
+            "Administered complex IV medications and monitored vital signs in high-pressure emergency clinical rotations."
+          ]
+        }
+      ],
+      education: [
+        { institution: "Newcastle University", degree: "BSc Adult Nursing", startDate: "2018", endDate: "2021" }
+      ],
+      certifications: [
+        { name: "Advanced Life Support (ALS)", issuer: "Resuscitation Council UK", year: "2022" }
+      ]
+    };
+
+    const nurseJob = {
+      id: "nurse-job-1",
+      company: "Newcastle Hospitals NHS Foundation Trust",
+      title: "ICU Staff Nurse",
+      location: "Newcastle upon Tyne",
+      salary: "£35,000 - £42,000",
+      sponsorship_status: "offered",
+      sponsor_verified: true,
+      key_skills: ["Critical Care", "Patient Triage", "NMC Standards", "Epic EHR"],
+      full_jd: "Newcastle Hospitals NHS Foundation Trust is seeking a dedicated ICU Staff Nurse to deliver exceptional patient care in our critical care unit."
+    };
+
+    const analysis = {
+      overallScore: 94,
+      matchedKeywords: ["Critical Care", "Patient Triage", "NMC Standards", "Epic EHR"],
+      gapKeywords: [],
+      requirements: []
+    };
+
+    // 1. Cover letter generation
+    const coverLatex = renderGroundedCoverLetter(nurseProfile, nurseJob as any, analysis as any, "en");
+    expect(coverLatex).toContain("Sarah Jenkins");
+    expect(coverLatex).toContain("Newcastle Hospitals NHS Foundation Trust");
+    expect(coverLatex).toContain("ICU Staff Nurse");
+    expect(coverLatex).toContain("delivering reliable outcomes and supporting team goals");
+    expect(coverLatex).toContain("discuss your team's upcoming priorities and where my background could offer the most support");
+
+    // Strictly verify ZERO DevOps/cloud leakage
+    expect(coverLatex).not.toContain("infrastructure roadmap");
+    expect(coverLatex).not.toContain("cloud infrastructure");
+    expect(coverLatex).not.toContain("deploy software without friction");
+    expect(coverLatex).not.toContain("Kubernetes");
+    expect(coverLatex).not.toContain("Terraform");
+    expect(coverLatex).not.toContain("AWS");
+
+    // 2. Resume LaTeX generation
+    const cvLatex = renderTailoredResume(nurseProfile, nurseJob as any, analysis as any);
+    expect(cvLatex).toContain("Clinical");
+    expect(cvLatex).toContain("Patient Triage");
+    expect(cvLatex).toContain("Compliance");
+    expect(cvLatex).toContain("Tools \\& Technologies");
+    expect(cvLatex).toContain("Epic EHR");
+
+    // Strictly verify no hardcoded tech categories in non-tech CV
+    expect(cvLatex).not.toContain("Cloud Platforms");
+    expect(cvLatex).not.toContain("Containers");
+    expect(cvLatex).not.toContain("Infrastructure as Code");
+    expect(cvLatex).not.toContain("CI/CD");
+
+    // 3. In-Posting Job AI Assistant Chat Answers
+    const whyReply = await aiService.generateJobChatResponse(nurseProfile, nurseJob as any, "Why do I want this job?");
+    expect(whyReply).toContain("Why I Want This Job at Newcastle Hospitals NHS Foundation Trust");
+    expect(whyReply).not.toContain("platform engineering");
+    expect(whyReply).not.toContain("deployments");
+    expect(whyReply).toContain("maintaining high operational quality");
+
+    const outreachReply = await aiService.generateJobChatResponse(nurseProfile, nurseJob as any, "Draft recruiter outreach note");
+    expect(outreachReply).not.toContain("automated cloud infrastructure");
+    expect(outreachReply).toContain("delivering dependable outcomes");
+    expect(outreachReply).toContain("discuss your team's upcoming priorities");
+
+    const starReply = await aiService.generateJobChatResponse(nurseProfile, nurseJob as any, "Give me interview prep and STAR answers");
+    expect(starReply).not.toContain("Kubernetes and AWS");
+    expect(starReply).not.toContain("cloud infrastructure");
+    expect(starReply).toContain("delivering dependable results");
+
+    // 4. Technology Alignment Guardrail: Non-tech profile must not have Kubernetes injected
+    const azureMedicalJob = {
+      ...nurseJob,
+      full_jd: "Hospital administration role utilizing Microsoft Azure cloud reporting and patient records."
+    };
+    const aligned = await aiService.deepAlignCandidateExperience(nurseProfile, azureMedicalJob as any, analysis as any, "en");
+    expect(aligned.skills.containers || []).not.toContain("Kubernetes (AKS)");
+    expect(aligned.skills.cicd || []).not.toContain("Azure DevOps");
   });
 });

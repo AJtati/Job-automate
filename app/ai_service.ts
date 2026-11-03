@@ -2514,37 +2514,43 @@ Return a valid JSON object ONLY with the following schema:
     const isAws = /\b(?:aws|eks|lambda|cloudformation|ecs|fargate)\b/i.test(jdText);
     const isGcp = /\b(?:gcp|google\s*cloud|gke|cloud\s*run|bigquery)\b/i.test(jdText);
 
-    // 2. Align and prioritize technical skills
+    // 2. Align and prioritize technical skills (only for candidates in tech/cloud or with existing cloud/devops skills)
     const s = aligned.skills || {};
-    if (isAzure) {
-      const existingCloud = s.cloud || [];
-      const withoutAzure = existingCloud.filter(c => !/azure/i.test(c));
-      s.cloud = ["Azure", ...withoutAzure];
+    const hasTechOrCloud =
+      Boolean(s.cloud?.length || s.containers?.length || s.devops?.length || s.iac?.length || s.cicd?.length) ||
+      /\b(cloud|devops|sre|platform|infrastructure|kubernetes|software|engineer|developer|sysadmin|fullstack|backend|frontend)\b/i.test(aligned.headline || "");
 
-      const existingContainers = s.containers || s.devops || [];
-      const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
-      s.containers = ["Kubernetes (AKS)", ...withoutK8s];
+    if (hasTechOrCloud) {
+      if (isAzure) {
+        const existingCloud = s.cloud || [];
+        const withoutAzure = existingCloud.filter(c => !/azure/i.test(c));
+        s.cloud = ["Azure", ...withoutAzure];
 
-      const existingCicd = s.cicd || [];
-      if (!existingCicd.some(c => /azure\s*devops/i.test(c))) {
-        s.cicd = ["Azure DevOps", ...existingCicd];
+        const existingContainers = s.containers || s.devops || [];
+        const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
+        s.containers = ["Kubernetes (AKS)", ...withoutK8s];
+
+        const existingCicd = s.cicd || [];
+        if (!existingCicd.some(c => /azure\s*devops/i.test(c))) {
+          s.cicd = ["Azure DevOps", ...existingCicd];
+        }
+      } else if (isAws) {
+        const existingCloud = s.cloud || [];
+        const withoutAws = existingCloud.filter(c => !/aws/i.test(c));
+        s.cloud = ["AWS", ...withoutAws];
+
+        const existingContainers = s.containers || s.devops || [];
+        const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
+        s.containers = ["Kubernetes (EKS)", ...withoutK8s];
+      } else if (isGcp) {
+        const existingCloud = s.cloud || [];
+        const withoutGcp = existingCloud.filter(c => !/gcp|google/i.test(c));
+        s.cloud = ["GCP", ...withoutGcp];
+
+        const existingContainers = s.containers || s.devops || [];
+        const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
+        s.containers = ["Kubernetes (GKE)", ...withoutK8s];
       }
-    } else if (isAws) {
-      const existingCloud = s.cloud || [];
-      const withoutAws = existingCloud.filter(c => !/aws/i.test(c));
-      s.cloud = ["AWS", ...withoutAws];
-
-      const existingContainers = s.containers || s.devops || [];
-      const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
-      s.containers = ["Kubernetes (EKS)", ...withoutK8s];
-    } else if (isGcp) {
-      const existingCloud = s.cloud || [];
-      const withoutGcp = existingCloud.filter(c => !/gcp|google/i.test(c));
-      s.cloud = ["GCP", ...withoutGcp];
-
-      const existingContainers = s.containers || s.devops || [];
-      const withoutK8s = existingContainers.filter(c => !/kubernetes|k8s/i.test(c));
-      s.containers = ["Kubernetes (GKE)", ...withoutK8s];
     }
 
     // 2b. Integrate employer target competencies & gap keywords into candidate skill taxonomy
@@ -2610,13 +2616,21 @@ Return a valid JSON object ONLY with the following schema:
           bullets: exp.bullets || []
         }));
 
-        const primaryCloud = isAzure ? "Azure (AKS, Azure DevOps, Terraform, Azure Monitor)" : (isAws ? "AWS (EKS, Terraform, Lambda, CloudWatch)" : (isGcp ? "GCP (GKE, Terraform)" : "Cloud Infrastructure"));
+        const candidateHeadline = aligned.headline || "";
+        const isTechCandidate = hasTechOrCloud || /\b(cloud|devops|sre|platform|infrastructure|kubernetes|software|engineer|developer|sysadmin|fullstack|backend|frontend)\b/i.test(candidateHeadline);
+        const primaryFocus = isAzure
+          ? "Azure (AKS, Azure DevOps, Terraform, Azure Monitor)"
+          : (isAws
+            ? "AWS (EKS, Terraform, Lambda, CloudWatch)"
+            : (isGcp
+              ? "GCP (GKE, Terraform)"
+              : (isTechCandidate ? "Cloud Infrastructure & Software Engineering" : (candidateHeadline || "Core Professional Focus"))));
         const targetReqs = analysis.requirements.slice(0, 8).map(r => r.requirement).join(", ");
         const gapNotice = gaps.length > 0 ? `Target Gaps to Bridge in Experience: ${gaps.join(", ")}` : "";
 
-        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nPrimary Cloud & Tech Focus: ${primaryCloud}\nTarget Requirements: ${targetReqs}\n${gapNotice}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Deeply adapt and sharpen the candidate's existing work experience bullets to showcase authentic alignment with the target role, cloud stack (${primaryCloud}), and employer requirements (${targetReqs}). Where applicable, naturally highlight their experience with core requirements (${targetReqs}) such as taking operational ownership of release tooling, integrating test automation into pipelines, process improvement to eliminate repetitive manual work, or enterprise endpoint management. Keep tone direct, humble, and technical.\n\nStrict Humanizer & Integrity Rules:\n- Keep the candidate's authentic companies, job titles, and dates exactly as given.\n- Start EVERY single bullet with a direct, active-voice engineering verb (Architected, Provisioned, Automated, Migrated, Deployed, Engineered, Integrated, Built, Configured).\n- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.\n- Preserve all authentic metrics (>20%, 99.9%, etc.). Do NOT invent fake figures.\n- Return a valid JSON array only with updated experience objects.`;
+        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nPrimary Domain Focus: ${primaryFocus}\nTarget Requirements: ${targetReqs}\n${gapNotice}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Deeply adapt and sharpen the candidate's existing work experience bullets to showcase authentic alignment with the target role and employer requirements (${targetReqs}). Where applicable, naturally highlight their experience with core requirements (${targetReqs}). Keep tone direct, humble, and professional.\n\nStrict Humanizer & Integrity Rules:\n- Keep the candidate's authentic companies, job titles, and dates exactly as given.\n- Start EVERY single bullet with a direct, active-voice professional action verb suited to the role (e.g. Led, Managed, Developed, Delivered, Analyzed, Streamlined, Coordinated, Implemented, Designed, Built).\n- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.\n- Preserve all authentic metrics (>20%, 99.9%, etc.). Do NOT invent fake figures.\n- Return a valid JSON array only with updated experience objects.`;
 
-        const system = "You are an expert technical resume writer. Return a valid JSON array only with work experience entries. Strictly obey humanizer rules.";
+        const system = "You are an expert resume writer. Return a valid JSON array only with work experience entries. Strictly obey humanizer rules.";
         const resp = await this.generateText(prompt, system);
         const match = resp.match(/\[[\s\S]*\]/);
         if (match) {
@@ -3202,31 +3216,31 @@ ${certsTeX}
         const langName = LANGUAGE_PACKS[resolvedLang]?.name || "English";
         const isGerman = resolvedLang === "de";
 
-        const systemPrompt = `You are an experienced human engineer writing a real, authentic cover letter directly to an engineering hiring manager.
+        const systemPrompt = `You are an experienced professional writing a real, authentic cover letter directly to a hiring manager.
 Your letter must read like it was written by a thoughtful, experienced human peer, with ABSOLUTELY ZERO AI FOOTPRINTS.
 
 MANDATORY HUMANIZER RULES (STRICTLY ENFORCED):
 1. ABSOLUTE BAN ON AI TROPES & RHETORICAL FORMULAS:
    - ABSOLUTELY NO EM-DASHES (— or --). Zero tolerance. Never use em-dashes to connect clauses or add parenthetical thoughts. Use a period, a comma, or separate sentences.
-   - ABSOLUTELY NO Not-X-but-Y contrast formulas: Never write "not as X but as Y", "not merely X but Y", "rather than X, I Y", "instead of X, Y". State the positive engineering practice directly and plainly.
+   - ABSOLUTELY NO Not-X-but-Y contrast formulas: Never write "not as X but as Y", "not merely X but Y", "rather than X, I Y", "instead of X, Y". State the positive practice directly and plainly.
    - ABSOLUTELY NO "whether that means X, Y, or Z" or "whether X, Y, or Z" constructs.
    - ABSOLUTELY NO forced triads (lists of 3 items in every paragraph).
-   - ABSOLUTELY NO grandstanding or sententious openings: Never write "I approach infrastructure/engineering as an engineer who understands...", "As an engineer who values...", "I believe infrastructure is about...".
+   - ABSOLUTELY NO grandstanding or sententious openings: Never write "I approach my work as someone who understands...", "As a professional who values...", "I believe work is about...".
    - ABSOLUTELY NO AI marketing clichés or corporate filler:
      * "proven track record", "mission-critical", "seamlessly executed", "pivotal role"
      * "operate without heroics", "boxes to tick", "listen carefully to what they actually need before reaching for new tools"
      * "systems serve the people", "technical craftsmanship with active empathy", "tangible value from day one", "hit the ground running"
      * "spearheaded", "testament to", "foster", "catalyst", "beacon", "tapestry", "delve", "deep dive", "passionate", "thrilled", "delighted"
-   - ABSOLUTELY NO shallow "-ing" riders (e.g. "reducing latency while ensuring stability and driving growth"). Use direct active past-tense verbs: "I built...", "I upgraded...", "I ran...".
+   - ABSOLUTELY NO shallow "-ing" riders (e.g. "reducing latency while ensuring stability and driving growth"). Use direct active past-tense verbs: "I built...", "I led...", "I managed...", "I coordinated...".
 
 2. HOW TO WRITE A REAL HUMAN COVER LETTER:
    - Paragraph 1 (Direct Opening): State the role and why you are applying. Connect your background to what the company does without hyperbolic praise.
-     Example: "I am writing to apply for the DevOps Engineer position at Anson McCade. My background centers on AWS infrastructure operations and CI/CD reliability, and your focus on cloud systems supporting UK security missions matches the work I do day-to-day."
-   - Paragraph 2 (Grounded Career Evidence): Specific, concrete accomplishments with real tools, numbers, and facts from the candidate profile. Use active-voice verbs ("I upgraded", "I automated", "I wrote", "I configured").
-   - Paragraph 3 (Teamwork & Practical Engineering): Focus on practical day-to-day engineering habits: clear runbooks, maintainable configurations, collaborating with software teams to reduce friction, and handling security (IAM, secrets, blast radius) proactively. DO NOT philosophize or lecture about human nature or "serving people".
-     Example: "In my daily work, I write thorough runbooks and keep Terraform modules modular so the wider team can operate them easily. I work alongside application teams to automate repetitive deployment steps and troubleshoot pipeline failures early. For security, I ensure IAM roles follow least privilege, secrets are encrypted in AWS Secrets Manager, and infrastructure changes are tested in staging before rollout."
+     Example: "I am writing to apply for the ${job.role} position at ${job.company}. My background as a ${tailoredProfile.headline || "dedicated professional"} aligns directly with your team's focus, and the responsibilities described in your posting reflect the work I do day-to-day."
+   - Paragraph 2 (Grounded Career Evidence): Specific, concrete accomplishments with real tools, methods, numbers, and facts from the candidate profile. Use active-voice verbs ("I led", "I delivered", "I coordinated", "I built", "I managed", "I analyzed").
+   - Paragraph 3 (Teamwork & Practical Execution): Focus on practical day-to-day operational habits: clear documentation, cross-functional collaboration to reduce friction, quality standards, and proactive problem solving. Ground this strictly in the candidate's actual domain and skills. DO NOT philosophize or lecture about human nature or "serving people".
+     Example: "In my daily work, I keep documentation organized and communicate clearly across teams so everyone has what they need to succeed. I focus on reducing repetitive friction, maintaining high standards, and resolving bottlenecks early."
    - Paragraph 4 (Logistics & Simple Closing): State visa requirement or right to work plainly.
-     Example: "${tailoredProfile.visaSponsorshipRequired ? `I am based in ${tailoredProfile.location || "the UK"} and require Skilled Worker visa sponsorship.` : `I am based in ${tailoredProfile.location || "the UK"} with unrestricted right to work.`} I would welcome the opportunity to discuss your current infrastructure roadmap and where you need the most support. Thank you for your time."
+     Example: "${tailoredProfile.visaSponsorshipRequired ? `I am based in ${tailoredProfile.location || "the UK"} and require Skilled Worker visa sponsorship.` : `I am based in ${tailoredProfile.location || "the UK"} with unrestricted right to work.`} I would welcome the opportunity to discuss your team's upcoming priorities and where my background could offer the most support. Thank you for your time."
 
 3. FORMAT & LATEX RULES:
    - Output must be valid, clean LaTeX without stray spacing commands.
@@ -3637,6 +3651,11 @@ ${gaps.map((g: string) => `• **${g}**`).join("\n")}
             : `My expectation is based on market rates for a ${headline} with my track record, around £${profile.minSalary.toLocaleString()} (open to discussion based on equity, benefits, and team scope).`)
         : `My compensation expectation is flexible and open to discussion based on the role responsibilities, benefits, and total compensation package.`;
 
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|engineer|developer|sysadmin|fullstack|backend|frontend/i.test(`${headline} ${role}`);
+      const fitFocus = isTech
+        ? "root-cause problem solving, maintainable systems, and empowering teams to move with speed and stability"
+        : "high standards of execution, root-cause problem solving, and empowering teams to achieve dependable outcomes";
+
       return `### Ready-to-Paste Screening Questionnaire Answers for ${company}
 
 **1. Right to Work & Visa Sponsorship:**
@@ -3652,14 +3671,19 @@ ${gaps.map((g: string) => `• **${g}**`).join("\n")}
 > "I am comfortable with the location in ${location} and enthusiastic about collaborating with the team in accordance with your hybrid or on-site policy."
 
 **5. Why are you the right fit for this role?**
-> "I bring hands-on experience as a ${headline}, with production experience in ${matched.slice(0, 3).join(", ") || "core technical delivery"}. I focus on root-cause problem solving, maintainable infrastructure, and empowering teams to move with speed and stability."
+> "I bring hands-on experience as a ${headline}, with production experience in ${matched.slice(0, 3).join(", ") || (isTech ? "core technical delivery" : "core professional competencies")}. I focus on ${fitFocus}."
 
 *(💡 Click **Copy Response** to copy these answers into your application portal!)*`;
     }
 
     // 3. Recruiter / Hiring Manager Direct Outreach (LinkedIn InMail / Email)
     if (/outreach|linkedin|inmail|recruiter|hiring manager/i.test(q)) {
-      const topSkill = matched.length ? matched.slice(0, 2).join(" and ") : "modern cloud systems";
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|engineer|developer|sysadmin|fullstack|backend|frontend/i.test(`${headline} ${role}`);
+      const topSkill = matched.length ? matched.slice(0, 2).join(" and ") : (isTech ? "modern cloud systems" : "core domain delivery");
+      const valueClause = isTech
+        ? "building resilient, automated systems that unblock product teams"
+        : "delivering dependable outcomes, streamlining workflows, and supporting team objectives";
+
       return `### Tailored Recruiter & Hiring Manager Outreach Note (Under 75 words)
 
 **Subject:** Application for ${role} – ${candidateName}
@@ -3668,9 +3692,9 @@ Hi [Hiring Team / Recruiter],
 
 I saw ${company} is hiring for a **${role}** in ${location} and wanted to reach out directly.
 
-As a **${headline}** with hands-on experience in **${topSkill}**, I focus on building resilient, automated cloud infrastructure that unblocks product teams.
+As a **${headline}** with hands-on experience in **${topSkill}**, I focus on ${valueClause}.
 
-I have submitted my application through the portal, and would welcome a brief conversation if you have time this week to discuss your infrastructure priorities.
+I have submitted my application through the portal, and would welcome a brief conversation if you have time this week to discuss your team's upcoming priorities and where my background could offer the most support.
 
 Best regards,  
 **${candidateName}**  
@@ -3693,35 +3717,55 @@ ${profile.email} | ${profile.phone}
 
     // 5. Why I Want This Job / Authentic Motivation / Heart & Curiosity
     if (/why\b|motivation|heart|curiosity|want this (?:job|role)|interest in (?:joining|working)|drawn to/i.test(q)) {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|engineer|developer|sysadmin|fullstack|backend|frontend/i.test(`${headline} ${role}`);
       const topSkills = matched.length
         ? matched.slice(0, 3).join(", ")
-        : "my core technical skills and problem-solving background";
+        : (isTech ? "my core technical skills and problem-solving background" : "my core professional skills and practical experience");
+      const operationalFocus = isTech
+        ? "keeping production platforms stable, streamlining deployments, and eliminating operational friction for development teams"
+        : "maintaining high operational quality, streamlining workflows, and delivering dependable results for the organization";
+      const scaleFocus = isTech
+        ? "As systems grow, platform engineering shifts from initial setup to long-term reliability, clear automation, and sensible guardrails. That is the kind of practical, grounded engineering work I enjoy most."
+        : "As operations grow, success depends on solid execution, clear standards, and dependable collaboration. That is the kind of grounded, high-impact work I enjoy most.";
+      const cultureFocus = isTech
+        ? `I value engineering cultures where teams communicate openly, document their architectures, and share ownership. From what I have learned about ${company}, your team takes pride in solid engineering without unnecessary complexity. I want to bring my hands-on background to help your team continue shipping with confidence.`
+        : `I value collaborative cultures where teams communicate openly, maintain high standards, and share ownership. From what I have learned about ${company}, your team takes pride in practical excellence without unnecessary friction. I want to bring my hands-on background to help your team achieve its goals.`;
+
       return `### Why I Want This Job at ${company}
 
 **1. Direct Alignment with My Day-to-Day Work**
-My focus as a **${headline}** centers directly on **${topSkills}**. The technical priorities outlined in your job description match the exact challenges I work on: keeping production platforms stable, streamlining deployments, and eliminating operational friction for development teams.
+My focus as a **${headline}** centers directly on **${topSkills}**. The priorities outlined in your job description match the exact challenges I work on: ${operationalFocus}.
 
-**2. Practical Scale & Architecture**
-I am interested in **${company}** because of the operational scale you operate at. As systems grow, platform engineering shifts from initial setup to long-term reliability, clear automation, and sensible guardrails. That is the kind of practical, grounded engineering work I enjoy most.
+**2. Practical Scale & Impact**
+I am interested in **${company}** because of the operational scale you operate at. ${scaleFocus}
 
 **3. Collaborative Team Culture**
-I value engineering cultures where teams communicate openly, document their architectures, and share ownership. From what I have learned about ${company}, your team takes pride in solid engineering without unnecessary complexity. I want to bring my hands-on background to help your team continue shipping with confidence.
+${cultureFocus}
 
 *(💡 Click the **Copy Response** button on the top right to paste this directly into your interview prep notes or application questionnaire!)*`;
     }
 
     // 6. Top Interview Questions & STAR Model Answers
     if (/interview|questions?|prep|model answer|star/i.test(q)) {
+      const isTech = /devops|cloud|platform|sre|infrastructure|kubernetes|software|engineer|developer|sysadmin|fullstack|backend|frontend/i.test(`${headline} ${role}`);
       const recentExp = profile.experience && profile.experience.length ? profile.experience[0] : null;
       const recentCompany = recentExp?.company || "my previous organization";
-      const recentWin = recentExp?.bullets && recentExp.bullets.length ? recentExp.bullets[0] : "delivered reliable platform upgrades with zero user downtime";
-      const topSkill = (analysis.matchedKeywords && analysis.matchedKeywords.length) ? analysis.matchedKeywords[0] : "distributed systems";
+      const recentWin = recentExp?.bullets && recentExp.bullets.length
+        ? recentExp.bullets[0]
+        : (isTech ? "delivered reliable platform upgrades with zero user downtime" : "delivered key projects on time with high operational quality");
+      const topSkill = (analysis.matchedKeywords && analysis.matchedKeywords.length)
+        ? analysis.matchedKeywords[0]
+        : (isTech ? "distributed systems" : "workflow management");
+
+      const q1Answer = isTech
+        ? `"Your team's focus on building dependable cloud infrastructure for ${role} matches what I do day-to-day. As a **${headline}**, I bring hands-on experience solving operational bottlenecks and running automated Kubernetes and AWS systems, and I want to bring that calm, disciplined problem-solving approach to your engineering team."`
+        : `"Your team's focus on quality and dependable execution for ${role} matches what I do day-to-day. As a **${headline}**, I bring hands-on experience delivering dependable results with ${matched.slice(0, 2).join(" and ") || "key industry practices"}, and I want to bring that structured, collaborative approach to your team."`;
 
       return `### Top Interview Questions & Tailored STAR Answers for ${role} at ${company}
 
 #### Question 1: "Why are you interested in joining ${company} specifically?"
 - **Model Answer:**  
-  "Your team's focus on building dependable cloud infrastructure for ${role} matches what I do day-to-day. As a **${headline}**, I bring hands-on experience solving operational bottlenecks and running automated Kubernetes and AWS systems, and I want to bring that calm, disciplined problem-solving approach to your engineering team."
+  ${q1Answer}
 
 #### Question 2: "Tell me about a time you solved a complex challenge involving ${topSkill}."
 - **Situation:** At ${recentCompany}, our systems experienced operational overhead and deployment friction as workloads increased.
@@ -3754,9 +3798,9 @@ I value engineering cultures where teams communicate openly, document their arch
 Regarding your question about **${userMessage}**:
 
 - **Role & Team Scope:** ${role} located in ${location}.
-- **Key Technical Alignment:** You have strong verified alignment in **${(analysis.matchedKeywords || []).slice(0, 4).join(", ") || "core competencies"}**.
+- **Key Alignment:** You have strong verified alignment in **${(analysis.matchedKeywords || []).slice(0, 4).join(", ") || "core competencies"}**.
 - **Employer Profile:** ${company}${job.sponsor_verified ? " (Verified Licensed Sponsor)" : ""}.
-- **Recommended Angle:** Emphasize your hands-on background as a **${headline}**, highlight your focus on measurable reliability and unblocking team velocity, and express your genuine curiosity for ${company}'s immediate engineering roadmap.
+- **Recommended Angle:** Emphasize your hands-on background as a **${headline}**, highlight your focus on dependable execution and unblocking team outcomes, and express your genuine curiosity for ${company}'s immediate priorities.
 
 *(Ask me anything else: e.g. "Draft my LinkedIn message", "Give me 3 STAR interview answers", or "Why do I want this job?")*`;
   }
