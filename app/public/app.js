@@ -1917,15 +1917,16 @@ function renderLocationNavFilters() {
 }
 
 function updateBadgeCounts() {
-  const total = allJobs.length;
+  const unappliedJobs = allJobs.filter(j => j.status !== "applied");
+  const total = unappliedJobs.length;
   const radius = activeProfile?.preferredRadiusMiles || 50;
-  const remote = allJobs.filter(j => j.is_remote).length;
-  const near = allJobs.filter(j => j.distance_miles <= radius && !j.is_remote).length;
-  const ukHybridSponsored = allJobs.filter(j => !j.is_remote && j.sponsor_verified && !j.distance_tag?.includes("Cross Border")).length;
+  const remote = unappliedJobs.filter(j => j.is_remote).length;
+  const near = unappliedJobs.filter(j => j.distance_miles <= radius && !j.is_remote).length;
+  const ukHybridSponsored = unappliedJobs.filter(j => !j.is_remote && j.sponsor_verified && !j.distance_tag?.includes("Cross Border")).length;
   const drafted = allJobs.filter(j => j.status === "drafted").length;
   const applied = allJobs.filter(j => j.status === "applied").length;
-  const sponsors = allJobs.filter(j => j.sponsor_verified).length;
-  const explicitSponsors = allJobs.filter(j => j.sponsor_verified && j.sponsorship_status === "offered").length;
+  const sponsors = unappliedJobs.filter(j => j.sponsor_verified).length;
+  const explicitSponsors = unappliedJobs.filter(j => j.sponsor_verified && j.sponsorship_status === "offered").length;
 
   const countAllEl = document.getElementById("countAll");
   const countRemoteEl = document.getElementById("countRemote");
@@ -1942,14 +1943,14 @@ function updateBadgeCounts() {
   if (countUkHybridSponsoredEl) countUkHybridSponsoredEl.textContent = ukHybridSponsored;
   const countNationwideDeEl = document.getElementById("countNationwideDe");
   if (countNationwideDeEl) {
-    countNationwideDeEl.textContent = allJobs.filter(j => !j.is_remote && /germany|deutschland|berlin|munich|chemnitz|leipzig|dresden|frankfurt/i.test(j.location)).length;
+    countNationwideDeEl.textContent = unappliedJobs.filter(j => !j.is_remote && /germany|deutschland|berlin|munich|chemnitz|leipzig|dresden|frankfurt/i.test(j.location)).length;
   }
   if (countDraftedEl) countDraftedEl.textContent = drafted;
   if (countAppliedEl) countAppliedEl.textContent = applied;
   if (countSponsorsEl) countSponsorsEl.textContent = sponsors;
   if (countExplicitSponsorsEl) countExplicitSponsorsEl.textContent = explicitSponsors;
   const countNewSponsorsEl = document.getElementById("countNewSponsors");
-  const newSponsors = allJobs.filter(j => j.is_new_sponsor).length;
+  const newSponsors = unappliedJobs.filter(j => j.is_new_sponsor).length;
   if (countNewSponsorsEl) countNewSponsorsEl.textContent = newSponsors;
 
   // Update dynamic target location counts
@@ -1961,7 +1962,7 @@ function updateBadgeCounts() {
   targets.forEach((targetCity, idx) => {
     const el = document.getElementById(`count_loc_${idx}`);
     if (el) {
-      const c = allJobs.filter(j => j.location.toLowerCase().includes(targetCity.toLowerCase())).length;
+      const c = unappliedJobs.filter(j => j.location.toLowerCase().includes(targetCity.toLowerCase())).length;
       el.textContent = c;
     }
   });
@@ -2036,6 +2037,11 @@ function filterJobsList() {
     }
     if (scenarioFeedFilters.sponsorshipMode === "licensed" && !j.sponsor_verified) return false;
     if (scenarioFeedFilters.sponsorshipMode === "explicit" && !(j.sponsor_verified && j.sponsorship_status === "offered")) return false;
+
+    // Once marked as applied, do not show in 'All Opportunities' or discovery filters; show strictly in 'Applied & Active'
+    if (currentFilter !== "applied" && j.status === "applied") {
+      return false;
+    }
 
     // Filter match
     if (currentFilter === "remote") return j.is_remote;
@@ -2275,12 +2281,58 @@ function selectJob(job) {
     atsBadge.style.display = "inline-flex";
   }
 
+  const studioDirectApplyBtn = document.getElementById("studioDirectApplyBtn");
+  const studioAggregatorNotice = document.getElementById("studioAggregatorNotice");
+  const studioAggregatorNoticeText = document.getElementById("studioAggregatorNoticeText");
+
+  const cleanCompany = (job.company || "").replace(/\b(ltd|limited|plc|inc|corp|llc)\b/gi, "").trim();
+  const searchCompany = cleanCompany || job.company || "Employer";
+  const searchRole = job.title || "Job";
+  const locCity = (job.location || "").split(",")[0].trim();
+
+  // 1. Direct Apply / Employer Careers button
+  if (studioDirectApplyBtn) {
+    const directQuery = `"${searchCompany}" "${searchRole}" ${locCity ? `"${locCity}" ` : ''}careers OR jobs`;
+    studioDirectApplyBtn.href = `https://www.google.com/search?q=${encodeURIComponent(directQuery)}`;
+    studioDirectApplyBtn.textContent = `🏢 Find on ${searchCompany} Careers ↗`;
+    studioDirectApplyBtn.title = `Search and apply directly on ${searchCompany}'s official careers portal without intermediary signups`;
+    studioDirectApplyBtn.style.display = "inline-flex";
+  }
+
+  // 2. Original listing button & Aggregator detection
+  const isWhatJobs = /whatjobs|whatajob/i.test(job.url || "") || (job.portal === "freehire-ats" && /whatjobs/i.test(job.url || ""));
+  const isAggregator = isWhatJobs || /jobrapido|neuvoo|talent\.com|jooble/i.test(job.url || "");
+
   if (job.url) {
     studioLinkBtn.href = job.url;
     studioLinkBtn.style.display = "inline-flex";
-    studioLinkBtn.textContent = "Open original listing ↗";
+    if (isWhatJobs) {
+      studioLinkBtn.textContent = "WhatJobs Listing (Requires Signup) ↗";
+      studioLinkBtn.title = "WhatJobs asks candidates to create an account. Use 'Find on Company Careers' to apply directly.";
+    } else if (job.portal === "linkedin-search" || job.url.includes("linkedin.com")) {
+      studioLinkBtn.textContent = "Open on LinkedIn ↗";
+    } else if (job.url.includes("reed.co.uk")) {
+      studioLinkBtn.textContent = "Open on Reed ↗";
+    } else if (job.url.includes("cv-library.co.uk")) {
+      studioLinkBtn.textContent = "Open on CV-Library ↗";
+    } else {
+      studioLinkBtn.textContent = "Open original listing ↗";
+    }
   } else {
     studioLinkBtn.style.display = "none";
+  }
+
+  // 3. Aggregator notice banner
+  if (studioAggregatorNotice && studioAggregatorNoticeText) {
+    if (isWhatJobs) {
+      studioAggregatorNotice.style.display = "flex";
+      studioAggregatorNoticeText.innerHTML = `This vacancy was discovered on <strong>WhatJobs</strong>, which prompts users to register an account before applying. Click <strong>🏢 Find on ${escapeHtml(searchCompany)} Careers ↗</strong> to open and apply directly on the employer's official website.`;
+    } else if (isAggregator) {
+      studioAggregatorNotice.style.display = "flex";
+      studioAggregatorNoticeText.innerHTML = `This role is hosted on an aggregator portal. You can click <strong>🏢 Find on ${escapeHtml(searchCompany)} Careers ↗</strong> to bypass intermediary signups and apply directly on the company's website.`;
+    } else {
+      studioAggregatorNotice.style.display = "none";
+    }
   }
 
   // Sponsor Banner
@@ -2315,14 +2367,16 @@ function selectJob(job) {
   const markAppliedText = document.getElementById("markAppliedText");
   if (job.status === "applied") {
     if (appliedSvgCheck) appliedSvgCheck.style.display = "inline";
-    if (markAppliedText) markAppliedText.textContent = "Applied";
+    if (markAppliedText) markAppliedText.textContent = "Applied (Click to Unmark)";
     btnMarkApplied.classList.add("btn-applied-active");
-    btnMarkApplied.disabled = true;
+    btnMarkApplied.disabled = false;
+    btnMarkApplied.title = "Marked as applied. Click to unmark and return to All Opportunities.";
   } else {
     if (appliedSvgCheck) appliedSvgCheck.style.display = "none";
     if (markAppliedText) markAppliedText.textContent = "Mark Applied";
     btnMarkApplied.classList.remove("btn-applied-active");
     btnMarkApplied.disabled = false;
+    btnMarkApplied.title = "Mark this vacancy as applied";
   }
 
   // Auto-hydrate complete Job Description if missing, truncated, or a Reed snippet
@@ -3810,6 +3864,9 @@ async function revealInFinder(type) {
 async function markCurrentJobApplied() {
   if (!selectedJob) return;
 
+  const isCurrentlyApplied = selectedJob.status === "applied";
+  const newStatus = isCurrentlyApplied ? "new" : "applied";
+
   try {
     const res = await fetch("/api/status", {
       method: "POST",
@@ -3818,28 +3875,38 @@ async function markCurrentJobApplied() {
         jobId: selectedJob.id,
         company: selectedJob.company,
         role: selectedJob.title,
-        status: "applied",
+        status: newStatus,
         url: selectedJob.url || ""
       })
     });
 
     const data = await res.json();
     if (data.success) {
-      selectedJob.status = "applied";
+      selectedJob.status = newStatus;
       allJobs.forEach(j => {
         if (j.id === selectedJob.id || (j.company === selectedJob.company && j.title === selectedJob.title)) {
-          j.status = "applied";
+          j.status = newStatus;
         }
       });
       const appliedSvgCheck = document.getElementById("appliedSvgCheck");
       const markAppliedText = document.getElementById("markAppliedText");
-      if (appliedSvgCheck) appliedSvgCheck.style.display = "inline";
-      if (markAppliedText) markAppliedText.textContent = "Applied";
-      btnMarkApplied.classList.add("btn-applied-active");
-      btnMarkApplied.disabled = true;
+      if (newStatus === "applied") {
+        if (appliedSvgCheck) appliedSvgCheck.style.display = "inline";
+        if (markAppliedText) markAppliedText.textContent = "Applied (Click to Unmark)";
+        btnMarkApplied.classList.add("btn-applied-active");
+        btnMarkApplied.disabled = false;
+        btnMarkApplied.title = "Marked as applied. Click to unmark and return to All Opportunities.";
+        showToast("Marked as applied! Moved to Applied & Active section.");
+      } else {
+        if (appliedSvgCheck) appliedSvgCheck.style.display = "none";
+        if (markAppliedText) markAppliedText.textContent = "Mark Applied";
+        btnMarkApplied.classList.remove("btn-applied-active");
+        btnMarkApplied.disabled = false;
+        btnMarkApplied.title = "Mark this vacancy as applied";
+        showToast("Unmarked as applied. Returned to All Opportunities.");
+      }
       renderJobs();
       updateBadgeCounts();
-      showToast(`Marked as applied in job_search_tracker.csv!`);
     }
   } catch (err) {
     showToast("Error updating application status");
