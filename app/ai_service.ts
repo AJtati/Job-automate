@@ -3230,7 +3230,7 @@ MANDATORY HUMANIZER RULES (STRICTLY ENFORCED):
 
 3. FORMAT & LATEX RULES:
    - Output must be valid, clean LaTeX without stray spacing commands.
-   - DO NOT use \\vspace{12pt} or arbitrary point measurements. Use standard blank lines between sections.
+   - DO NOT use \\vspace{12pt}, \\\\[0.5em], or arbitrary point/em measurements. Use standard blank lines between sections.
    - Use \\par between body paragraphs.
    - Return raw LaTeX starting with \\documentclass and ending with \\end{document}.
    - Do NOT wrap in markdown \`\`\`latex codeblocks.`;
@@ -3292,11 +3292,13 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     // 0. Fill in placeholders if context is available
     if (context?.company) {
       s = s.replace(/\[(?:Organisation|Organization|Company(?:\s+Name)?|Employer)\]/gi, context.company);
+    } else {
+      s = s.replace(/\[(?:Organisation|Organization|Company(?:\s+Name)?|Employer)\]/gi, "the team");
     }
     if (context?.candidateName) {
       s = s.replace(/\[(?:Candidate(?:\s+Name)?|Your(?:\s+Name)?)\]/gi, context.candidateName);
     }
-    s = s.replace(/\[(?:Recruiter(?:\s+Name)?|Hiring\s+Manager(?:\s+Name)?)\]/gi, "[Hiring Team / Recruiter]");
+    s = s.replace(/\[(?:Recruiter(?:\s+Name)?|Hiring\s+Manager(?:\s+Name)?|Hiring\s+Team\s*\/\s*Recruiter)\]/gi, "Hiring Team");
 
     // 1. Hard ban on em-dashes (— and --)
     s = s.replace(/\s*—\s*whether that means\s+/gi, ". For example, ");
@@ -3353,9 +3355,11 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     s = s.replace(/\bsuperficial patches\b/gi, "temporary fixes");
     s = s.replace(/\btestament to\b/gi, "reflection of");
 
-    // 5. Clean up stray spacing and measurement artifacts (e.g. \vspace{12pt} or lone "12pt")
-    s = s.replace(/\\vspace\{\s*\d+(?:pt|px)\s*\}/gi, "");
-    s = s.replace(/^\s*\d+(?:pt|px)\s*$/gm, "");
+    // 5. Clean up stray spacing and measurement artifacts (e.g. \vspace{12pt}, \\[0.5em], or lone [0.5em])
+    s = s.replace(/\\\\(?:\s*\[[^\]]*\])?/g, "\n\n");
+    s = s.replace(/\\vspace\*?\{\s*[^}]*\s*\}/gi, "");
+    s = s.replace(/\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]/gi, "");
+    s = s.replace(/^\s*\d+(?:pt|px|em|cm|mm)\s*$/gm, "");
 
     return s;
   }
@@ -3381,8 +3385,9 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     let cleaned = bodyText.trim();
     // Strip leading salutation (e.g. "Dear Hiring Team," or "Dear Hiring Manager,")
     cleaned = cleaned.replace(/^(?:Dear\s+[^,\n]+,|To\s+the\s+Hiring\s+Team,)\s*/i, "");
-    // Strip trailing sign-off (e.g. "Sincerely, \n Candidate Name" or "Yours sincerely,")
-    cleaned = cleaned.replace(/(?:Sincerely|Yours sincerely|Best regards|Kind regards),?\s*(?:[A-Za-z\s]+)?$/i, "").trim();
+    // Strip trailing sign-off (e.g. "Sincerely, \n Candidate Name" or "Yours sincerely, [0.5em]")
+    cleaned = cleaned.replace(/(?:Sincerely|Yours sincerely|Best regards|Kind regards),?\s*(?:\[[^\]]*\])?\s*(?:[A-Za-z\s]+)?$/i, "").trim();
+    cleaned = cleaned.replace(/\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]/gi, "").trim();
 
     const paragraphs = cleaned
       .split(/\n\s*\n/)

@@ -78,6 +78,7 @@ const studioTabs = document.getElementById("studioTabs");
 const studioContent = document.getElementById("studioContent");
 const btnTailor = document.getElementById("btnTailor");
 const btnMarkApplied = document.getElementById("btnMarkApplied");
+const btnIgnoreJob = document.getElementById("btnIgnoreJob");
 const btnCopyRecruiterMsg = document.getElementById("btnCopyRecruiterMsg");
 
 // Badges
@@ -88,6 +89,7 @@ const countScotland = document.getElementById("countScotland");
 const countUkHybridSponsored = document.getElementById("countUkHybridSponsored");
 const countDrafted = document.getElementById("countDrafted");
 const countApplied = document.getElementById("countApplied");
+const countIgnored = document.getElementById("countIgnored");
 const countSponsors = document.getElementById("countSponsors");
 const countExplicitSponsors = document.getElementById("countExplicitSponsors");
 const countNewSponsors = document.getElementById("countNewSponsors");
@@ -410,6 +412,9 @@ function setupEventListeners() {
 
   // Mark applied
   btnMarkApplied.addEventListener("click", markCurrentJobApplied);
+
+  // Ignore / Unignore job
+  btnIgnoreJob?.addEventListener("click", () => toggleCurrentJobIgnored());
 
   // Outreach message
   btnCopyRecruiterMsg.addEventListener("click", copyOutreachMessage);
@@ -2039,14 +2044,16 @@ function renderLocationNavFilters() {
 }
 
 function updateBadgeCounts() {
-  const unappliedJobs = allJobs.filter(j => j.status !== "applied");
+  const isIgnored = j => j.status === "ignored" || Boolean(j.ignored);
+  const unappliedJobs = allJobs.filter(j => j.status !== "applied" && !isIgnored(j));
   const total = unappliedJobs.length;
   const radius = activeProfile?.preferredRadiusMiles || 50;
   const remote = unappliedJobs.filter(j => j.is_remote).length;
   const near = unappliedJobs.filter(j => j.distance_miles <= radius && !j.is_remote).length;
   const ukHybridSponsored = unappliedJobs.filter(j => !j.is_remote && j.sponsor_verified && !j.distance_tag?.includes("Cross Border")).length;
-  const drafted = allJobs.filter(j => j.status === "drafted").length;
-  const applied = allJobs.filter(j => j.status === "applied").length;
+  const drafted = allJobs.filter(j => j.status === "drafted" && !isIgnored(j)).length;
+  const applied = allJobs.filter(j => j.status === "applied" && !isIgnored(j)).length;
+  const ignored = allJobs.filter(isIgnored).length;
   const sponsors = unappliedJobs.filter(j => j.sponsor_verified).length;
   const explicitSponsors = unappliedJobs.filter(j => j.sponsor_verified && j.sponsorship_status === "offered").length;
 
@@ -2056,6 +2063,7 @@ function updateBadgeCounts() {
   const countUkHybridSponsoredEl = document.getElementById("countUkHybridSponsored");
   const countDraftedEl = document.getElementById("countDrafted");
   const countAppliedEl = document.getElementById("countApplied");
+  const countIgnoredEl = document.getElementById("countIgnored");
   const countSponsorsEl = document.getElementById("countSponsors");
   const countExplicitSponsorsEl = document.getElementById("countExplicitSponsors");
 
@@ -2069,8 +2077,9 @@ function updateBadgeCounts() {
   }
   if (countDraftedEl) countDraftedEl.textContent = drafted;
   if (countAppliedEl) countAppliedEl.textContent = applied;
+  if (countIgnoredEl) countIgnoredEl.textContent = ignored;
   const countImportedEl = document.getElementById("countImported");
-  if (countImportedEl) countImportedEl.textContent = allJobs.filter(isImportedJob).length;
+  if (countImportedEl) countImportedEl.textContent = allJobs.filter(j => isImportedJob(j) && !isIgnored(j)).length;
   if (countSponsorsEl) countSponsorsEl.textContent = sponsors;
   if (countExplicitSponsorsEl) countExplicitSponsorsEl.textContent = explicitSponsors;
   const countNewSponsorsEl = document.getElementById("countNewSponsors");
@@ -2173,6 +2182,15 @@ function filterJobsList() {
     if (scenarioFeedFilters.sponsorshipMode === "licensed" && !j.sponsor_verified) return false;
     if (scenarioFeedFilters.sponsorshipMode === "explicit" && !(j.sponsor_verified && j.sponsorship_status === "offered")) return false;
 
+    // Ignored filter isolation
+    const isIgnored = j.status === "ignored" || Boolean(j.ignored);
+    if (currentFilter === "ignored") {
+      return isIgnored;
+    }
+    if (isIgnored) {
+      return false;
+    }
+
     // Once marked as applied, do not show in 'All Opportunities' or discovery filters; show strictly in 'Applied & Active' (or 'Imported Roles')
     if (currentFilter !== "applied" && currentFilter !== "imported" && j.status === "applied") {
       return false;
@@ -2194,6 +2212,7 @@ function filterJobsList() {
     if (currentFilter === "uk_hybrid_sponsored") return !j.is_remote && j.sponsor_verified && !j.distance_tag?.includes("Cross Border");
     if (currentFilter === "drafted") return j.status === "drafted";
     if (currentFilter === "applied") return j.status === "applied";
+    if (currentFilter === "ignored") return isIgnored;
     if (currentFilter === "sponsor_verified") return j.sponsor_verified;
     if (currentFilter === "sponsorship_explicit") return j.sponsor_verified && j.sponsorship_status === "offered";
     if (currentFilter === "sponsor_new") return Boolean(j.is_new_sponsor);
@@ -2274,6 +2293,7 @@ function renderJobs() {
     nationwide_de: "🇩🇪 Nationwide · Germany",
     drafted: "Drafted Applications",
     applied: "Applied & Active",
+    ignored: "🚫 Ignored Roles",
     sponsor_verified: "Licensed Employers",
     sponsorship_explicit: "Vacancies Stating Sponsorship",
     sponsor_new: "✨ Newly Licensed Sponsors (Last 30 Days)"
@@ -2306,7 +2326,9 @@ function renderJobs() {
     
     // Status Badge
     let statusBadge = "";
-    if (job.status === "applied") {
+    if (job.status === "ignored" || Boolean(job.ignored)) {
+      statusBadge = '<span class="meta-pill" style="color: #f87171; border-color: rgba(248, 113, 113, 0.4); font-weight: 600;">🚫 Ignored</span>';
+    } else if (job.status === "applied") {
       statusBadge = '<span class="meta-pill status-applied">✓ Applied</span>';
     } else if (job.status === "drafted") {
       statusBadge = '<span class="meta-pill status-tailored">✓ Tailored</span>';
@@ -2331,10 +2353,16 @@ function renderJobs() {
       ? `<span style="font-size: 11px; opacity: 0.65; text-decoration: line-through; margin-right: 3px;">${job.baseline_score}%</span><span style="color: #34d399; font-weight: 700;">🎯 ${job.tailored_score}%</span>`
       : (job.fit_score > 0 ? `${job.fit_score}% match` : "Needs full JD");
 
+    const isIgnoredRole = job.status === "ignored" || Boolean(job.ignored);
     card.innerHTML = `
       <div class="job-card-header">
         <div class="job-card-title">${escapeHtml(job.title)}</div>
-        <div class="job-card-fit">${scoreLabel}</div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div class="job-card-fit">${scoreLabel}</div>
+          <button class="card-quick-ignore" data-job-id="${escapeHtml(job.id)}" title="${isIgnoredRole ? 'Unignore role (restore to active feeds)' : 'Ignore expired or unwanted role'}">
+            ${isIgnoredRole ? '↩️' : '✕'}
+          </button>
+        </div>
       </div>
       <div class="job-card-company">${escapeHtml(job.company)}${job.is_new_sponsor && job.sponsorship_employer && job.sponsorship_employer.toLowerCase() !== job.company.toLowerCase() ? ` <span style="font-size: 11px; opacity: 0.7; font-weight: normal;">(Reg: ${escapeHtml(job.sponsorship_employer)})</span>` : ''}</div>
       <div class="job-card-meta">
@@ -2349,6 +2377,11 @@ function renderJobs() {
         ${statusBadge}
       </div>
     `;
+
+    card.querySelector(".card-quick-ignore")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleCurrentJobIgnored(job);
+    });
 
     card.addEventListener("click", () => selectJob(job));
     jobListEl.appendChild(card);
@@ -2560,6 +2593,24 @@ function selectJob(job) {
     btnMarkApplied.title = "Mark this vacancy as applied";
   }
 
+  // Update Ignore Button State
+  const ignoreJobText = document.getElementById("ignoreJobText");
+  const ignoreJobSvg = document.getElementById("ignoreJobSvg");
+  const isJobIgnored = job.status === "ignored" || Boolean(job.ignored);
+  if (btnIgnoreJob && ignoreJobText) {
+    if (isJobIgnored) {
+      ignoreJobText.textContent = "Unignore";
+      btnIgnoreJob.classList.add("btn-ignored-active");
+      btnIgnoreJob.title = "Restore this role back to active discovery feeds";
+      if (ignoreJobSvg) ignoreJobSvg.innerHTML = `<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>`;
+    } else {
+      ignoreJobText.textContent = "Ignore";
+      btnIgnoreJob.classList.remove("btn-ignored-active");
+      btnIgnoreJob.title = "Hide expired or unwanted role from active feeds (moves to Ignored section)";
+      if (ignoreJobSvg) ignoreJobSvg.innerHTML = `<circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>`;
+    }
+  }
+
   // Auto-hydrate complete Job Description if missing, truncated, or a Reed snippet
   const isSnippet = !job.full_jd ||
     job.full_jd.length < 500 ||
@@ -2597,6 +2648,15 @@ function selectJob(job) {
 function renderStudioTabContent() {
   if (!selectedJob) return;
 
+  if (isTailoringActive) {
+    if (currentTab === "tab-cv") {
+      if (!document.querySelector(".tailoring-loader-card")) {
+        renderTailoringProgressCard();
+      }
+      return;
+    }
+  }
+
   if (currentTab === "tab-cv") {
     renderCVTab();
   } else if (currentTab === "tab-cover") {
@@ -2618,6 +2678,9 @@ let currentRenderJobId = null;
 async function renderCVTab() {
   const targetJob = selectedJob;
   if (!targetJob) return;
+  if (isTailoringActive) {
+    return;
+  }
   const thisJobId = targetJob.id;
   currentRenderJobId = thisJobId;
 
@@ -2891,21 +2954,25 @@ function extractCoverParagraphs(texCode) {
   return body
     .replace(/%.*$/gm, "")
     .replace(/\\par\b/g, "\n\n")
-    .replace(/\\\\/g, "\n")
+    .replace(/\\\\(?:\s*\[[^\]]*\])?/g, "\n\n")
+    .replace(/\\(?:vspace|hspace|setlength|rule|fontsize)\*?(?:\[[^\]]*\])?\{[^}]*\}(?:\{[^}]*\})?/g, "")
+    .replace(/\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]/gi, "")
     .replace(/\\(?:textbf|textit|emph|Large|large|small)\s*\{([^{}]*)\}/g, "$1")
     .replace(/\\href\{[^}]*\}\{([^}]*)\}/g, "$1")
-    .replace(/\\(?:vspace|hspace|setlength|rule|fontsize)\*?(?:\[[^\]]*\])?\{[^}]*\}(?:\{[^}]*\})?/g, "")
     .replace(/\\([&%$#_{}])/g, "$1")
     .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^{}]*\})?/g, "")
     .replace(/[{}]/g, "")
     .split(/\n\s*\n/)
-    .map(paragraph => paragraph.replace(/\s+/g, " ").trim())
-    .filter(paragraph => paragraph.length > 0 && !/^\d+(?:pt|mm|cm|in|em|ex)$/i.test(paragraph));
+    .map(paragraph => paragraph.replace(/\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]/gi, "").replace(/\s+/g, " ").trim())
+    .filter(paragraph => paragraph.length > 0 && !/^\d+(?:pt|mm|cm|in|em|ex)$/i.test(paragraph) && !/^\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex)\s*\]$/i.test(paragraph));
 }
 
 async function renderCoverTab() {
   const targetJob = selectedJob;
   if (!targetJob) return;
+  if (isTailoringActive) {
+    return;
+  }
   const thisJobId = targetJob.id;
   currentRenderJobId = thisJobId;
 
@@ -3969,6 +4036,68 @@ function syncDeepTailorBtnState(isActive) {
 }
 
 let isTailoringActive = false;
+let tailoringStepTimers = [];
+
+function clearTailoringStepTimers() {
+  tailoringStepTimers.forEach(t => clearTimeout(t));
+  tailoringStepTimers = [];
+}
+
+function renderTailoringProgressCard(isDeepTailor) {
+  if (!selectedJob) return;
+  const isDeep = isDeepTailor !== undefined
+    ? isDeepTailor
+    : Boolean(document.getElementById("chkDeepTailor")?.checked || activeProfile?.enableDeepTailor);
+
+  studioContent.innerHTML = `
+    <div class="tailoring-loader-card">
+      <div class="tailoring-pulse-icon">✨</div>
+      <div class="tailoring-loader-title">${isDeep ? "Deep AI Match & Tailoring Active" : "Curating Tailored ATS Resume"}</div>
+      <div class="tailoring-loader-subtitle">Synthesizing aligned experience & keyword match for <b>${escapeHtml(selectedJob.title)}</b> at <b>${escapeHtml(selectedJob.company)}</b>.</div>
+      <div class="apple-progress-bar">
+        <div class="apple-progress-bar-fill"></div>
+      </div>
+      <div class="tailoring-steps-list">
+        <div class="tailoring-step-item active" id="tailorStep1">
+          <span class="tailoring-step-bullet">1</span>
+          <span>Analyzing job description & ATS requirements</span>
+        </div>
+        <div class="tailoring-step-item" id="tailorStep2">
+          <span class="tailoring-step-bullet">2</span>
+          <span>Calibrating engineering experience & keywords</span>
+        </div>
+        <div class="tailoring-step-item" id="tailorStep3">
+          <span class="tailoring-step-bullet">3</span>
+          <span>Drafting active-voice humanized LaTeX resume</span>
+        </div>
+        <div class="tailoring-step-item" id="tailorStep4">
+          <span class="tailoring-step-bullet">4</span>
+          <span>Auditing ATS compliance & verified typography</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  clearTailoringStepTimers();
+  tailoringStepTimers.push(setTimeout(() => {
+    const s1 = document.getElementById("tailorStep1");
+    const s2 = document.getElementById("tailorStep2");
+    if (s1) { s1.className = "tailoring-step-item completed"; const b = s1.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
+    if (s2) { s2.className = "tailoring-step-item active"; }
+  }, 1200));
+  tailoringStepTimers.push(setTimeout(() => {
+    const s2 = document.getElementById("tailorStep2");
+    const s3 = document.getElementById("tailorStep3");
+    if (s2) { s2.className = "tailoring-step-item completed"; const b = s2.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
+    if (s3) { s3.className = "tailoring-step-item active"; }
+  }, 2800));
+  tailoringStepTimers.push(setTimeout(() => {
+    const s3 = document.getElementById("tailorStep3");
+    const s4 = document.getElementById("tailorStep4");
+    if (s3) { s3.className = "tailoring-step-item completed"; const b = s3.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
+    if (s4) { s4.className = "tailoring-step-item active"; }
+  }, 4800));
+}
 
 async function tailorCurrentJob() {
   if (!selectedJob || isTailoringActive) return;
@@ -3995,61 +4124,14 @@ async function tailorCurrentJob() {
     btnTailorText.textContent = isDeepTailor ? "Deep Tailoring..." : "Tailoring...";
   }
 
-  // Switch to CV tab if user is currently on another tab
-  if (currentTab !== "tab-cv") {
-    const cvTabBtn = document.querySelector('.tab-btn[data-tab="tab-cv"]');
-    if (cvTabBtn) cvTabBtn.click();
-  }
+  // Switch to CV tab visually without triggering async renderCVTab() fetch
+  currentTab = "tab-cv";
+  document.querySelectorAll(".tab-btn").forEach(t => {
+    t.classList.toggle("active", t.dataset.tab === "tab-cv");
+  });
 
-  // Inject Apple HIG Live Progress Card immediately
-  studioContent.innerHTML = `
-    <div class="tailoring-loader-card">
-      <div class="tailoring-pulse-icon">✨</div>
-      <div class="tailoring-loader-title">${isDeepTailor ? "Deep AI Match & Tailoring Active" : "Curating Tailored ATS Resume"}</div>
-      <div class="tailoring-loader-subtitle">Synthesizing aligned experience & keyword match for <b>${escapeHtml(selectedJob.title)}</b> at <b>${escapeHtml(selectedJob.company)}</b>.</div>
-      <div class="apple-progress-bar">
-        <div class="apple-progress-bar-fill"></div>
-      </div>
-      <div class="tailoring-steps-list">
-        <div class="tailoring-step-item active" id="tailorStep1">
-          <span class="tailoring-step-bullet">1</span>
-          <span>Analyzing job description & ATS requirements</span>
-        </div>
-        <div class="tailoring-step-item" id="tailorStep2">
-          <span class="tailoring-step-bullet">2</span>
-          <span>Calibrating engineering experience & keywords</span>
-        </div>
-        <div class="tailoring-step-item" id="tailorStep3">
-          <span class="tailoring-step-bullet">3</span>
-          <span>Drafting active-voice humanized LaTeX resume</span>
-        </div>
-        <div class="tailoring-step-item" id="tailorStep4">
-          <span class="tailoring-step-bullet">4</span>
-          <span>Auditing ATS compliance & verified typography</span>
-        </div>
-      </div>
-    </div>
-  `;
-
-  const stepTimers = [];
-  stepTimers.push(setTimeout(() => {
-    const s1 = document.getElementById("tailorStep1");
-    const s2 = document.getElementById("tailorStep2");
-    if (s1) { s1.className = "tailoring-step-item completed"; const b = s1.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
-    if (s2) { s2.className = "tailoring-step-item active"; }
-  }, 1200));
-  stepTimers.push(setTimeout(() => {
-    const s2 = document.getElementById("tailorStep2");
-    const s3 = document.getElementById("tailorStep3");
-    if (s2) { s2.className = "tailoring-step-item completed"; const b = s2.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
-    if (s3) { s3.className = "tailoring-step-item active"; }
-  }, 2800));
-  stepTimers.push(setTimeout(() => {
-    const s3 = document.getElementById("tailorStep3");
-    const s4 = document.getElementById("tailorStep4");
-    if (s3) { s3.className = "tailoring-step-item completed"; const b = s3.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
-    if (s4) { s4.className = "tailoring-step-item active"; }
-  }, 4800));
+  // Render Apple HIG Live Progress Card immediately (for both first generation and re-tailoring)
+  renderTailoringProgressCard(isDeepTailor);
 
   try {
     const res = await fetch("/api/tailor", {
@@ -4069,6 +4151,9 @@ async function tailorCurrentJob() {
 
     const data = await res.json();
     if (data.success) {
+      clearTailoringStepTimers();
+      isTailoringActive = false;
+
       selectedJob.status = "drafted";
       selectedJob.cv_file = data.cvPath;
       selectedJob.cover_file = data.coverPath;
@@ -4085,10 +4170,8 @@ async function tailorCurrentJob() {
       }
       data.jobId = selectedJob.id;
       activeTailoredData = data;
-      isTailoringActive = false;
       renderJobs();
       selectJob(selectedJob);
-      renderStudioTabContent();
       const scoreNote = data.baseline_score && data.tailored_score
         ? ` (${data.baseline_score}% Baseline ➔ ${data.tailored_score}% Tailored ATS)`
         : ` (${selectedJob.fit_score}% Match)`;
@@ -4107,6 +4190,7 @@ async function tailorCurrentJob() {
       }
       showToast(toastMsg);
     } else {
+      clearTailoringStepTimers();
       isTailoringActive = false;
       showToast(data.error || "Failed to tailor application");
       studioContent.innerHTML = `
@@ -4122,6 +4206,7 @@ async function tailorCurrentJob() {
     }
   } catch (err) {
     console.error(err);
+    clearTailoringStepTimers();
     isTailoringActive = false;
     showToast("Error during tailoring");
     studioContent.innerHTML = `
@@ -4135,7 +4220,7 @@ async function tailorCurrentJob() {
       </div>
     `;
   } finally {
-    stepTimers.forEach(t => clearTimeout(t));
+    clearTailoringStepTimers();
     isTailoringActive = false;
     btnTailor.disabled = false;
     updateTailorBtnLabel();
@@ -4367,6 +4452,75 @@ async function markCurrentJobApplied() {
     }
   } catch (err) {
     showToast("Error updating application status");
+  }
+}
+
+async function toggleCurrentJobIgnored(targetJob = null) {
+  const job = targetJob || selectedJob;
+  if (!job) return;
+
+  const isCurrentlyIgnored = job.status === "ignored" || Boolean(job.ignored);
+  const wasDrafted = Boolean(job.cv_file || job.cvFile);
+  const newStatus = isCurrentlyIgnored ? (wasDrafted ? "drafted" : "new") : "ignored";
+
+  try {
+    const res = await fetch("/api/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jobId: job.id,
+        company: job.company,
+        role: job.title || job.role,
+        status: newStatus,
+        url: job.url || ""
+      })
+    });
+
+    const data = await res.json();
+    if (data.success) {
+      job.status = newStatus;
+      job.ignored = (newStatus === "ignored");
+      const selComp = (job.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const selTitle = (job.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+      allJobs.forEach(j => {
+        const jComp = (j.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const jTitle = (j.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+        if (j.id === job.id || (j.url && job.url && j.url === job.url) || (selComp && selTitle && jComp === selComp && jTitle === selTitle)) {
+          j.status = newStatus;
+          j.ignored = (newStatus === "ignored");
+        }
+      });
+
+      if (selectedJob && selectedJob.id === job.id) {
+        const btnIgnoreJob = document.getElementById("btnIgnoreJob");
+        const ignoreJobText = document.getElementById("ignoreJobText");
+        const ignoreJobSvg = document.getElementById("ignoreJobSvg");
+        if (btnIgnoreJob && ignoreJobText) {
+          if (newStatus === "ignored") {
+            ignoreJobText.textContent = "Unignore";
+            btnIgnoreJob.classList.add("btn-ignored-active");
+            btnIgnoreJob.title = "Restore this role back to active discovery feeds";
+            if (ignoreJobSvg) ignoreJobSvg.innerHTML = `<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>`;
+          } else {
+            ignoreJobText.textContent = "Ignore";
+            btnIgnoreJob.classList.remove("btn-ignored-active");
+            btnIgnoreJob.title = "Hide expired or unwanted role from active feeds (moves to Ignored section)";
+            if (ignoreJobSvg) ignoreJobSvg.innerHTML = `<circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>`;
+          }
+        }
+      }
+
+      renderJobs();
+      updateBadgeCounts();
+
+      if (newStatus === "ignored") {
+        showToast("🚫 Job marked as ignored. Moved to Ignored section.");
+      } else {
+        showToast("✨ Job unignored. Restored to active feeds.");
+      }
+    }
+  } catch (err) {
+    showToast("Error updating ignore status");
   }
 }
 

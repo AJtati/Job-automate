@@ -551,4 +551,41 @@ Specialized Azure DevOps Engineer with hands-on enterprise landing zone delivery
     expect(reply).not.toContain("CRITICAL MANDATORY HUMANIZER RULES");
     expect(reply).not.toContain("ABSOLUTE ZERO TOLERANCE");
   });
+
+  test("humanizeText cleans LaTeX spacing commands, \\[0.5em], and stray [0.5em] artifacts", () => {
+    const rawWithLatexSpacing = `Thank you for your time and consideration.
+
+Sincerely,\\\\[0.5em] Ajith Surya Thati`;
+
+    const cleaned = aiService.humanizeText(rawWithLatexSpacing, { company: "bcn group", candidateName: "Ajith Surya Thati" });
+    expect(cleaned).not.toContain("[0.5em]");
+    expect(cleaned).not.toContain("\\\\[0.5em]");
+    expect(cleaned).toContain("Sincerely,");
+    expect(cleaned).toContain("Ajith Surya Thati");
+
+    const rawWithStrayBrackets = `I am based in Hartlepool and require sponsorship.
+
+Sincerely, [0.5em] Ajith Surya Thati`;
+    const cleanedStray = aiService.humanizeText(rawWithStrayBrackets, { company: "bcn group", candidateName: "Ajith Surya Thati" });
+    expect(cleanedStray).not.toContain("[0.5em]");
+    expect(cleanedStray).toContain("Sincerely,");
+    expect(cleanedStray).toContain("Ajith Surya Thati");
+  });
+
+  test("humanizeText resolves [Hiring Team / Recruiter] and company placeholders cleanly", () => {
+    const rawWithPlaceholders = `Dear [Hiring Team / Recruiter],
+
+I saw the opening at [Company] and wanted to connect directly.
+
+Sincerely,
+[Candidate Name]`;
+
+    const resolved = aiService.humanizeText(rawWithPlaceholders, { company: "bcn group", candidateName: "Ajith Surya Thati" });
+    expect(resolved).not.toContain("[Hiring Team / Recruiter]");
+    expect(resolved).not.toContain("[Company]");
+    expect(resolved).not.toContain("[Candidate Name]");
+    expect(resolved).toContain("Dear Hiring Team,");
+    expect(resolved).toContain("bcn group");
+    expect(resolved).toContain("Ajith Surya Thati");
+  });
 });

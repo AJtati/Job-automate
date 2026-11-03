@@ -142,6 +142,10 @@
             <span class="nav-item-left">🚀 Applied & Active</span>
             <span class="nav-badge" id="countApplied">0</span>
           </li>
+          <li class="nav-item" data-filter="ignored">
+            <span class="nav-item-left">🚫 Ignored Roles</span>
+            <span class="nav-badge" id="countIgnored">0</span>
+          </li>
         </ul>
 
         <div class="nav-section-header">
@@ -293,6 +297,14 @@
                   <path d="m9 12 2 2 4-4" id="appliedSvgCheck" style="display: none;"/>
                 </svg>
                 <span id="markAppliedText">Mark Applied</span>
+              </button>
+
+              <button class="btn-secondary btn-action" id="btnIgnoreJob" title="Hide expired or unwanted role from active feeds">
+                <svg class="action-svg" id="ignoreJobSvg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                </svg>
+                <span id="ignoreJobText">Ignore</span>
               </button>
 
               <button class="btn-secondary btn-action" id="btnCopyRecruiterMsg" title="Copy high-conversion outreach note for recruiters">

@@ -489,6 +489,13 @@ function ingestDiscoveredJob(
 }
 
 function getHigherStatus(statusA?: string, statusB?: string): string {
+  const a = (statusA || "").toLowerCase();
+  const b = (statusB || "").toLowerCase();
+  if (a === "ignored" || b === "ignored") {
+    if (a === "ignored" && b === "ignored") return "ignored";
+    if (a === "ignored" && (!b || b === "new")) return "ignored";
+    if (b === "ignored" && (!a || a === "new")) return "ignored";
+  }
   const rank: Record<string, number> = {
     offered: 5,
     interview: 4,
@@ -496,10 +503,9 @@ function getHigherStatus(statusA?: string, statusB?: string): string {
     drafted: 2,
     rejected: 2,
     archived: 2,
-    new: 1
+    new: 1,
+    ignored: 0
   };
-  const a = (statusA || "").toLowerCase();
-  const b = (statusB || "").toLowerCase();
   const rA = rank[a] || 0;
   const rB = rank[b] || 0;
   return rA >= rB ? (statusA || statusB || "new") : (statusB || statusA || "new");
@@ -1521,6 +1527,7 @@ serve({
           sponsorship_employer: sponsor.isNewSponsor ? (sponsor.newSponsorDetails?.organisation || sponsor.assessment.employer.organisation || "") : (sponsor.assessment.employer.organisation || ""),
           sponsorship_source: sponsor.assessment.employer.source,
           status,
+          ignored: status === "ignored",
           cv_file: cvFile,
           cover_file: coverFile,
           portal: item.portal || (isImported ? "external-url" : "linkedin-search"),

@@ -953,6 +953,42 @@ html[data-platform="windows"] .titlebar input {
   font-weight: 600 !important;
 }
 
+.btn-ignored-active {
+  background: rgba(239, 68, 68, 0.16) !important;
+  color: #f87171 !important;
+  border-color: rgba(239, 68, 68, 0.45) !important;
+  font-weight: 600 !important;
+}
+
+#btnIgnoreJob:hover:not(.btn-ignored-active) {
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+.card-quick-ignore {
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.job-card:hover .card-quick-ignore {
+  opacity: 1;
+}
+
+.card-quick-ignore:hover {
+  background: rgba(239, 68, 68, 0.22);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.45);
+  transform: scale(1.05);
+}
+
 .sponsor-banner {
   margin-top: 12px;
   padding: 8px 12px;

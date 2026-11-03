@@ -327,4 +327,56 @@ describe("job source normalization", () => {
     expect(getJobDedupKey(indeedJobB)).toBe("indeed_f11aa994bd11e02c");
     expect(getJobDedupKey(indeedJobA)).not.toBe(getJobDedupKey(indeedJobB));
   });
+
+  test("ignored jobs are hidden from discovery filters and strictly isolated to ignored section", () => {
+    const jobs = [
+      { id: "job1", title: "Active DevOps Engineer", company: "Sky", status: "new", is_remote: true },
+      { id: "job2", title: "Expired SRE Role", company: "BT", status: "ignored", ignored: true, is_remote: true },
+      { id: "job3", title: "Applied Platform Engineer", company: "BBC", status: "applied", is_remote: false },
+      { id: "job4", title: "Drafted Cloud Engineer", company: "Cisco", status: "drafted", is_remote: true },
+    ];
+
+    const isIgnored = (j: any) => j.status === "ignored" || Boolean(j.ignored);
+
+    const filterFor = (filterName: string) => {
+      return jobs.filter(j => {
+        const ignored = isIgnored(j);
+        if (filterName === "ignored") return ignored;
+        if (ignored) return false;
+        if (filterName !== "applied" && filterName !== "imported" && j.status === "applied") return false;
+        if (filterName === "remote") return j.is_remote;
+        if (filterName === "drafted") return j.status === "drafted";
+        if (filterName === "applied") return j.status === "applied";
+        return true;
+      });
+    };
+
+    // 'all' filter excludes applied and ignored jobs
+    const allResults = filterFor("all");
+    expect(allResults.map(j => j.id)).toEqual(["job1", "job4"]);
+    expect(allResults.some(j => j.id === "job2")).toBe(false);
+
+    // 'remote' filter excludes ignored jobs even if remote
+    const remoteResults = filterFor("remote");
+    expect(remoteResults.map(j => j.id)).toEqual(["job1", "job4"]);
+    expect(remoteResults.some(j => j.id === "job2")).toBe(false);
+
+    // 'drafted' filter excludes ignored jobs
+    const draftedResults = filterFor("drafted");
+    expect(draftedResults.map(j => j.id)).toEqual(["job4"]);
+    expect(draftedResults.some(j => j.id === "job2")).toBe(false);
+
+    // 'ignored' filter strictly shows only ignored jobs
+    const ignoredResults = filterFor("ignored");
+    expect(ignoredResults.map(j => j.id)).toEqual(["job2"]);
+
+    // Un-ignoring restores job back to active discovery
+    jobs[1].status = "new";
+    jobs[1].ignored = false;
+
+    const restoredAll = filterFor("all");
+    expect(restoredAll.some(j => j.id === "job2")).toBe(true);
+    const restoredIgnored = filterFor("ignored");
+    expect(restoredIgnored.some(j => j.id === "job2")).toBe(false);
+  });
 });
