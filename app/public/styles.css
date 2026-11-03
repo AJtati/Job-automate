@@ -678,6 +678,13 @@ html[data-platform="windows"] .titlebar input {
   font-weight: 500;
 }
 
+.meta-pill.pill-imported {
+  background: rgba(168, 85, 247, 0.12);
+  color: #c084fc;
+  border: 1px solid rgba(192, 132, 252, 0.4);
+  font-weight: 600;
+}
+
 .meta-pill.status-drafted,
 .meta-pill.status-tailored,
 .status-badge.drafted {

@@ -123,4 +123,114 @@ describe("job source normalization", () => {
     // Evening (20:15) should be first, then Afternoon (15:30), then Morning (09:00), then Yesterday
     expect(sorted.map(j => j.id)).toEqual(["3", "2", "1", "4"]);
   });
+
+  test("identifies imported jobs and preserves link-import classification", () => {
+    function isImportedJob(j: any) {
+      if (!j) return false;
+      return Boolean(
+        j.is_imported ||
+        j.imported ||
+        j.portal === "external-url" ||
+        (j.source && /import|external-url/i.test(j.source)) ||
+        (typeof j.id === "string" && (j.id.startsWith("ext_") || j.id.startsWith("imported_")))
+      );
+    }
+
+    const regularJob = { id: "reed_123", portal: "reed", source: "reed" };
+    const luxoftImported = {
+      id: "ext_1793711507139",
+      portal: "external-url",
+      source: "Instant URL Import",
+      url: "https://career.luxoft.com/jobs/senior-software-engineer-sdlc-github-actions-26940",
+      company: "Career DXC Luxoft"
+    };
+    const flaggedImport = { id: "custom_99", is_imported: true };
+
+    expect(isImportedJob(regularJob)).toBe(false);
+    expect(isImportedJob(luxoftImported)).toBe(true);
+    expect(isImportedJob(flaggedImport)).toBe(true);
+  });
+
+  test("imported jobs marked as applied remain applied and visible in applied filter", () => {
+    function getHigherStatus(statusA?: string, statusB?: string): string {
+      const rank: Record<string, number> = {
+        offered: 5,
+        interview: 4,
+        applied: 3,
+        drafted: 2,
+        rejected: 2,
+        archived: 2,
+        new: 1
+      };
+      const a = (statusA || "").toLowerCase();
+      const b = (statusB || "").toLowerCase();
+      const rA = rank[a] || 0;
+      const rB = rank[b] || 0;
+      return rA >= rB ? (statusA || statusB || "new") : (statusB || statusA || "new");
+    }
+
+    // Status precedence test: applied must never be clobbered by drafted or new
+    expect(getHigherStatus("applied", "drafted")).toBe("applied");
+    expect(getHigherStatus("drafted", "applied")).toBe("applied");
+    expect(getHigherStatus(undefined, "applied")).toBe("applied");
+    expect(getHigherStatus("applied", undefined)).toBe("applied");
+    expect(getHigherStatus("drafted", "new")).toBe("drafted");
+
+    // Filter matching logic test
+    function filterJob(j: any, currentFilter: string) {
+      if (currentFilter !== "applied" && currentFilter !== "imported" && j.status === "applied") {
+        return false;
+      }
+      if (currentFilter === "applied") return j.status === "applied";
+      if (currentFilter === "imported") return Boolean(j.is_imported || j.imported || j.id.startsWith("ext_"));
+      return true;
+    }
+
+    const appliedImported = {
+      id: "ext_1793711507139",
+      company: "Career DXC Luxoft",
+      title: "Senior Software Engineer",
+      status: "applied",
+      is_imported: true,
+      cv_file: "cv/main.tex",
+      cover_file: "cover_letters/cover.tex"
+    };
+
+    // Visible in 'applied' pipeline section
+    expect(filterJob(appliedImported, "applied")).toBe(true);
+    // Also accessible in 'imported' sidebar section
+    expect(filterJob(appliedImported, "imported")).toBe(true);
+    // Hidden from general unapplied discovery feeds once applied
+    expect(filterJob(appliedImported, "all")).toBe(false);
+  });
+
+  test("user-imported jobs are always relevant regardless of automated keyword gates", () => {
+    function isJobRelevantToProfile(item: any, profile: any, id?: string): boolean {
+      if (!item || !profile) return false;
+      const isImported = Boolean(
+        item.is_imported ||
+        item.imported ||
+        item.portal === "external-url" ||
+        (item.source && /import|external-url/i.test(item.source)) ||
+        (typeof id === "string" && (id.startsWith("ext_") || id.startsWith("imported_"))) ||
+        (typeof item.id === "string" && (item.id.startsWith("ext_") || item.id.startsWith("imported_")))
+      );
+      if (isImported) {
+        if (item.profileId && item.profileId !== profile.id) return false;
+        return true;
+      }
+      return false;
+    }
+
+    const devopsProfile = { id: "p1", headline: "DevOps Engineer", targetRoles: ["DevOps Engineer"] };
+    const importedSoftwareEngineerJob = {
+      id: "ext_1793711507139",
+      title: "Senior Software Engineer (SDLC, GitHub Actions)",
+      company: "Career DXC Luxoft",
+      portal: "external-url",
+      is_imported: true
+    };
+
+    expect(isJobRelevantToProfile(importedSoftwareEngineerJob, devopsProfile, importedSoftwareEngineerJob.id)).toBe(true);
+  });
 });

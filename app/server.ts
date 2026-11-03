@@ -261,8 +261,24 @@ interface DiscoveredJob {
   source: string;
 }
 
-function isJobRelevantToProfile(item: any, profile: CandidateProfile): boolean {
+function isJobRelevantToProfile(item: any, profile: CandidateProfile, id?: string): boolean {
   if (!item || !profile) return false;
+
+  // An explicitly imported job is ALWAYS relevant to the candidate who imported it
+  const isImported = Boolean(
+    item.is_imported ||
+    item.imported ||
+    item.portal === "external-url" ||
+    (item.source && /import|external-url/i.test(item.source)) ||
+    (typeof id === "string" && (id.startsWith("ext_") || id.startsWith("imported_"))) ||
+    (typeof item.id === "string" && (item.id.startsWith("ext_") || item.id.startsWith("imported_")))
+  );
+  if (isImported) {
+    if (item.profileId && item.profileId !== profile.id) {
+      return false;
+    }
+    return true;
+  }
 
   // If a job was explicitly tagged with a different candidate's profileId, isolate it
   if (item.profileId && item.profileId !== profile.id) {
@@ -472,77 +488,117 @@ function ingestDiscoveredJob(
   return "added";
 }
 
+function getHigherStatus(statusA?: string, statusB?: string): string {
+  const rank: Record<string, number> = {
+    offered: 5,
+    interview: 4,
+    applied: 3,
+    drafted: 2,
+    rejected: 2,
+    archived: 2,
+    new: 1
+  };
+  const a = (statusA || "").toLowerCase();
+  const b = (statusB || "").toLowerCase();
+  const rA = rank[a] || 0;
+  const rB = rank[b] || 0;
+  return rA >= rB ? (statusA || statusB || "new") : (statusB || statusA || "new");
+}
+
 function readTracker(activeProfile?: CandidateProfile): Record<string, any> {
   const map: Record<string, any> = {};
 
   // 1. Seed from activeProfile.tracker if available
   if (activeProfile?.tracker) {
     for (const [key, record] of Object.entries(activeProfile.tracker)) {
-      map[key] = record;
+      map[key] = { ...record };
     }
   }
 
   // 2. Read TRACKER_FILE (job_search_tracker.csv)
-  if (!existsSync(TRACKER_FILE)) return map;
-  const content = readFileSync(TRACKER_FILE, "utf-8");
-  const lines = content.split("\n").filter(l => l.trim().length > 0);
-  if (lines.length <= 1) return map;
-  
-  const candidateId = activeProfile?.id || "";
-  const candidateNameNorm = (activeProfile?.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (existsSync(TRACKER_FILE)) {
+    const content = readFileSync(TRACKER_FILE, "utf-8");
+    const lines = content.split("\n").filter(l => l.trim().length > 0);
+    if (lines.length > 1) {
+      const candidateId = activeProfile?.id || "";
+      const candidateNameNorm = (activeProfile?.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-  for (let i = 1; i < lines.length; i++) {
-    const cols = parseCsvLine(lines[i]);
-    if (cols.length >= 4) {
-      const company = cols[1]?.trim() || "";
-      const role = cols[3]?.trim() || "";
-      const status = cols[6]?.trim() || "new";
-      const cvFile = cols[10]?.trim() || "";
-      const coverFile = cols[11]?.trim() || "";
-      const fitRating = cols[8]?.trim() || "92";
-      const sourceUrl = cols[12]?.trim() || "";
+      for (let i = 1; i < lines.length; i++) {
+        const cols = parseCsvLine(lines[i]);
+        if (cols.length >= 4) {
+          const company = cols[1]?.trim() || "";
+          const role = cols[3]?.trim() || "";
+          const status = cols[6]?.trim() || "new";
+          const cvFile = cols[10]?.trim() || "";
+          const coverFile = cols[11]?.trim() || "";
+          const fitRating = cols[8]?.trim() || "92";
+          const sourceUrl = cols[12]?.trim() || "";
 
-      // Scope check: do not assign rows containing another candidate's name or CV file
-      if (activeProfile) {
-        const cvNorm = cvFile.toLowerCase().replace(/[^a-z0-9]/g, "");
-        const coverNorm = coverFile.toLowerCase().replace(/[^a-z0-9]/g, "");
-        const candidateSlugNorm = candidateId.toLowerCase().replace(/[^a-z0-9]/g, "");
+          // Scope check: do not assign rows containing another candidate's name or CV file
+          if (activeProfile) {
+            const cvNorm = cvFile.toLowerCase().replace(/[^a-z0-9]/g, "");
+            const coverNorm = coverFile.toLowerCase().replace(/[^a-z0-9]/g, "");
+            const candidateSlugNorm = candidateId.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-        const isSelf = !cvFile || (candidateSlugNorm && (cvNorm.includes(candidateSlugNorm) || coverNorm.includes(candidateSlugNorm))) ||
-                       (candidateNameNorm && (cvNorm.includes(candidateNameNorm) || coverNorm.includes(candidateNameNorm)));
+            const isSelf = !cvFile || (candidateSlugNorm && (cvNorm.includes(candidateSlugNorm) || coverNorm.includes(candidateSlugNorm))) ||
+                           (candidateNameNorm && (cvNorm.includes(candidateNameNorm) || coverNorm.includes(candidateNameNorm)));
 
-        if (cvFile && !isSelf) {
-          const otherProfiles = profilesManager.getAll().profiles.filter(p => p.id !== candidateId);
-          const isOther = otherProfiles.some(p => {
-            const otherSlug = p.id.toLowerCase().replace(/[^a-z0-9]/g, "");
-            const otherName = (p.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-            const otherFirst = (p.name || "").split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "");
-            return (otherSlug && (cvNorm.includes(otherSlug) || coverNorm.includes(otherSlug))) ||
-                   (otherName && (cvNorm.includes(otherName) || coverNorm.includes(otherName))) ||
-                   (otherFirst && otherFirst.length >= 3 && (cvNorm.includes(otherFirst) || coverNorm.includes(otherFirst)));
-          });
-          if (isOther) {
-            continue;
+            if (cvFile && !isSelf) {
+              const otherProfiles = profilesManager.getAll().profiles.filter(p => p.id !== candidateId);
+              const isOther = otherProfiles.some(p => {
+                const otherSlug = p.id.toLowerCase().replace(/[^a-z0-9]/g, "");
+                const otherName = (p.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+                const otherFirst = (p.name || "").split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "");
+                return (otherSlug && (cvNorm.includes(otherSlug) || coverNorm.includes(otherSlug))) ||
+                       (otherName && (cvNorm.includes(otherName) || coverNorm.includes(otherName))) ||
+                       (otherFirst && otherFirst.length >= 3 && (cvNorm.includes(otherFirst) || coverNorm.includes(otherFirst)));
+              });
+              if (isOther) {
+                continue;
+              }
+            }
           }
+
+          const dedupKey = getJobDedupKey({ company, title: role, url: sourceUrl });
+          const simpleKey = `${company}_${role}`.toLowerCase();
+          const normCompany = company.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const normRole = role.toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+          const normKey = `norm_${normCompany}_${normRole}`;
+
+          // Preserve highest status and non-empty documents across tracker entries
+          const existing = map[dedupKey] || map[simpleKey] || map[normKey] || {};
+          const mergedStatus = getHigherStatus(existing.status, status);
+          const mergedCv = existing.cvFile || cvFile || "";
+          const mergedCover = existing.coverFile || coverFile || "";
+
+          const record = { company, role, status: mergedStatus, cvFile: mergedCv, coverFile: mergedCover, fitRating, sourceUrl };
+          map[dedupKey] = record;
+          map[simpleKey] = record;
+          map[normKey] = record;
         }
       }
-
-      const record = { company, role, status, cvFile, coverFile, fitRating, sourceUrl };
-      
-      // Index by dedupKey (canonical URL / job ID / normalized company+role)
-      const dedupKey = getJobDedupKey({ company, title: role, url: sourceUrl });
-      map[dedupKey] = record;
-      
-      // Also index by simple lowercase key
-      const simpleKey = `${company}_${role}`.toLowerCase();
-      map[simpleKey] = record;
-      
-      // Also index by company-only fallback if role matches
-      const normCompany = company.toLowerCase().replace(/[^a-z0-9]/g, "");
-      const normRole = role.toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
-      map[`norm_${normCompany}_${normRole}`] = record;
     }
   }
+
+  // 3. Ensure candidate profile tracker real-time entries take precedence (especially applied/interview/offered)
+  if (activeProfile?.tracker) {
+    for (const [key, record] of Object.entries(activeProfile.tracker)) {
+      if (record && record.status) {
+        if (!map[key]) {
+          map[key] = { ...record };
+        } else {
+          map[key] = {
+            ...map[key],
+            ...record,
+            status: getHigherStatus(map[key].status, record.status),
+            cvFile: record.cvFile || map[key].cvFile || "",
+            coverFile: record.coverFile || map[key].coverFile || ""
+          };
+        }
+      }
+    }
+  }
+
   return map;
 }
 
@@ -915,6 +971,8 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
     date_scraped: new Date().toISOString(),
     source: "Instant URL Import",
     portal: "external-url",
+    is_imported: true,
+    imported: true,
     sponsor_verified: sponsor.verified,
     is_new_sponsor: sponsor.isNewSponsor,
     new_sponsor_date: sponsor.newSponsorDetails?.date || null,
@@ -1356,32 +1414,27 @@ serve({
 
       const seenEntries = Object.entries(seen);
       const jobsList = seenEntries
-        .filter(([id, item]: [string, any]) => isJobRelevantToProfile(item, activeProfile))
+        .filter(([id, item]: [string, any]) => isJobRelevantToProfile(item, activeProfile, id))
         .map(([id, item]: [string, any], index: number) => {
           const dist = profilesManager.calculateDistance(item.location || "", activeProfile);
           const fullJd = item.full_jd || item.summary || "";
           const sponsor = checkSponsor(item.company || "", fullJd);
           
-          // Check if tracker has an entry via dedupKey, simpleKey, or normKey
+          // Check if tracker has an entry via id, url, dedupKey, simpleKey, or normKey
           const itemDedupKey = getJobDedupKey(item);
           const simpleKey = `${item.company}_${item.title}`.toLowerCase();
           const normComp = (item.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
           const normRole = (item.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
           const normKey = `norm_${normComp}_${normRole}`;
-          const tracked = tracker[itemDedupKey] || tracker[simpleKey] || tracker[normKey];
+          const tracked = tracker[id] || (item.url ? tracker[item.url] : undefined) || tracker[itemDedupKey] || tracker[simpleKey] || tracker[normKey];
 
           // Status hierarchy scoped to the active candidate
-          let status = "new";
-          if (tracked && tracked.status) {
-            status = tracked.status;
-          } else if (item.profileId && item.profileId === activeProfile.id && item.status) {
-            status = item.status;
-          } else {
-            status = "new";
-          }
+          const trackedStatus = tracked?.status;
+          const itemStatus = (item.profileId && item.profileId !== activeProfile.id) ? undefined : item.status;
+          const status = getHigherStatus(trackedStatus, itemStatus);
 
-          const cvFile = (tracked && tracked.cvFile) ? tracked.cvFile : (item.profileId === activeProfile.id ? (item.cv_file || "") : "");
-          const coverFile = (tracked && tracked.coverFile) ? tracked.coverFile : (item.profileId === activeProfile.id ? (item.cover_file || "") : "");
+          const cvFile = (tracked && tracked.cvFile) ? tracked.cvFile : (item.cv_file || "");
+          const coverFile = (tracked && tracked.coverFile) ? tracked.coverFile : (item.cover_file || "");
 
           const analysis = analyzeApplication(activeProfile, {
             company: item.company || "",
@@ -1411,6 +1464,15 @@ serve({
               console.warn("Error calculating tailored ATS score for", cvFile, err);
             }
           }
+
+          const isImported = Boolean(
+            item.is_imported ||
+            item.imported ||
+            item.portal === "external-url" ||
+            (item.source && /import|external-url/i.test(item.source)) ||
+            id.startsWith("ext_") ||
+            id.startsWith("imported_")
+          );
 
         return {
           id,
@@ -1450,7 +1512,10 @@ serve({
           status,
           cv_file: cvFile,
           cover_file: coverFile,
-          portal: item.portal || "linkedin-search"
+          portal: item.portal || (isImported ? "external-url" : "linkedin-search"),
+          is_imported: isImported,
+          imported: isImported,
+          source: item.source || (isImported ? "Instant URL Import" : undefined)
         };
       });
 
@@ -1463,17 +1528,19 @@ serve({
           uniqueJobsMap.set(dedupKey, job);
         } else {
           // Never downgrade status: "applied" always wins over "drafted" and "new"
-          const mergedStatus = (existing.status === "applied" || job.status === "applied") ? "applied"
-                             : (existing.status === "drafted" || job.status === "drafted") ? "drafted"
-                             : (existing.status || job.status || "new");
-
+          const mergedStatus = getHigherStatus(existing.status, job.status);
           const mergedCvFile = existing.cv_file || job.cv_file || "";
           const mergedCoverFile = existing.cover_file || job.cover_file || "";
-          const mergedFullJd = existing.full_jd || job.full_jd || "";
+          const mergedFullJd = (existing.full_jd && existing.full_jd.length >= (job.full_jd || "").length) ? existing.full_jd : (job.full_jd || "");
+          const isImported = Boolean(existing.is_imported || job.is_imported || existing.imported || job.imported || existing.id?.startsWith("ext_") || job.id?.startsWith("ext_"));
 
           uniqueJobsMap.set(dedupKey, {
             ...existing,
             ...job,
+            id: (existing.id?.startsWith("ext_") ? existing.id : job.id?.startsWith("ext_") ? job.id : (existing.id || job.id)),
+            is_imported: isImported,
+            imported: isImported,
+            source: existing.source || job.source || (isImported ? "Instant URL Import" : undefined),
             status: mergedStatus,
             cv_file: mergedCvFile,
             cover_file: mergedCoverFile,
@@ -2247,10 +2314,16 @@ serve({
 
         // Update Tracker with tailored fit rating
         const tailorReport = aiService.getLastTailorReport();
+        const currentSeenStatus = seen[jobId]?.status;
+        const currentTrackerStatus = activeProfile.tracker?.[jobId]?.status || activeProfile.tracker?.[getJobDedupKey(seen[jobId] || { company, title: role })]?.status;
+        const currentStatus = currentSeenStatus || currentTrackerStatus || "new";
+        const preservedStatus = (currentStatus === "applied" || currentStatus === "interview" || currentStatus === "offered") 
+          ? currentStatus 
+          : "drafted";
 
-        updateTracker(company, role, "drafted", cvPath, coverPath, tailoredAnalysis.overallScore);
+        updateTracker(company, role, preservedStatus, cvPath, coverPath, tailoredAnalysis.overallScore, seen[jobId]?.url || "", activeProfile, jobId);
         profilesManager.updateActiveProfileTracker(jobId || `${cleanCompany}_${cleanRole}`, {
-          status: "drafted",
+          status: preservedStatus,
           cvFile: cvPath,
           coverFile: coverPath,
           fitRating: String(tailoredAnalysis.overallScore),
@@ -2261,7 +2334,7 @@ serve({
 
         // Update seen_jobs with tailored analysis and dual scores
         if (seen[jobId]) {
-          seen[jobId].status = "drafted";
+          seen[jobId].status = preservedStatus;
           seen[jobId].cv_file = cvPath;
           seen[jobId].cover_file = coverPath;
           seen[jobId].fit_score = tailoredAnalysis.overallScore;
@@ -2297,7 +2370,7 @@ serve({
           tailored_score: tailoredAnalysis.overallScore,
           is_deep_tailored: isDeepTailor,
           tailorReport,
-          status: "drafted",
+          status: preservedStatus,
           message: isNonEnglish
             ? `Tailored CV & Cover Letter drafted in ${langPack.name} (plus English edition) for ${company}`
             : `Tailored CV & Cover Letter drafted for ${company} (${baselineAnalysis.overallScore}% Baseline ➔ ${tailoredAnalysis.overallScore}% Tailored ATS)`
@@ -2325,21 +2398,45 @@ serve({
           fullJd: sourceJob.full_jd || sourceJob.summary || "",
           keySkills: sourceJob.key_skills || [],
         });
-        updateTracker(company, role, status, "", "", statusAnalysis.overallScore, jobUrl);
+
+        const targetDedup = getJobDedupKey({ company: company || sourceJob.company, title: role || sourceJob.title, url: jobUrl || sourceJob.url });
+        const simpleKey = `${company || sourceJob.company}_${role || sourceJob.title}`.toLowerCase();
+        const existingTracked = activeProfile.tracker?.[targetDedup] || 
+                                activeProfile.tracker?.[jobId] || 
+                                activeProfile.tracker?.[simpleKey] || {};
+        const effectiveCv = sourceJob.cv_file || existingTracked.cvFile || "";
+        const effectiveCover = sourceJob.cover_file || existingTracked.coverFile || "";
+
+        updateTracker(company || sourceJob.company, role || sourceJob.title, status, effectiveCv, effectiveCover, statusAnalysis.overallScore, jobUrl || sourceJob.url, activeProfile, jobId);
 
         const seen = seenForScore;
-        const targetDedup = getJobDedupKey({ company, title: role, url: jobUrl });
+        const normComp = (company || sourceJob.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const normRole = (role || sourceJob.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
 
         let updatedCount = 0;
         for (const [k, v] of Object.entries(seen)) {
-          if (k === jobId || getJobDedupKey(v) === targetDedup) {
+          const vComp = (v.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const vRole = (v.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+          const vDedup = getJobDedupKey(v);
+
+          if (k === jobId || vDedup === targetDedup || (normComp && normRole && vComp === normComp && vRole === normRole)) {
             seen[k].status = status;
+            seen[k].profileId = activeProfile.id;
+            if (effectiveCv && !seen[k].cv_file) seen[k].cv_file = effectiveCv;
+            if (effectiveCover && !seen[k].cover_file) seen[k].cover_file = effectiveCover;
             updatedCount++;
           }
         }
         if (updatedCount > 0) {
           saveSeenJobs(seen);
         }
+
+        profilesManager.updateActiveProfileTracker(jobId || targetDedup, {
+          status,
+          cvFile: effectiveCv,
+          coverFile: effectiveCover,
+          fitRating: String(statusAnalysis.overallScore)
+        });
 
         return new Response(JSON.stringify({ success: true, status }), {
           headers: { "Content-Type": "application/json" }
@@ -2426,6 +2523,94 @@ serve({
         return new Response(JSON.stringify({ success: false, error: "Unable to retrieve description from posting portal." }), { status: 404 });
       } catch (err: any) {
         return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+      }
+    }
+
+    // API: POST /api/jobs/import-url (Direct import of any job link from web)
+    if (url.pathname === "/api/jobs/import-url" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { url: jobUrl } = body;
+        if (!jobUrl || typeof jobUrl !== "string" || !jobUrl.trim().startsWith("http")) {
+          return new Response(JSON.stringify({ success: false, error: "Please enter a valid job URL starting with http:// or https://" }), { status: 400 });
+        }
+        const newJob = await scrapeJobFromUrl(jobUrl.trim());
+        const currentProfile = profilesManager.getActiveProfile();
+        const initialAnalysis = analyzeApplication(currentProfile, {
+          company: newJob.company,
+          role: newJob.title,
+          location: newJob.location,
+          keySkills: newJob.key_skills,
+          fullJd: newJob.full_jd
+        });
+        newJob.analysis = initialAnalysis;
+        newJob.fit_score = initialAnalysis.overallScore;
+        newJob.is_imported = true;
+        newJob.imported = true;
+        const seen = readSeenJobs();
+
+        // Check if an existing entry for this URL / job already exists to avoid duplicate entries
+        const targetDedup = getJobDedupKey({ company: newJob.company, title: newJob.title, url: jobUrl.trim() });
+        const normComp = (newJob.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const normRole = (newJob.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+
+        let existingKey: string | null = null;
+        for (const [k, v] of Object.entries(seen)) {
+          const vUrl = (v.url || "").trim();
+          if (vUrl && (vUrl === jobUrl.trim() || vUrl.split("?")[0] === jobUrl.trim().split("?")[0])) {
+            existingKey = k;
+            break;
+          }
+          if (getJobDedupKey(v) === targetDedup) {
+            existingKey = k;
+            break;
+          }
+          const vComp = (v.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const vRole = (v.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+          if (normComp && normRole && vComp === normComp && vRole === normRole) {
+            existingKey = k;
+            break;
+          }
+        }
+
+        let jobToReturn: any;
+        if (existingKey) {
+          const existing = seen[existingKey];
+          existing.is_imported = true;
+          existing.imported = true;
+          if (newJob.full_jd && (!existing.full_jd || existing.full_jd.length < newJob.full_jd.length)) {
+            existing.full_jd = newJob.full_jd;
+          }
+          if (newJob.location && (!existing.location || existing.location === "Remote")) {
+            existing.location = newJob.location;
+          }
+          if (newJob.salary && (!existing.salary || existing.salary === "Not advertised")) {
+            existing.salary = newJob.salary;
+          }
+          if (newJob.key_skills && newJob.key_skills.length) {
+            existing.key_skills = Array.from(new Set([...(existing.key_skills || []), ...newJob.key_skills]));
+          }
+          existing.analysis = existing.analysis || initialAnalysis;
+          existing.fit_score = existing.fit_score || initialAnalysis.overallScore;
+          seen[existingKey] = existing;
+          saveSeenJobs(seen);
+          jobToReturn = existing;
+        } else {
+          seen[newJob.id] = newJob;
+          saveSeenJobs(seen);
+          jobToReturn = newJob;
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          job: jobToReturn,
+          jobId: jobToReturn.id,
+          explanation: `Successfully imported "${jobToReturn.title} at ${jobToReturn.company}".`
+        }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ success: false, error: err.message || "Failed to import job from URL" }), { status: 500 });
       }
     }
 
@@ -2695,22 +2880,51 @@ function updateTracker(
   coverFile = "",
   fit = 0,
   sourceUrl = "",
-  profile?: CandidateProfile
+  profile?: CandidateProfile,
+  jobId?: string
 ) {
   const activeProfile = profile || profilesManager.getActiveProfile();
   const dedupKey = getJobDedupKey({ company, title: role, url: sourceUrl });
   const simpleKey = `${company}_${role}`.toLowerCase();
+  const normComp = (company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const normRole = (role || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+  const normKey = `norm_${normComp}_${normRole}`;
 
   // Save on candidate profile tracker
   if (!activeProfile.tracker) activeProfile.tracker = {};
-  activeProfile.tracker[dedupKey] = {
+  
+  const existing = activeProfile.tracker[dedupKey] || 
+                   activeProfile.tracker[simpleKey] || 
+                   (jobId ? activeProfile.tracker[jobId] : undefined) || {};
+                   
+  const finalCv = cvFile || existing.cvFile || "";
+  const finalCover = coverFile || existing.coverFile || "";
+  const finalFit = fit ? fit.toString() : (existing.fitRating || "90");
+
+  const record = {
     status,
-    cvFile,
-    coverFile,
-    fitRating: fit ? fit.toString() : "90",
+    cvFile: finalCv,
+    coverFile: finalCover,
+    fitRating: finalFit,
     updatedAt: new Date().toISOString()
   };
-  activeProfile.tracker[simpleKey] = activeProfile.tracker[dedupKey];
+
+  activeProfile.tracker[dedupKey] = record;
+  activeProfile.tracker[simpleKey] = record;
+  activeProfile.tracker[normKey] = record;
+  if (jobId) {
+    activeProfile.tracker[jobId] = record;
+  }
+
+  // Also update any matching ct_ keys in tracker
+  if (normComp) {
+    for (const [k, v] of Object.entries(activeProfile.tracker)) {
+      if (k.startsWith("ct_") && k.toLowerCase().includes(normComp)) {
+        activeProfile.tracker[k] = { ...v, status, cvFile: finalCv || v.cvFile, coverFile: finalCover || v.coverFile, updatedAt: new Date().toISOString() };
+      }
+    }
+  }
+
   profilesManager.saveProfile(activeProfile);
 
   const today = new Date().toISOString().split("T")[0];
@@ -2746,8 +2960,8 @@ function updateTracker(
       found = true;
       cols[6] = status;
       if (fit) cols[8] = fit.toString();
-      if (cvFile) cols[10] = cvFile;
-      if (coverFile) cols[11] = coverFile;
+      if (finalCv) cols[10] = finalCv;
+      if (finalCover) cols[11] = finalCover;
       if (sourceUrl && !cols[12]) cols[12] = sourceUrl;
       return cols.map(c => (c || "").includes(",") ? `"${c}"` : (c || "")).join(",");
     }
@@ -2768,8 +2982,8 @@ function updateTracker(
       "",
       (fit || 0).toString(),
       `Candidate: ${activeProfile.name}. Created by AI Job Search Studio. Review sponsorship and document evidence before submission.`,
-      cvFile || "",
-      coverFile || "",
+      finalCv || "",
+      finalCover || "",
       sourceUrl ? (sourceUrl.includes(",") ? `"${sourceUrl}"` : sourceUrl) : "",
       ""
     ].join(",");

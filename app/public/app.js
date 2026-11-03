@@ -107,6 +107,16 @@ const btnParseResumeRun = document.getElementById("btnParseResumeRun");
 const rawResumeInput = document.getElementById("rawResumeInput");
 const importSpinner = document.getElementById("importSpinner");
 
+const btnImportJobLink = document.getElementById("btnImportJobLink");
+const importJobLinkModal = document.getElementById("importJobLinkModal");
+const btnCloseImportJobModal = document.getElementById("btnCloseImportJobModal");
+const btnCancelImportJobModal = document.getElementById("btnCancelImportJobModal");
+const btnSubmitImportJob = document.getElementById("btnSubmitImportJob");
+const importJobUrlInput = document.getElementById("importJobUrlInput");
+const importJobSpinner = document.getElementById("importJobSpinner");
+const importJobBtnText = document.getElementById("importJobBtnText");
+const importJobStatus = document.getElementById("importJobStatus");
+
 const aiConfigModal = document.getElementById("aiConfigModal");
 const btnCloseAiModal = document.getElementById("btnCloseAiModal");
 const btnTestAiConnection = document.getElementById("btnTestAiConnection");
@@ -257,10 +267,93 @@ function setupEventListeners() {
     if (e.target === scheduleModal) closeScheduleModal();
   });
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && scheduleModal?.style.display === "flex") {
-      closeScheduleModal();
+    if (e.key === "Escape") {
+      if (scheduleModal?.style.display === "flex") closeScheduleModal();
+      if (importJobLinkModal?.style.display === "flex") importJobLinkModal.style.display = "none";
     }
   });
+  importJobLinkModal?.addEventListener("click", (e) => {
+    if (e.target === importJobLinkModal) importJobLinkModal.style.display = "none";
+  });
+  btnImportJobLink?.addEventListener("click", () => {
+    if (importJobUrlInput) importJobUrlInput.value = "";
+    if (importJobStatus) {
+      importJobStatus.style.display = "none";
+      importJobStatus.textContent = "";
+    }
+    if (importJobLinkModal) {
+      importJobLinkModal.style.display = "flex";
+      setTimeout(() => importJobUrlInput?.focus(), 50);
+    }
+  });
+  const closeImportJobModal = () => {
+    if (importJobLinkModal) importJobLinkModal.style.display = "none";
+  };
+  btnCloseImportJobModal?.addEventListener("click", closeImportJobModal);
+  btnCancelImportJobModal?.addEventListener("click", closeImportJobModal);
+
+  btnSubmitImportJob?.addEventListener("click", async () => {
+    const urlToImport = importJobUrlInput?.value.trim();
+    if (!urlToImport || !urlToImport.startsWith("http")) {
+      showToast("Please enter a valid job URL starting with http:// or https://");
+      return;
+    }
+
+    btnSubmitImportJob.disabled = true;
+    if (importJobSpinner) importJobSpinner.style.display = "inline-block";
+    if (importJobBtnText) importJobBtnText.textContent = "Importing...";
+    if (importJobStatus) {
+      importJobStatus.style.display = "block";
+      importJobStatus.style.color = "var(--apple-blue)";
+      importJobStatus.textContent = "Fetching job description and computing ATS match...";
+    }
+
+    try {
+      const res = await fetch("/api/jobs/import-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: urlToImport })
+      });
+      const data = await res.json();
+      if (data.success && data.job) {
+        closeImportJobModal();
+        await fetchJobs();
+        currentFilter = "imported";
+        document.querySelectorAll(".nav-item").forEach(i => i.classList.remove("active"));
+        const importedNav = document.querySelector('.nav-item[data-filter="imported"]');
+        if (importedNav) importedNav.classList.add("active");
+        renderJobs();
+        const target = allJobs.find(j => j.id === data.job.id) || data.job;
+        selectJob(target);
+        showToast(`✨ ${data.explanation || `Imported ${target.title}`}`);
+      } else {
+        if (importJobStatus) {
+          importJobStatus.style.color = "var(--apple-red, #ff453a)";
+          importJobStatus.textContent = data.error || "Failed to import job from this URL.";
+        }
+        showToast(data.error || "Failed to import job");
+      }
+    } catch (err) {
+      console.error("Import URL error:", err);
+      if (importJobStatus) {
+        importJobStatus.style.color = "var(--apple-red, #ff453a)";
+        importJobStatus.textContent = "Network error connecting to import service.";
+      }
+      showToast("Network error during job import");
+    } finally {
+      btnSubmitImportJob.disabled = false;
+      if (importJobSpinner) importJobSpinner.style.display = "none";
+      if (importJobBtnText) importJobBtnText.textContent = "✨ Import & Select";
+    }
+  });
+
+  importJobUrlInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      btnSubmitImportJob?.click();
+    }
+  });
+
   btnSaveSchedule?.addEventListener("click", saveSchedule);
   btnTestRunSchedule?.addEventListener("click", runScheduleTestNow);
 
@@ -1299,6 +1392,11 @@ async function runScenarioPrompt() {
       if (data.action === "scrape_and_tailor" && data.job) {
         await fetchProfiles();
         await fetchJobs();
+        currentFilter = "imported";
+        document.querySelectorAll(".nav-item").forEach(i => i.classList.remove("active"));
+        const importedNav = document.querySelector('.nav-item[data-filter="imported"]');
+        if (importedNav) importedNav.classList.add("active");
+        renderJobs();
         const targetJob = allJobs.find(j => j.id === data.job.id) || data.job;
         selectJob(targetJob);
         showToast(data.explanation);
@@ -1971,6 +2069,8 @@ function updateBadgeCounts() {
   }
   if (countDraftedEl) countDraftedEl.textContent = drafted;
   if (countAppliedEl) countAppliedEl.textContent = applied;
+  const countImportedEl = document.getElementById("countImported");
+  if (countImportedEl) countImportedEl.textContent = allJobs.filter(isImportedJob).length;
   if (countSponsorsEl) countSponsorsEl.textContent = sponsors;
   if (countExplicitSponsorsEl) countExplicitSponsorsEl.textContent = explicitSponsors;
   const countNewSponsorsEl = document.getElementById("countNewSponsors");
@@ -2036,6 +2136,17 @@ function compareJobsByNewest(a, b) {
   return (b.fit_score || 0) - (a.fit_score || 0);
 }
 
+function isImportedJob(j) {
+  if (!j) return false;
+  return Boolean(
+    j.is_imported ||
+    j.imported ||
+    j.portal === "external-url" ||
+    (j.source && /import|external-url/i.test(j.source)) ||
+    (typeof j.id === "string" && (j.id.startsWith("ext_") || j.id.startsWith("imported_")))
+  );
+}
+
 function filterJobsList() {
   const query = (searchInput.value || "").toLowerCase().trim();
   const radius = activeProfile?.preferredRadiusMiles || 50;
@@ -2062,12 +2173,13 @@ function filterJobsList() {
     if (scenarioFeedFilters.sponsorshipMode === "licensed" && !j.sponsor_verified) return false;
     if (scenarioFeedFilters.sponsorshipMode === "explicit" && !(j.sponsor_verified && j.sponsorship_status === "offered")) return false;
 
-    // Once marked as applied, do not show in 'All Opportunities' or discovery filters; show strictly in 'Applied & Active'
-    if (currentFilter !== "applied" && j.status === "applied") {
+    // Once marked as applied, do not show in 'All Opportunities' or discovery filters; show strictly in 'Applied & Active' (or 'Imported Roles')
+    if (currentFilter !== "applied" && currentFilter !== "imported" && j.status === "applied") {
       return false;
     }
 
     // Filter match
+    if (currentFilter === "imported") return isImportedJob(j);
     if (currentFilter === "remote") return j.is_remote;
     if (currentFilter === "nearby" || currentFilter === "hartlepool_radius") return j.distance_miles <= radius && !j.is_remote;
     if (currentFilter === "nationwide_de") return !j.is_remote && /germany|deutschland|berlin|munich|chemnitz|leipzig|dresden|frankfurt/i.test(j.location);
@@ -2153,6 +2265,7 @@ function renderJobs() {
 
   const filterNames = {
     all: "All Opportunities",
+    imported: "🔗 Imported Postings (via Link)",
     remote: isUk ? "Priority 1: Remote (UK)" : "Priority 1: Remote",
     nearby: `Priority 2: Near ${cityName} (~${radius}mi)`,
     hartlepool_radius: `Priority 2: Near ${cityName} (~${radius}mi)`,
@@ -2205,7 +2318,10 @@ function renderJobs() {
       reed: "Reed", "google-jobs": "Google Jobs", adzuna: "Adzuna", jobicy: "Jobicy",
       arbeitnow: "Arbeitnow", remotive: "Remotive", "external-url": "Imported",
     };
-    const portalTag = `<span class="meta-pill" style="color: #93c5fd; border-color: rgba(147,197,253,0.3); font-weight: 500;">${escapeHtml(portalNames[job.portal] || job.portal || "Source")}</span>`;
+    const isImported = isImportedJob(job);
+    const portalTag = isImported
+      ? `<span class="meta-pill pill-imported">🔗 Imported</span>`
+      : `<span class="meta-pill" style="color: #93c5fd; border-color: rgba(147,197,253,0.3); font-weight: 500;">${escapeHtml(portalNames[job.portal] || job.portal || "Source")}</span>`;
     const isTailored = Boolean(job.tailored_score && job.baseline_score && job.tailored_score !== job.baseline_score);
     const scoreLabel = isTailored
       ? `<span style="font-size: 11px; opacity: 0.65; text-decoration: line-through; margin-right: 3px;">${job.baseline_score}%</span><span style="color: #34d399; font-weight: 700;">🎯 ${job.tailored_score}%</span>`
@@ -2293,7 +2409,15 @@ function selectJob(job) {
   // Update Studio Header
   studioJobTitle.textContent = job.title;
   studioCompanyName.textContent = job.company;
-  studioLocation.textContent = ` · ${job.location} (~${job.distance_miles} mi)`;
+  const distanceStr = (job.distance_miles !== undefined && job.distance_miles !== null && !isNaN(Number(job.distance_miles)))
+    ? ` (~${job.distance_miles} mi)`
+    : "";
+  studioLocation.textContent = ` · ${job.location || "Remote"}${distanceStr}`;
+
+  const studioImportedBadge = document.getElementById("studioImportedBadge");
+  if (studioImportedBadge) {
+    studioImportedBadge.style.display = isImportedJob(job) ? "inline-flex" : "none";
+  }
 
   const atsBadge = document.getElementById("studioAtsBadge");
   if (atsBadge) {
@@ -3071,7 +3195,7 @@ function renderDetailsTab() {
             <div class="ats-dim-header">📍 Location Gate</div>
             <div class="ats-dim-score" style="color: ${locVerdict === 'PASS' ? '#34d399' : '#ff9f0a'};">${locVerdict}</div>
             <div class="ats-dim-bar"><div class="ats-dim-fill" style="width: 100%; background: ${locVerdict === 'PASS' ? '#34d399' : '#ff9f0a'};"></div></div>
-            <div class="ats-dim-note">${escapeHtml(selectedJob.commute_tag)} (~${selectedJob.distance_miles} mi)</div>
+            <div class="ats-dim-note">${escapeHtml(selectedJob.commute_tag)}${(selectedJob.distance_miles !== undefined && selectedJob.distance_miles !== null && !isNaN(Number(selectedJob.distance_miles))) ? ` (~${selectedJob.distance_miles} mi)` : ''}</div>
           </div>
 
           <!-- 5. Visa Sponsorship Gate -->
@@ -3152,7 +3276,7 @@ function renderDetailsTab() {
           <p style="font-size: 12px; color: var(--text-secondary); line-height: 1.6; margin: 0;">
             <b>Job Location:</b> ${escapeHtml(selectedJob.location)}<br>
             <b>Candidate Base:</b> ${escapeHtml(activeProfile?.location || "")}${activeProfile?.postcode ? ` (${activeProfile.postcode})` : ''}<br>
-            <b>Commute Distance:</b> ~${selectedJob.distance_miles} mi (${escapeHtml(selectedJob.commute_tag)})<br>
+            <b>Commute Distance:</b> ${(selectedJob.distance_miles !== undefined && selectedJob.distance_miles !== null && !isNaN(Number(selectedJob.distance_miles))) ? `~${selectedJob.distance_miles} mi (${escapeHtml(selectedJob.commute_tag)})` : escapeHtml(selectedJob.commute_tag || "Remote")}<br>
             <b>Candidate Max Radius:</b> ${activeProfile?.preferredRadiusMiles || 50} miles
           </p>
         </div>
@@ -4026,8 +4150,12 @@ async function markCurrentJobApplied() {
     const data = await res.json();
     if (data.success) {
       selectedJob.status = newStatus;
+      const selComp = (selectedJob.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const selTitle = (selectedJob.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
       allJobs.forEach(j => {
-        if (j.id === selectedJob.id || (j.company === selectedJob.company && j.title === selectedJob.title)) {
+        const jComp = (j.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const jTitle = (j.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
+        if (j.id === selectedJob.id || (j.url && selectedJob.url && j.url === selectedJob.url) || (selComp && selTitle && jComp === selComp && jTitle === selTitle)) {
           j.status = newStatus;
         }
       });

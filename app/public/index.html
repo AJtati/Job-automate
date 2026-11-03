@@ -144,6 +144,17 @@
           </li>
         </ul>
 
+        <div class="nav-section-header">
+          <div class="nav-section-title">🔗 Imported via Link</div>
+          <button class="btn-micro-edit" id="btnImportJobLink" title="Import any job URL from the web">＋ Import Link</button>
+        </div>
+        <ul class="nav-list" id="navListImported">
+          <li class="nav-item" data-filter="imported">
+            <span class="nav-item-left">📥 Imported Roles</span>
+            <span class="nav-badge" id="countImported">0</span>
+          </li>
+        </ul>
+
         <div class="nav-section-title">Sponsorship & Licence Status</div>
         <ul class="nav-list" id="navListSponsors">
           <li class="nav-item" data-filter="sponsor_new">
@@ -216,6 +227,7 @@
             <div class="studio-title-area">
               <div class="studio-title-row">
                 <h2 id="studioJobTitle">Select a Role to View & Curate</h2>
+                <span class="meta-pill pill-imported" id="studioImportedBadge" style="display: none; margin-left: 8px;">🔗 Imported via Link</span>
                 <div class="studio-ats-badge" id="studioAtsBadge" style="display: none;">🎯 <span id="studioAtsScore">95%</span> Match</div>
               </div>
               <div class="studio-company-line">
@@ -977,6 +989,33 @@
             <button type="button" class="btn-primary" id="btnSaveSchedule">💾 Save Schedule</button>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Import Job from Link -->
+  <div class="modal-backdrop" id="importJobLinkModal" style="display: none;">
+    <div class="modal-dialog modal-md">
+      <div class="modal-header">
+        <h3>🔗 Import Job via Link</h3>
+        <button class="modal-close-btn" id="btnCloseImportJobModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.5;">
+          Paste any live job posting URL from company career portals (e.g. Luxoft, Greenhouse, Lever, Workable), LinkedIn, Reed, or direct employer websites. AI Job Search Studio will extract the description, calculate ATS match, and add it directly to your <b>Imported Roles</b>.
+        </p>
+        <div class="form-group">
+          <label style="font-size: 12px; font-weight: 600;">Job Posting URL</label>
+          <input type="url" id="importJobUrlInput" placeholder="https://career.luxoft.com/jobs/... or https://www.linkedin.com/jobs/view/..." style="width: 100%; font-size: 13px;" />
+        </div>
+        <div id="importJobStatus" style="display: none; font-size: 12px; margin-top: 8px; color: var(--apple-blue);"></div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border-subtle);">
+        <button type="button" class="btn-secondary" id="btnCancelImportJobModal">Cancel</button>
+        <button type="button" class="btn-primary" id="btnSubmitImportJob">
+          <span class="spinner" id="importJobSpinner" style="display: none; width: 12px; height: 12px; margin-right: 5px;"></span>
+          <span id="importJobBtnText">✨ Import & Select</span>
+        </button>
       </div>
     </div>
   </div>
