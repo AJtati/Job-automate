@@ -11,6 +11,7 @@ let activeTailoredData = null;
 let currentSortMode = "days";
 let scenarioFeedFilters = {};
 let searchConfig = null;
+let profileJobsCache = {};
 
 // Multi-Profile State
 let allProfiles = [];
@@ -314,10 +315,14 @@ function setupEventListeners() {
       const res = await fetch("/api/jobs/import-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: urlToImport })
+        body: JSON.stringify({
+          url: urlToImport,
+          profileId: activeProfile?.id
+        })
       });
       const data = await res.json();
       if (data.success && data.job) {
+        if (activeProfile?.id) delete profileJobsCache[activeProfile.id];
         closeImportJobModal();
         await fetchJobs();
         currentFilter = "imported";
@@ -890,6 +895,31 @@ async function switchActiveProfile(profileId) {
     } else {
       applyScheduleUI(null);
     }
+
+    // Instantly dynamically switch feed to this profile's cached jobs
+    if (profileJobsCache[profileId] && profileJobsCache[profileId].length > 0) {
+      allJobs = profileJobsCache[profileId];
+      renderLocationNavFilters();
+      updateBadgeCounts();
+      renderJobs();
+      if (allJobs.length > 0) {
+        selectJob(allJobs[0]);
+      }
+    } else {
+      // Clear previous candidate's opportunities immediately so the list never shows mismatched jobs
+      allJobs = [];
+      renderLocationNavFilters();
+      updateBadgeCounts();
+      if (feedCount) feedCount.textContent = "Loading...";
+      if (jobListEl) {
+        jobListEl.innerHTML = `
+          <div style="text-align: center; color: var(--text-tertiary); padding: 50px 15px; font-size: 13px;">
+            <div class="spinner" style="display: inline-block; margin-bottom: 12px; width: 22px; height: 22px; border: 2px solid var(--border-color); border-top-color: var(--apple-blue); border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+            <div style="font-weight: 500; color: var(--text-secondary);">Loading opportunities for ${escapeHtml(targetProfile.name)}...</div>
+          </div>
+        `;
+      }
+    }
   }
 
   try {
@@ -918,7 +948,7 @@ async function switchActiveProfile(profileId) {
       lastKnownSearchCompletedAt = data.lastSearch?.completedAt || data.scheduleStatus?.lastRunAt || null;
       lastKnownJobsCount = data.relevantJobsCount !== undefined ? data.relevantJobsCount : 0;
 
-      await fetchJobs();
+      await fetchJobs(true);
       await fetchDiagnostics();
     }
   } catch (err) {
@@ -2111,9 +2141,13 @@ async function handleAutoSelectBestModel() {
 
 async function fetchJobs(silent = false) {
   try {
-    const res = await fetch("/api/jobs");
+    const profileParam = activeProfile?.id ? `?profileId=${encodeURIComponent(activeProfile.id)}` : "";
+    const res = await fetch(`/api/jobs${profileParam}`);
     const data = await res.json();
     allJobs = data.jobs || [];
+    if (activeProfile?.id) {
+      profileJobsCache[activeProfile.id] = allJobs;
+    }
     renderLocationNavFilters();
     updateBadgeCounts();
     renderJobs();
@@ -2316,13 +2350,21 @@ function compareJobsByNewest(a, b) {
 
 function isImportedJob(j) {
   if (!j) return false;
-  return Boolean(
+  const isImported = Boolean(
     j.is_imported ||
     j.imported ||
     j.portal === "external-url" ||
     (j.source && /import|external-url/i.test(j.source)) ||
     (typeof j.id === "string" && (j.id.startsWith("ext_") || j.id.startsWith("imported_")))
   );
+  if (!isImported) return false;
+  if (j.profileId && activeProfile && j.profileId !== activeProfile.id) {
+    if (Array.isArray(j.imported_by_profiles) && j.imported_by_profiles.includes(activeProfile.id)) {
+      return true;
+    }
+    return false;
+  }
+  return true;
 }
 
 function filterJobsList() {
@@ -2330,6 +2372,13 @@ function filterJobsList() {
   const radius = activeProfile?.preferredRadiusMiles || 50;
 
   const matched = allJobs.filter(j => {
+    // Cross-profile job isolation check on client:
+    if (j.profileId && activeProfile && j.profileId !== activeProfile.id) {
+      if (!(Array.isArray(j.imported_by_profiles) && j.imported_by_profiles.includes(activeProfile.id))) {
+        return false;
+      }
+    }
+
     // Search match: title, trading company, registered sponsor entity, location, and key skills
     const matchSearch = !query ||
       (j.title && j.title.toLowerCase().includes(query)) ||

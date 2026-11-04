@@ -247,5 +247,119 @@ describe("Intelligent Skill Taxonomy, Self-Healing, and Segregation", () => {
     expect(classified.category).toBe("test_automation");
     expect(classified.formatted).toBe(novelSkill);
   });
+
+  test("Imported jobs are strictly isolated to the candidate who imported them and never leak to other profiles", () => {
+    const { isJobRelevantToProfile } = require("../server");
+
+    const devopsProfile = {
+      id: "candidate-devops-track",
+      name: "Alex Jordan",
+      headline: "DevOps Engineer / Platform Engineer",
+      targetRoles: ["DevOps Engineer", "Platform Engineer", "SRE"],
+      location: "London, UK",
+      skills: { cloud: ["AWS", "Azure"], cicd: ["GitHub Actions"] }
+    };
+
+    const dynamicsProfile = {
+      id: "candidate-dynamics-track",
+      name: "Morgan Casey",
+      headline: "Senior Dynamics 365 CRM & Power Platform Developer",
+      targetRoles: ["Dynamics 365 Developer", "Power Platform Consultant"],
+      location: "Manchester, UK",
+      skills: { crm: ["Dynamics 365", "Power Platform"] }
+    };
+
+    // Job imported by DevOps candidate
+    const devopsImportedJob = {
+      id: "ext_1793740001",
+      title: "DevOps Engineer (Kubernetes, AWS)",
+      company: "CloudTech Ltd",
+      location: "Remote / UK",
+      is_imported: true,
+      imported: true,
+      portal: "external-url",
+      profileId: "candidate-devops-track",
+      imported_by_profiles: ["candidate-devops-track"]
+    };
+
+    // Job imported by Dynamics candidate
+    const dynamicsImportedJob = {
+      id: "ext_1793740002",
+      title: "Senior Dynamics 365 CRM Developer",
+      company: "Enterprise CRM Solutions",
+      location: "London / Hybrid",
+      is_imported: true,
+      imported: true,
+      portal: "external-url",
+      profileId: "candidate-dynamics-track",
+      imported_by_profiles: ["candidate-dynamics-track"]
+    };
+
+    // 1. DevOps candidate sees their imported job, but NOT Dynamics imported job
+    expect(isJobRelevantToProfile(devopsImportedJob, devopsProfile, devopsImportedJob.id)).toBe(true);
+    expect(isJobRelevantToProfile(dynamicsImportedJob, devopsProfile, dynamicsImportedJob.id)).toBe(false);
+
+    // 2. Dynamics candidate sees their imported job, but NOT DevOps imported job
+    expect(isJobRelevantToProfile(dynamicsImportedJob, dynamicsProfile, dynamicsImportedJob.id)).toBe(true);
+    expect(isJobRelevantToProfile(devopsImportedJob, dynamicsProfile, devopsImportedJob.id)).toBe(false);
+
+    // 3. If a job is imported by both profiles (multi-imported), both see it
+    const sharedImportedJob = {
+      id: "ext_1793740003",
+      title: "Solutions Architect",
+      company: "Global Tech",
+      location: "Remote / UK",
+      is_imported: true,
+      imported: true,
+      portal: "external-url",
+      imported_by_profiles: ["candidate-devops-track", "candidate-dynamics-track"]
+    };
+    expect(isJobRelevantToProfile(sharedImportedJob, devopsProfile, sharedImportedJob.id)).toBe(true);
+    expect(isJobRelevantToProfile(sharedImportedJob, dynamicsProfile, sharedImportedJob.id)).toBe(true);
+
+    // 4. Third-party profile (e.g. QA) should NOT see the shared job if not in imported_by_profiles
+    const qaProfile = {
+      id: "candidate-qa-track",
+      name: "Taylor Quinn",
+      headline: "QA Engineer",
+      targetRoles: ["QA Engineer"],
+      location: "Bristol, UK"
+    };
+    expect(isJobRelevantToProfile(sharedImportedJob, qaProfile, sharedImportedJob.id)).toBe(false);
+  });
+
+  test("Application analysis is fast and evaluates 50 jobs in under 250ms uncached", () => {
+    const { analyzeApplication } = require("../application_engine");
+    const testProfile = {
+      id: "speed-test-profile",
+      name: "Performance Tester",
+      headline: "Senior Cloud Engineer",
+      targetRoles: ["Cloud Engineer", "DevOps Engineer"],
+      location: "London, UK",
+      skills: { cloud: ["AWS", "Azure", "GCP"], cicd: ["Jenkins", "GitHub Actions"] },
+      experience: [
+        {
+          role: "Cloud Engineer",
+          company: "Cloud Corp",
+          bullets: ["Managed AWS EKS clusters and Terraform modules", "Automated deployments using GitHub Actions"]
+        }
+      ]
+    };
+
+    const mockJd = "We need an AWS and Azure Cloud Engineer with Terraform, Kubernetes, CI/CD, and Python experience.";
+
+    const start = performance.now();
+    for (let i = 0; i < 50; i++) {
+      analyzeApplication(testProfile, {
+        company: `Company ${i}`,
+        role: "Cloud Engineer",
+        location: "London, UK",
+        fullJd: mockJd,
+        keySkills: ["AWS", "Terraform"]
+      });
+    }
+    const duration = performance.now() - start;
+    expect(duration).toBeLessThan(250);
+  });
 });
 

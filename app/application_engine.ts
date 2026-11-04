@@ -277,6 +277,83 @@ function unique<T>(items: T[]): T[] {
   return [...new Set(items)];
 }
 
+// Pre-normalized dictionaries for high-throughput match evaluation
+const NORM_TECH_TERMS: Array<{ term: string; aliases: string[]; normAliases: string[] }> =
+  Object.entries(TECH_TERMS).map(([term, aliases]) => ({
+    term,
+    aliases,
+    normAliases: aliases.map(normalize),
+  }));
+
+const NORM_BEHAVIOR_TERMS: Array<{ term: string; aliases: string[]; normAliases: string[] }> =
+  Object.entries(BEHAVIOR_TERMS).map(([term, aliases]) => ({
+    term,
+    aliases,
+    normAliases: aliases.map(normalize),
+  }));
+
+const termAliasesCache = new Map<string, { raw: string[]; norm: string[] }>();
+function getResolvedTermAliases(term: string): { raw: string[]; norm: string[] } {
+  let cached = termAliasesCache.get(term);
+  if (!cached) {
+    const raw = resolveTermAliases(term);
+    cached = { raw, norm: raw.map(normalize) };
+    termAliasesCache.set(term, cached);
+  }
+  return cached;
+}
+
+const behaviorAliasesCache = new Map<string, { raw: string[]; norm: string[] }>();
+function getResolvedBehaviorAliases(term: string): { raw: string[]; norm: string[] } {
+  let cached = behaviorAliasesCache.get(term);
+  if (!cached) {
+    const raw = resolveBehaviorAliases(term);
+    cached = { raw, norm: raw.map(normalize) };
+    behaviorAliasesCache.set(term, cached);
+  }
+  return cached;
+}
+
+interface NormalizedProfileData {
+  evidence: string[];
+  normEvidence: Array<{ raw: string; norm: string }>;
+  candidateSkills: Array<{ raw: string; norm: string }>;
+  experienceTitles: string[];
+  targetTokens: string[];
+  headlineTokens: string[];
+}
+const profileDataCache = new Map<string, NormalizedProfileData>();
+
+export function clearProfileEvidenceCache(profileId?: string): void {
+  if (profileId) {
+    profileDataCache.delete(profileId);
+  } else {
+    profileDataCache.clear();
+  }
+}
+
+function getNormalizedProfileData(profile: CandidateProfile): NormalizedProfileData {
+  const key = profile.id || profile.name || "default";
+  let cached = profileDataCache.get(key);
+  if (!cached) {
+    const rawEv = profileEvidence(profile);
+    const rawSkills = Object.values(profile.skills || {})
+      .flat()
+      .filter(Boolean)
+      .filter(s => typeof s === "string" && s.length > 2) as string[];
+    cached = {
+      evidence: rawEv,
+      normEvidence: rawEv.map(e => ({ raw: e, norm: normalize(e) })),
+      candidateSkills: rawSkills.map(s => ({ raw: s, norm: normalize(s) })),
+      experienceTitles: (profile.experience || []).flatMap(item => titleTokens(item.role)),
+      targetTokens: (profile.targetRoles || []).flatMap(titleTokens),
+      headlineTokens: titleTokens(profile.headline || "")
+    };
+    profileDataCache.set(key, cached);
+  }
+  return cached;
+}
+
 function profileEvidence(profile: CandidateProfile): string[] {
   const evidence: string[] = [];
   if (profile.summary) evidence.push(profile.summary);
@@ -309,8 +386,14 @@ function evidenceFor(aliases: string[], evidence: string[]): string[] {
 }
 
 function importanceFor(term: string, jd: string): "required" | "preferred" {
-  const line = jd.split(/\r?\n/).find(item => includesAlias(item, [term])) || "";
-  return /nice to have|preferred|desirable|bonus|advantage/i.test(line) ? "preferred" : "required";
+  const normTerm = normalize(term);
+  const lines = jd.split(/\r?\n/);
+  for (const line of lines) {
+    if (normalize(line).includes(normTerm)) {
+      return /nice to have|preferred|desirable|bonus|advantage/i.test(line) ? "preferred" : "required";
+    }
+  }
+  return "required";
 }
 
 function titleTokens(value: string): string[] {
@@ -370,6 +453,9 @@ const tailoredAnalysisCache = new Map<string, ApplicationAnalysis>();
 const MAX_ANALYSIS_CACHE = 5000;
 
 export function clearAnalysisCache(): void {
+  profileDataCache.clear();
+  termAliasesCache.clear();
+  behaviorAliasesCache.clear();
   analysisCache.clear();
   tailoredAnalysisCache.clear();
 }
@@ -380,39 +466,67 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
   if (cached) return cached;
 
   const jd = job.fullJd || "";
-  const evidence = profileEvidence(profile);
-  const combinedEvidence = evidence.join("\n");
-  const candidateSkillsInJd = Object.values(profile.skills || {})
-    .flat()
-    .filter(Boolean)
-    .filter(skill => typeof skill === "string" && skill.length > 2 && includesAlias(jd, [skill]));
+  const normJd = normalize(jd);
+  const pData = getNormalizedProfileData(profile);
+  const evidence = pData.evidence;
+
+  // Fast check: Candidate skills present in normalized JD
+  const candidateSkillsInJd = pData.candidateSkills
+    .filter(s => normJd.includes(s.norm))
+    .map(s => s.raw);
+
+  // Fast check: Recognized tech terms present in normalized JD
+  const matchedTechTerms = NORM_TECH_TERMS
+    .filter(item => item.normAliases.some(aliasNorm => normJd.includes(aliasNorm)))
+    .map(item => item.term);
+
   const requestedTechnical = unique([
-    ...Object.entries(TECH_TERMS).filter(([, aliases]) => includesAlias(jd, aliases)).map(([term]) => term),
+    ...matchedTechTerms,
     ...candidateSkillsInJd,
     ...(job.keySkills || []),
   ]).filter(Boolean);
-  const requestedBehavioral = Object.entries(BEHAVIOR_TERMS).filter(([, aliases]) => includesAlias(jd, aliases)).map(([term]) => term);
 
+  // Fast check: Recognized behavioral terms present in normalized JD
+  const requestedBehavioral = NORM_BEHAVIOR_TERMS
+    .filter(item => item.normAliases.some(aliasNorm => normJd.includes(aliasNorm)))
+    .map(item => item.term);
+
+  // Requirements evidence mapping
   const requirements: RequirementEvidence[] = requestedTechnical.map(term => {
-    const aliases = resolveTermAliases(term);
-    const found = evidenceFor(aliases, evidence);
+    const termData = getResolvedTermAliases(term);
+    const matchingLines: string[] = [];
+    for (let i = 0; i < pData.normEvidence.length; i++) {
+      const lineNorm = pData.normEvidence[i].norm;
+      if (termData.norm.some(aliasNorm => lineNorm.includes(aliasNorm))) {
+        matchingLines.push(pData.normEvidence[i].raw);
+        if (matchingLines.length >= 3) break;
+      }
+    }
     return {
       requirement: term,
       category: "technical",
       importance: importanceFor(term, jd),
-      status: found.length ? "matched" : "gap",
-      evidence: found,
+      status: matchingLines.length ? "matched" : "gap",
+      evidence: matchingLines,
     };
   });
 
   for (const term of requestedBehavioral) {
-    const found = evidenceFor(resolveBehaviorAliases(term), evidence);
+    const behData = getResolvedBehaviorAliases(term);
+    const matchingLines: string[] = [];
+    for (let i = 0; i < pData.normEvidence.length; i++) {
+      const lineNorm = pData.normEvidence[i].norm;
+      if (behData.norm.some(aliasNorm => lineNorm.includes(aliasNorm))) {
+        matchingLines.push(pData.normEvidence[i].raw);
+        if (matchingLines.length >= 3) break;
+      }
+    }
     requirements.push({
       requirement: term,
       category: "behavioral",
       importance: importanceFor(term, jd),
-      status: found.length ? "matched" : "partial",
-      evidence: found,
+      status: matchingLines.length ? "matched" : "partial",
+      evidence: matchingLines,
     });
   }
 
@@ -423,15 +537,26 @@ export function analyzeApplication(profile: CandidateProfile, job: JobInput): Ap
   const technicalScore = techDenominator ? Math.round((techPoints / techDenominator) * 100) : 50;
 
   const jobTitle = titleTokens(job.role);
-  const experienceTitles = (profile.experience || []).flatMap(item => titleTokens(item.role));
-  const titleMatch = overlapScore(jobTitle, experienceTitles);
-  const relevantBullets = evidence.filter(line => requestedTechnical.some(term => includesAlias(line, resolveTermAliases(term)))).length;
+  const titleMatch = overlapScore(jobTitle, pData.experienceTitles);
+
+  let relevantBullets = 0;
+  for (let i = 0; i < pData.normEvidence.length; i++) {
+    const lineNorm = pData.normEvidence[i].norm;
+    const hasMatch = requestedTechnical.some(term => {
+      const termData = getResolvedTermAliases(term);
+      return termData.norm.some(aliasNorm => lineNorm.includes(aliasNorm));
+    });
+    if (hasMatch) relevantBullets++;
+  }
+
   const experienceScore = Math.min(100, Math.round(titleMatch * 0.55 + Math.min(100, relevantBullets * 12) * 0.45));
 
-  const behaviorMatches = requestedBehavioral.filter(term => evidenceFor(resolveBehaviorAliases(term), evidence).length).length;
+  const behaviorMatches = requestedBehavioral.filter(term => {
+    const behData = getResolvedBehaviorAliases(term);
+    return pData.normEvidence.some(e => behData.norm.some(aliasNorm => e.norm.includes(aliasNorm)));
+  }).length;
   const behavioralScore = requestedBehavioral.length ? Math.round((behaviorMatches / requestedBehavioral.length) * 100) : 65;
-  const targetTokens = (profile.targetRoles || []).flatMap(titleTokens);
-  const rawCareerScore = Math.max(overlapScore(jobTitle, targetTokens), overlapScore(jobTitle, titleTokens(profile.headline || "")));
+  const rawCareerScore = Math.max(overlapScore(jobTitle, pData.targetTokens), overlapScore(jobTitle, pData.headlineTokens));
   const domainCheck = checkDomainCompatibility(profile, job);
   const careerScore = domainCheck.compatible ? rawCareerScore : 0;
 

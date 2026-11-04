@@ -262,10 +262,9 @@ interface DiscoveredJob {
   source: string;
 }
 
-function isJobRelevantToProfile(item: any, profile: CandidateProfile, id?: string): boolean {
+export function isJobRelevantToProfile(item: any, profile: CandidateProfile, id?: string): boolean {
   if (!item || !profile) return false;
 
-  // An explicitly imported job is ALWAYS relevant to the candidate who imported it
   const isImported = Boolean(
     item.is_imported ||
     item.imported ||
@@ -274,16 +273,43 @@ function isJobRelevantToProfile(item: any, profile: CandidateProfile, id?: strin
     (typeof id === "string" && (id.startsWith("ext_") || id.startsWith("imported_"))) ||
     (typeof item.id === "string" && (item.id.startsWith("ext_") || item.id.startsWith("imported_")))
   );
-  if (isImported) {
-    if (item.profileId && item.profileId !== profile.id) {
-      return false;
-    }
-    return true;
+
+  // 1. Strict profileId isolation: If job was explicitly tagged with a candidate's profileId
+  if (item.profileId) {
+    if (item.profileId === profile.id) return true;
+    if (Array.isArray(item.imported_by_profiles) && item.imported_by_profiles.includes(profile.id)) return true;
+    return false;
   }
 
-  // If a job was explicitly tagged with a different candidate's profileId, isolate it
-  if (item.profileId && item.profileId !== profile.id) {
+  // 2. If job has imported_by_profiles list, check if candidate is in it
+  if (Array.isArray(item.imported_by_profiles) && item.imported_by_profiles.length > 0) {
+    if (item.imported_by_profiles.includes(profile.id)) return true;
     return false;
+  }
+
+  // 3. Candidate tailored materials isolation: if CV or cover file belongs to another candidate
+  const allProfiles = profilesManager.getAllProfiles();
+  if (item.cv_file) {
+    if (isProfileOwnerOfFile(item.cv_file, profile, allProfiles)) return true;
+    const belongsToOther = allProfiles.some(p => p.id !== profile.id && isProfileOwnerOfFile(item.cv_file, p, allProfiles));
+    if (belongsToOther) return false;
+  }
+  if (item.cover_file) {
+    if (isProfileOwnerOfFile(item.cover_file, profile, allProfiles)) return true;
+    const belongsToOther = allProfiles.some(p => p.id !== profile.id && isProfileOwnerOfFile(item.cover_file, p, allProfiles));
+    if (belongsToOther) return false;
+  }
+  if (item.tailored_by_profile && typeof item.tailored_by_profile === "object") {
+    const owners = Object.keys(item.tailored_by_profile);
+    if (owners.length > 0) {
+      if (owners.includes(profile.id)) return true;
+      return false;
+    }
+  }
+
+  // If this is an unowned imported job, allow it through for the candidate without automated keyword gates
+  if (isImported) {
+    return true;
   }
 
   // Geographic / Country Filter:
@@ -889,7 +915,7 @@ async function fetchJobDescription(job: { id?: string; url?: string; portal?: st
 }
 
 // Scrape and structure any job posting from a direct URL (LinkedIn, Freehire, Reed, Greenhouse, Lever, direct web)
-async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
+async function scrapeJobFromUrl(targetUrl: string, targetProfileId?: string): Promise<any> {
   const seen = readSeenJobs();
   const jobId = `ext_${Date.now()}`;
   let title = "Job Vacancy";
@@ -1013,7 +1039,9 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
     }
   }
 
-  const activeProfile = profilesManager.getActiveProfile();
+  const activeProfile = targetProfileId
+    ? (profilesManager.getProfile(targetProfileId) || profilesManager.getActiveProfile())
+    : profilesManager.getActiveProfile();
   const analysis = fullJd.length >= 80
     ? analyzeApplication(activeProfile, { company, role: title, location, fullJd, keySkills })
     : null;
@@ -1032,6 +1060,8 @@ async function scrapeJobFromUrl(targetUrl: string): Promise<any> {
     date_scraped: new Date().toISOString(),
     source: "Instant URL Import",
     portal: "external-url",
+    profileId: activeProfile.id,
+    imported_by_profiles: [activeProfile.id],
     is_imported: true,
     imported: true,
     sponsor_verified: sponsor.verified,
@@ -1481,7 +1511,10 @@ serve({
     // API: GET /api/jobs
     if (url.pathname === "/api/jobs" && req.method === "GET") {
       const seen = readSeenJobs();
-      const activeProfile = profilesManager.getActiveProfile();
+      const targetProfileId = url.searchParams.get("profileId");
+      const activeProfile = targetProfileId
+        ? (profilesManager.getProfile(targetProfileId) || profilesManager.getActiveProfile())
+        : profilesManager.getActiveProfile();
       const allProfiles = profilesManager.getAllProfiles();
       const tracker = readTracker(activeProfile);
 
@@ -1616,6 +1649,8 @@ serve({
           portal: item.portal || (isImported ? "external-url" : "linkedin-search"),
           is_imported: isImported,
           imported: isImported,
+          profileId: item.profileId || (isImported ? activeProfile.id : undefined),
+          imported_by_profiles: item.imported_by_profiles || (isImported ? [item.profileId || activeProfile.id] : undefined),
           source: item.source || (isImported ? "Instant URL Import" : undefined)
         };
       });
@@ -1634,11 +1669,14 @@ serve({
           const mergedCoverFile = existing.cover_file || job.cover_file || "";
           const mergedFullJd = (existing.full_jd && existing.full_jd.length >= (job.full_jd || "").length) ? existing.full_jd : (job.full_jd || "");
           const isImported = Boolean(existing.is_imported || job.is_imported || existing.imported || job.imported || existing.id?.startsWith("ext_") || job.id?.startsWith("ext_"));
+          const mergedImportedBy = Array.from(new Set([...(existing.imported_by_profiles || []), ...(job.imported_by_profiles || [])]));
 
           uniqueJobsMap.set(dedupKey, {
             ...existing,
             ...job,
             id: (existing.id?.startsWith("ext_") ? existing.id : job.id?.startsWith("ext_") ? job.id : (existing.id || job.id)),
+            profileId: existing.profileId || job.profileId,
+            imported_by_profiles: mergedImportedBy.length ? mergedImportedBy : undefined,
             is_imported: isImported,
             imported: isImported,
             source: existing.source || job.source || (isImported ? "Instant URL Import" : undefined),
@@ -2752,12 +2790,14 @@ serve({
     if (url.pathname === "/api/jobs/import-url" && req.method === "POST") {
       try {
         const body = await req.json();
-        const { url: jobUrl } = body;
+        const { url: jobUrl, profileId: reqProfileId } = body;
         if (!jobUrl || typeof jobUrl !== "string" || !jobUrl.trim().startsWith("http")) {
           return new Response(JSON.stringify({ success: false, error: "Please enter a valid job URL starting with http:// or https://" }), { status: 400 });
         }
-        const newJob = await scrapeJobFromUrl(jobUrl.trim());
-        const currentProfile = profilesManager.getActiveProfile();
+        const currentProfile = reqProfileId
+          ? (profilesManager.getProfile(reqProfileId) || profilesManager.getActiveProfile())
+          : profilesManager.getActiveProfile();
+        const newJob = await scrapeJobFromUrl(jobUrl.trim(), currentProfile.id);
         const initialAnalysis = analyzeApplication(currentProfile, {
           company: newJob.company,
           role: newJob.title,
@@ -2769,6 +2809,15 @@ serve({
         newJob.fit_score = initialAnalysis.overallScore;
         newJob.is_imported = true;
         newJob.imported = true;
+        newJob.profileId = currentProfile.id;
+        newJob.imported_by_profiles = [currentProfile.id];
+        newJob.tailored_by_profile = {
+          [currentProfile.id]: {
+            analysis: initialAnalysis,
+            tailored_score: initialAnalysis.overallScore,
+            updatedAt: new Date().toISOString()
+          }
+        };
         const seen = readSeenJobs();
 
         // Check if an existing entry for this URL / job already exists to avoid duplicate entries
@@ -2800,6 +2849,21 @@ serve({
           const existing = seen[existingKey];
           existing.is_imported = true;
           existing.imported = true;
+          if (!existing.profileId) {
+            existing.profileId = currentProfile.id;
+          }
+          if (!Array.isArray(existing.imported_by_profiles)) {
+            existing.imported_by_profiles = existing.profileId ? [existing.profileId] : [];
+          }
+          if (!existing.imported_by_profiles.includes(currentProfile.id)) {
+            existing.imported_by_profiles.push(currentProfile.id);
+          }
+          if (!existing.tailored_by_profile) existing.tailored_by_profile = {};
+          existing.tailored_by_profile[currentProfile.id] = {
+            analysis: initialAnalysis,
+            tailored_score: initialAnalysis.overallScore,
+            updatedAt: new Date().toISOString()
+          };
           if (newJob.full_jd && (!existing.full_jd || existing.full_jd.length < newJob.full_jd.length)) {
             existing.full_jd = newJob.full_jd;
           }
