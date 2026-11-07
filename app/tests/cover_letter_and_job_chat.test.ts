@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { renderGroundedCoverLetter, renderTailoredResume, cleanEducationItem, formatSummary, LANGUAGE_PACKS } from "../resume_engine";
-import { isProfileOwnerOfFile } from "../server";
+import { isProfileOwnerOfFile, isAllowedWorkspacePath } from "../server";
+import { writeFileSync, readFileSync, unlinkSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   AIService,
   stripThinkingProcess,
@@ -992,5 +994,57 @@ Taylor Reed
     expect(coverLatex).toContain("Taylor Reed");
     expect(coverLatex).toContain("Duna");
     expect(coverLatex).toContain("Application for Platform Engineer");
+  });
+
+  test("isAllowedWorkspacePath restricts document writes to approved directories", () => {
+    // Approved directories
+    expect(isAllowedWorkspacePath("cv/candidate_resume.tex")).toBe(true);
+    expect(isAllowedWorkspacePath("cover_letters/candidate_company_COVER.tex")).toBe(true);
+    expect(isAllowedWorkspacePath("documents/sample.tex")).toBe(true);
+    expect(isAllowedWorkspacePath("templates/resume_default.tex")).toBe(true);
+
+    // Unapproved paths and directory traversal attempts
+    expect(isAllowedWorkspacePath("../../etc/passwd")).toBe(false);
+    expect(isAllowedWorkspacePath("../server.ts")).toBe(false);
+    expect(isAllowedWorkspacePath(".env")).toBe(false);
+    expect(isAllowedWorkspacePath("package.json")).toBe(false);
+    expect(isAllowedWorkspacePath("app/server.ts")).toBe(false);
+  });
+
+  test("Raw LaTeX editing updates and preserves custom document wording on disk", () => {
+    const testDocPath = "cv/test_raw_latex_edit.tex";
+    const fullTestPath = resolve(process.cwd(), testDocPath);
+    const initialLatex = [
+      "\\documentclass[10pt,a4paper]{article}",
+      "\\begin{document}",
+      "\\textbf{Taylor Reed}",
+      "Summary: Platform engineer managing multi-cluster EKS infrastructure v1.26 to v1.31.",
+      "\\end{document}"
+    ].join("\n");
+
+    try {
+      // 1. Initial write
+      writeFileSync(fullTestPath, initialLatex, "utf-8");
+      expect(existsSync(fullTestPath)).toBe(true);
+
+      // 2. User edits raw LaTeX to remove version numbers and adjust wording
+      const editedLatex = initialLatex.replace(
+        "v1.26 to v1.31",
+        "with hands-on ownership of production cluster upgrades"
+      );
+      expect(editedLatex).not.toContain("v1.26 to v1.31");
+      expect(editedLatex).toContain("with hands-on ownership of production cluster upgrades");
+
+      writeFileSync(fullTestPath, editedLatex, "utf-8");
+      const savedContent = readFileSync(fullTestPath, "utf-8");
+
+      expect(savedContent).toBe(editedLatex);
+      expect(savedContent).toContain("Taylor Reed");
+      expect(savedContent).toContain("with hands-on ownership of production cluster upgrades");
+    } finally {
+      if (existsSync(fullTestPath)) {
+        unlinkSync(fullTestPath);
+      }
+    }
   });
 });

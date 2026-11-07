@@ -583,7 +583,9 @@ function setupEventListeners() {
 
   // Studio tabs
   document.querySelectorAll(".tab-btn").forEach(tab => {
-    tab.addEventListener("click", () => {
+    tab.addEventListener("click", async () => {
+      if (typeof window.__saveLatexEditor_cv === "function") await window.__saveLatexEditor_cv();
+      if (typeof window.__saveLatexEditor_cover === "function") await window.__saveLatexEditor_cover();
       document.querySelectorAll(".tab-btn").forEach(t => t.classList.remove("active"));
       tab.classList.add("active");
       currentTab = tab.dataset.tab;
@@ -2973,6 +2975,8 @@ function formatRelativeDate(dateStr, timeStr) {
 function selectJob(job) {
   normalizeJobDisplay(job);
   selectedJob = job;
+  window.__saveLatexEditor_cv = null;
+  window.__saveLatexEditor_cover = null;
 
   // Clear stale tailored cache if it belonged to another job
   if (activeTailoredData && activeTailoredData.jobId && activeTailoredData.jobId !== job.id) {
@@ -3349,6 +3353,149 @@ let currentCoverViewMode = "visual";
 let currentDocLang = "native"; // "native" (original language) or "english"
 let currentRenderJobId = null;
 
+function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
+  let lastSavedCode = initialCode;
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const docLabel = type === "cover" ? "Cover Letter" : "Curated CV";
+
+  container.innerHTML = `
+    <div class="latex-editor-container">
+      <div class="latex-editor-toolbar">
+        <div class="latex-editor-info">
+          <span class="latex-editor-badge">${docLabel} LaTeX</span>
+          <span class="latex-editor-filename">${escapeHtml(docPath)}</span>
+          <span class="latex-editor-status" id="latexStatus_${type}">Ready to edit</span>
+        </div>
+        <div class="latex-editor-actions">
+          <button type="button" class="btn btn-secondary btn-action" id="btnRevertLatex_${type}" style="font-size: 11.5px; padding: 4px 10px;" title="Discard unsaved edits and restore saved version">Revert</button>
+          <button type="button" class="btn btn-primary btn-action" id="btnSaveLatex_${type}" style="font-size: 11.5px; padding: 4px 12px;" title="Save changes to disk and update visual preview (Cmd+S / Ctrl+S)">💾 Save & Apply</button>
+        </div>
+      </div>
+      <textarea id="latexTextarea_${type}" class="latex-code-textarea" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">${escapeHtml(initialCode)}</textarea>
+      <div class="latex-editor-footer">
+        <span>Shortcuts: <b>Cmd+S</b> / <b>Ctrl+S</b> to save &bull; <b>Tab</b> inserts 2 spaces</span>
+        <span id="latexCharCount_${type}">${initialCode.length.toLocaleString()} characters</span>
+      </div>
+    </div>
+  `;
+
+  const textarea = document.getElementById(`latexTextarea_${type}`);
+  const statusEl = document.getElementById(`latexStatus_${type}`);
+  const charCountEl = document.getElementById(`latexCharCount_${type}`);
+  const btnSave = document.getElementById(`btnSaveLatex_${type}`);
+  const btnRevert = document.getElementById(`btnRevertLatex_${type}`);
+
+  function updateState() {
+    if (!textarea) return;
+    const isDirty = textarea.value !== lastSavedCode;
+    if (charCountEl) {
+      charCountEl.textContent = `${textarea.value.length.toLocaleString()} characters`;
+    }
+    if (btnRevert) {
+      btnRevert.disabled = !isDirty;
+      btnRevert.style.opacity = isDirty ? "1" : "0.5";
+      btnRevert.style.cursor = isDirty ? "pointer" : "default";
+    }
+    if (statusEl) {
+      if (isDirty) {
+        statusEl.innerHTML = `<span style="color: #f59e0b; font-weight: 600;">● Unsaved changes</span>`;
+      } else if (statusEl.textContent !== "✓ Saved to disk" && statusEl.textContent !== "Saving...") {
+        statusEl.textContent = "Ready to edit";
+        statusEl.style.color = "var(--text-tertiary)";
+      }
+    }
+  }
+
+  updateState();
+
+  async function doSave() {
+    if (!textarea) return false;
+    const newContent = textarea.value;
+    if (statusEl) {
+      statusEl.textContent = "Saving...";
+      statusEl.style.color = "var(--text-secondary)";
+    }
+    try {
+      const res = await fetch("/api/document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: docPath, content: newContent })
+      });
+      const data = await res.json();
+      if (data.success) {
+        lastSavedCode = newContent;
+        if (statusEl) {
+          statusEl.textContent = "✓ Saved to disk";
+          statusEl.style.color = "#10b981";
+        }
+        if (typeof onSaved === "function") {
+          onSaved(newContent);
+        }
+        showToast("LaTeX saved successfully!");
+        setTimeout(() => {
+          if (textarea && textarea.value === lastSavedCode && statusEl) {
+            statusEl.textContent = "Ready to edit";
+            statusEl.style.color = "var(--text-tertiary)";
+          }
+        }, 2200);
+        updateState();
+        return true;
+      } else {
+        if (statusEl) {
+          statusEl.textContent = "⚠️ Save failed";
+          statusEl.style.color = "#ef4444";
+        }
+        showToast(`Save failed: ${data.error || "Unknown error"}`);
+        return false;
+      }
+    } catch (err) {
+      if (statusEl) {
+        statusEl.textContent = "⚠️ Save error";
+        statusEl.style.color = "#ef4444";
+      }
+      showToast(`Save error: ${err.message || err}`);
+      return false;
+    }
+  }
+
+  window[`__saveLatexEditor_${type}`] = async () => {
+    if (textarea && textarea.value !== lastSavedCode) {
+      await doSave();
+    }
+  };
+
+  textarea.addEventListener("input", updateState);
+
+  textarea.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      doSave();
+      return;
+    }
+
+    if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const val = textarea.value;
+      textarea.value = val.substring(0, start) + "  " + val.substring(end);
+      textarea.selectionStart = textarea.selectionEnd = start + 2;
+      updateState();
+    }
+  });
+
+  btnSave?.addEventListener("click", () => doSave());
+
+  btnRevert?.addEventListener("click", () => {
+    if (!textarea || textarea.value === lastSavedCode) return;
+    textarea.value = lastSavedCode;
+    updateState();
+    showToast("Restored last saved LaTeX code");
+  });
+}
+
 async function renderCVTab() {
   const targetJob = selectedJob;
   if (!targetJob) return;
@@ -3478,19 +3625,27 @@ async function renderCVTab() {
   document.getElementById("btnRevealCV")?.addEventListener("click", () => revealInFinder("cv"));
 
   document.getElementById("btnCopyCV")?.addEventListener("click", () => {
-    navigator.clipboard.writeText(texCode);
+    const editor = document.getElementById("latexTextarea_cv");
+    const textToCopy = (currentCVViewMode === "code" && editor) ? editor.value : texCode;
+    navigator.clipboard.writeText(textToCopy);
     showToast("LaTeX CV code copied to clipboard!");
   });
 
-  document.getElementById("btnToggleCVMode")?.addEventListener("click", () => {
+  document.getElementById("btnToggleCVMode")?.addEventListener("click", async () => {
+    if (currentCVViewMode === "code") {
+      const saver = window.__saveLatexEditor_cv;
+      if (typeof saver === "function") {
+        await saver();
+      }
+    }
     currentCVViewMode = currentCVViewMode === "visual" ? "code" : "visual";
     renderCVTab();
   });
 
   if (currentCVViewMode === "code") {
-    document.getElementById("cvContainer").innerHTML = `
-      <div class="doc-latex-box" style="max-height: 700px; font-size: 12px;">${escapeHtml(texCode)}</div>
-    `;
+    setupLatexEditor("cvContainer", "cv", cvPath, texCode, (saved) => {
+      texCode = saved;
+    });
     return;
   }
 
@@ -4063,25 +4218,36 @@ async function renderCoverTab() {
   const coverParagraphs = extractCoverParagraphs(texCode);
 
   document.getElementById("btnCopyCoverText")?.addEventListener("click", () => {
-    const textToCopy = coverParagraphs.length ? coverParagraphs.join("\n\n") : texCode;
+    const editor = document.getElementById("latexTextarea_cover");
+    const activeTex = (currentCoverViewMode === "code" && editor) ? editor.value : texCode;
+    const paras = extractCoverParagraphs(activeTex);
+    const textToCopy = paras.length ? paras.join("\n\n") : activeTex;
     navigator.clipboard.writeText(textToCopy);
     showToast("Plain text cover letter copied!");
   });
 
   document.getElementById("btnCopyCover")?.addEventListener("click", () => {
-    navigator.clipboard.writeText(texCode);
+    const editor = document.getElementById("latexTextarea_cover");
+    const textToCopy = (currentCoverViewMode === "code" && editor) ? editor.value : texCode;
+    navigator.clipboard.writeText(textToCopy);
     showToast("Cover Letter code copied!");
   });
 
-  document.getElementById("btnToggleCoverMode")?.addEventListener("click", () => {
+  document.getElementById("btnToggleCoverMode")?.addEventListener("click", async () => {
+    if (currentCoverViewMode === "code") {
+      const saver = window.__saveLatexEditor_cover;
+      if (typeof saver === "function") {
+        await saver();
+      }
+    }
     currentCoverViewMode = currentCoverViewMode === "visual" ? "code" : "visual";
     renderCoverTab();
   });
 
   if (currentCoverViewMode === "code") {
-    document.getElementById("coverContainer").innerHTML = `
-      <div class="doc-latex-box" style="max-height: 700px; font-size: 12px;">${escapeHtml(texCode)}</div>
-    `;
+    setupLatexEditor("coverContainer", "cover", coverPath, texCode, (saved) => {
+      texCode = saved;
+    });
     return;
   }
 
@@ -5231,6 +5397,11 @@ async function tailorCurrentJob(force = true, customInstructions = null) {
 async function downloadPDF(type) {
   if (!selectedJob) return;
 
+  const activeEditorSaver = window[`__saveLatexEditor_${type}`];
+  if (typeof activeEditorSaver === "function") {
+    await activeEditorSaver();
+  }
+
   const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
   if (type === "cover") {
@@ -5314,6 +5485,14 @@ async function downloadPDF(type) {
 
 async function openInPreview(type) {
   if (!selectedJob) return;
+
+  const activeEditorSaver = window[`__saveLatexEditor_${type}`];
+  if (typeof activeEditorSaver === "function") {
+    await activeEditorSaver();
+    await downloadPDF(type);
+    return;
+  }
+
   const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
   if (type === "cover") {

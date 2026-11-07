@@ -74,7 +74,7 @@ function readLastSearchStatus(): any | null {
   try { return existsSync(LAST_SEARCH_STATUS_FILE) ? JSON.parse(readFileSync(LAST_SEARCH_STATUS_FILE, "utf-8")) : null; } catch { return null; }
 }
 
-function isAllowedWorkspacePath(path: string): boolean {
+export function isAllowedWorkspacePath(path: string): boolean {
   const candidate = resolve(ROOT_DIR, path);
   const allowed = ["cv", "cover_letters", "documents", "templates"].map(folder => resolve(ROOT_DIR, folder));
   return allowed.some(folder => {
@@ -3255,6 +3255,31 @@ serve({
         });
       }
       return new Response(JSON.stringify({ error: "File not found" }), { status: 404 });
+    }
+
+    // API: POST /api/document (save edited raw LaTeX document)
+    if (url.pathname === "/api/document" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { path: docPath, content } = body;
+        if (!docPath || typeof content !== "string") {
+          return new Response(JSON.stringify({ error: "Missing path or content" }), { status: 400 });
+        }
+        if (!isAllowedWorkspacePath(docPath)) {
+          return new Response(JSON.stringify({ error: "Path is outside allowed document folders" }), { status: 403 });
+        }
+        const fullPath = resolve(ROOT_DIR, docPath);
+        if (fullPath.toLowerCase().endsWith(".pdf")) {
+          return new Response(JSON.stringify({ error: "Cannot write directly to PDF file" }), { status: 400 });
+        }
+        mkdirSync(dirname(fullPath), { recursive: true });
+        writeFileSync(fullPath, content, "utf-8");
+        return new Response(JSON.stringify({ success: true, path: docPath }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message || "Failed to save document" }), { status: 500 });
+      }
     }
 
     if (url.pathname === "/api/pdf" && req.method === "GET") {
