@@ -535,6 +535,89 @@ html[data-platform="windows"] .titlebar input {
   box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.2);
 }
 
+.feed-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 2px 0 2px 0;
+  min-width: 0;
+}
+
+.filter-pill-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.filter-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+  margin: 0 3px;
+  flex-shrink: 0;
+}
+
+.filter-chip {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 160ms var(--ease-out);
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.2;
+}
+
+.filter-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.filter-chip.active {
+  background: rgba(10, 132, 255, 0.18);
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.45);
+  font-weight: 600;
+}
+
+.filter-chip.active-warning {
+  background: rgba(251, 146, 60, 0.18);
+  color: #fb923c;
+  border-color: rgba(251, 146, 60, 0.45);
+  font-weight: 600;
+}
+
+.filter-chip.active-green {
+  background: rgba(48, 209, 88, 0.18);
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.45);
+  font-weight: 600;
+}
+
+.filter-reset-btn {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: var(--radius-button);
+  transition: color 150ms var(--ease-out);
+}
+
+.filter-reset-btn:hover {
+  color: var(--apple-red, #ff453a);
+}
+
 .feed-sync-status {
   display: flex;
   align-items: center;
@@ -1261,13 +1344,366 @@ html[data-platform="windows"] .titlebar input {
 .doc-preview-container {
   background: #ffffff;
   color: #111827;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border-radius: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
   padding: 36px 44px;
   font-family: var(--font-family);
   line-height: 1.5;
   max-width: 820px;
   margin: 0 auto;
+}
+
+/* ==========================================================================
+   ATS Resume & Cover Letter Pixel-Perfect LaTeX Twin (0ms Zero-Latency Engine)
+   ========================================================================== */
+
+.ats-resume-sheet,
+.ats-cover-sheet {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border-radius: 2px !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+  margin: 0 auto 32px auto !important;
+  box-sizing: border-box !important;
+  text-rendering: optimizeLegibility !important;
+  -webkit-font-smoothing: antialiased !important;
+}
+
+.ats-resume-sheet {
+  max-width: 820px;
+  padding: 44px 48px;
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, "Nimbus Roman No9 L", serif;
+  font-size: 10pt;
+  line-height: 1.25;
+}
+
+.ats-resume-sheet * {
+  color: #000000;
+  box-sizing: border-box;
+}
+
+.ats-resume-sheet .ats-header {
+  text-align: center;
+  margin-bottom: 8px;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.ats-resume-sheet .ats-name {
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, serif;
+  font-size: 21pt;
+  font-weight: 700;
+  font-variant: small-caps;
+  letter-spacing: 0.6px;
+  line-height: 1.15;
+  margin: 0 0 3px 0;
+  color: #000000;
+}
+
+.ats-resume-sheet .ats-role {
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, serif;
+  font-size: 11pt;
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 0 0 4px 0;
+  color: #000000;
+}
+
+.ats-resume-sheet .ats-contact {
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, serif;
+  font-size: 9.5pt;
+  line-height: 1.25;
+  color: #000000;
+}
+
+.ats-resume-sheet .ats-contact a {
+  color: #000000;
+  text-decoration: none;
+}
+
+.ats-resume-sheet .ats-contact a:hover {
+  text-decoration: underline;
+}
+
+.ats-resume-sheet .ats-section {
+  margin-top: 8px;
+}
+
+.ats-resume-sheet .ats-section-title {
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, serif;
+  font-size: 11.5pt;
+  font-weight: 700;
+  font-variant: small-caps;
+  letter-spacing: 0.5px;
+  color: #000000;
+  border-bottom: 0.75pt solid #000000;
+  padding-bottom: 1px;
+  margin: 8px 0 4px 0;
+  text-transform: none;
+}
+
+.ats-resume-sheet .ats-summary {
+  font-size: 9.5pt;
+  line-height: 1.28;
+  color: #000000;
+  margin: 4px 0 6px 0;
+  text-align: justify;
+}
+
+.ats-resume-sheet .ats-entry {
+  margin-top: 5px;
+  margin-bottom: 4px;
+}
+
+.ats-resume-sheet .ats-subheading-row1 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 10pt;
+  line-height: 1.25;
+  color: #000000;
+}
+
+.ats-resume-sheet .ats-subheading-row1 .ats-company {
+  font-weight: 700;
+  color: #000000;
+}
+
+.ats-resume-sheet .ats-subheading-row1 .ats-location {
+  font-weight: 400;
+  color: #000000;
+  text-align: right;
+  white-space: nowrap;
+  margin-left: 12px;
+}
+
+.ats-resume-sheet .ats-subheading-row2 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 9.5pt;
+  font-style: italic;
+  line-height: 1.25;
+  color: #000000;
+  margin-bottom: 2px;
+}
+
+.ats-resume-sheet .ats-subheading-row2 .ats-title {
+  font-style: italic;
+  color: #000000;
+}
+
+.ats-resume-sheet .ats-subheading-row2 .ats-dates {
+  font-style: italic;
+  color: #000000;
+  text-align: right;
+  white-space: nowrap;
+  margin-left: 12px;
+}
+
+.ats-resume-sheet .ats-bullet-list {
+  list-style-type: disc;
+  padding-left: 18px;
+  margin: 2px 0 5px 0;
+  font-size: 9.5pt;
+  line-height: 1.25;
+  color: #000000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ats-resume-sheet .ats-bullet-list li {
+  margin-bottom: 0;
+  color: #000000;
+  line-height: 1.25;
+}
+
+.ats-resume-sheet .ats-skills-block {
+  font-size: 9.5pt;
+  line-height: 1.35;
+  color: #000000;
+  margin-top: 3px;
+}
+
+.ats-resume-sheet .ats-skills-line {
+  margin-bottom: 2px;
+  color: #000000;
+}
+
+.ats-resume-sheet .ats-skill-cat {
+  font-weight: 700;
+  color: #000000;
+}
+
+/* Cover Letter Sheet (Pixel-Perfect LaTeX CSS Twin) */
+.ats-cover-sheet {
+  max-width: 820px;
+  padding: 48px 54px;
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, "Nimbus Roman No9 L", serif !important;
+  font-size: 11pt;
+  line-height: 1.45;
+  color: #000000 !important;
+  background: #ffffff !important;
+}
+
+.ats-cover-sheet * {
+  color: #000000 !important;
+  box-sizing: border-box;
+}
+
+.ats-cover-sheet .ats-cover-header {
+  text-align: left;
+  margin-bottom: 0;
+}
+
+.ats-cover-sheet .ats-cover-header.centered {
+  text-align: center;
+}
+
+.ats-cover-sheet .ats-cover-name {
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, serif;
+  font-size: 18pt;
+  font-weight: 700;
+  color: #000000 !important;
+  line-height: 1.2;
+  margin-bottom: 3px;
+}
+
+.ats-cover-sheet .ats-cover-header.centered .ats-cover-name {
+  font-size: 21pt;
+  font-variant: small-caps;
+  letter-spacing: 0.6px;
+  margin-bottom: 4px;
+}
+
+.ats-cover-sheet .ats-cover-headline {
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, serif;
+  font-size: 11pt;
+  color: #374151 !important;
+  margin-bottom: 4px;
+  font-weight: 700;
+}
+
+.ats-cover-sheet .ats-cover-contact {
+  font-family: "Latin Modern Roman", "Computer Modern Roman", "TeX Gyre Termes", "Times New Roman", Times, serif;
+  font-size: 9.5pt;
+  color: #4b5563 !important;
+  line-height: 1.35;
+}
+
+.ats-cover-sheet .ats-cover-contact a {
+  color: #000000 !important;
+  text-decoration: underline;
+}
+
+.ats-cover-sheet .ats-cover-contact a:hover {
+  text-decoration: underline;
+}
+
+.ats-cover-sheet .ats-cover-divider {
+  width: 100%;
+  height: 0;
+  border-top: 0.75pt solid #000000 !important;
+  margin-top: 8px;
+  margin-bottom: 16px;
+}
+
+.ats-cover-sheet .ats-cover-date {
+  font-family: inherit;
+  color: #374151 !important;
+  font-size: 10pt;
+  margin-bottom: 16px;
+}
+
+.ats-cover-sheet .ats-cover-recipient {
+  font-family: inherit;
+  color: #000000 !important;
+  font-size: 10.5pt;
+  line-height: 1.35;
+  margin-bottom: 16px;
+}
+
+.ats-cover-sheet .ats-cover-subject {
+  font-family: inherit;
+  font-size: 12pt;
+  font-weight: 700;
+  color: #000000 !important;
+  margin-bottom: 14px;
+}
+
+.ats-cover-sheet .ats-cover-salutation {
+  font-family: inherit;
+  font-size: 11pt;
+  color: #000000 !important;
+  margin-bottom: 12px;
+}
+
+.ats-cover-sheet .ats-cover-body p {
+  font-family: inherit;
+  font-size: 11pt;
+  color: #000000 !important;
+  line-height: 1.48;
+  margin-top: 0;
+  margin-bottom: 13px;
+  text-align: justify;
+  text-justify: inter-word;
+}
+
+.ats-cover-sheet .ats-cover-body ul {
+  margin: 6px 0 14px 20px;
+  padding: 0;
+}
+
+.ats-cover-sheet .ats-cover-body li {
+  font-family: inherit;
+  font-size: 10.5pt;
+  line-height: 1.42;
+  margin-bottom: 4px;
+  text-align: justify;
+}
+
+.ats-cover-sheet .ats-cover-signoff {
+  margin-top: 18px;
+  font-family: inherit;
+  font-size: 11pt;
+  color: #000000 !important;
+  line-height: 1.4;
+}
+
+.ats-cover-sheet .ats-cover-signature-gap {
+  height: 28pt;
+}
+
+.ats-cover-sheet .ats-cover-signer {
+  font-family: inherit;
+  font-size: 11pt;
+  font-weight: 700;
+  color: #000000 !important;
+}
+
+.ats-cover-sheet .ats-cover-signer-title {
+  font-family: inherit;
+  font-size: 10pt;
+  color: #4b5563 !important;
+  margin-top: 2px;
+}
+
+.pill-chip {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.pill-chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.25);
 }
 
 .doc-header {
@@ -2351,9 +2787,11 @@ html[data-platform="windows"] .titlebar input {
     max-width: 100% !important;
     background: transparent !important;
   }
-  .doc-preview-container {
+  .doc-preview-container,
+  .ats-resume-sheet,
+  .ats-cover-sheet {
     background: #ffffff !important;
-    color: #111827 !important;
+    color: #000000 !important;
     border: none !important;
     box-shadow: none !important;
     padding: 10mm 12mm !important;
@@ -2361,8 +2799,10 @@ html[data-platform="windows"] .titlebar input {
     max-width: 210mm !important;
     min-height: 297mm !important;
   }
-  .doc-preview-container * {
-    color: #111827 !important;
+  .doc-preview-container *,
+  .ats-resume-sheet *,
+  .ats-cover-sheet * {
+    color: #000000 !important;
   }
   .doc-section-title {
     border-bottom: 1.5px solid #111827 !important;

@@ -1,5 +1,5 @@
 import type { ApplicationAnalysis, JobInput } from "./application_engine";
-import { buildGroundedSummary, rankExperienceForJob } from "./application_engine";
+import { buildGroundedSummary, applyUserInstructionsToSummary, rankExperienceForJob } from "./application_engine";
 import type { CandidateProfile } from "./profiles_manager";
 import { sanitizeAndCategorizeSkills } from "./taxonomy";
 
@@ -967,7 +967,8 @@ export function renderTailoredResume(
   analysis: ApplicationAnalysis,
   summary?: string,
   lang?: SupportedLanguage,
-  customDisplayRole?: string
+  customDisplayRole?: string,
+  userInstructions?: string
 ): string {
   const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text, profile.country) || "en";
   const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
@@ -991,7 +992,9 @@ export function renderTailoredResume(
       .replace(/\\section\{Certifications\}/g, `\\section{${pack.certificationsTitle}}`);
   }
 
-  const summaryContent = formatSummary(summary || buildGroundedSummary(profile, job, analysis, resolvedLang));
+  const resolvedSummary = summary || buildGroundedSummary(profile, job, analysis, resolvedLang, userInstructions);
+  const instructedSummary = applyUserInstructionsToSummary(resolvedSummary, userInstructions);
+  const summaryContent = formatSummary(instructedSummary);
   const displayRole = customDisplayRole || getDisplayRole(profile, job, analysis);
 
   // If backbone already has a hardcoded role in \textbf{\large ...}, update it
@@ -1016,7 +1019,8 @@ export function renderGroundedCoverLetter(
   profile: CandidateProfile,
   job: JobInput,
   analysis: ApplicationAnalysis,
-  lang?: SupportedLanguage
+  lang?: SupportedLanguage,
+  userInstructions?: string
 ): string {
   const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text, profile.country) || "en";
   const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
@@ -1086,40 +1090,65 @@ export function renderGroundedCoverLetter(
     }
   }
 
-  const paragraphs = [p1_hook, p2_evidence];
+  let paragraphs = [p1_hook, p2_evidence];
   if (p3_philosophy) paragraphs.push(p3_philosophy);
   paragraphs.push(p4_closing);
+
+  if (userInstructions && userInstructions.trim()) {
+    paragraphs = paragraphs.map(p => applyUserInstructionsToSummary(p, userInstructions));
+  }
 
   const bodyContent = paragraphs.join("\n\n\\par\n\n");
 
   const locale = resolvedLang === "de" ? "de-DE" : (resolvedLang === "es" ? "es-ES" : (resolvedLang === "fr" ? "fr-FR" : (resolvedLang === "it" ? "it-IT" : (resolvedLang === "nl" ? "nl-NL" : "en-GB"))));
   const date = new Date().toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" });
 
+  const contactParts: string[] = [];
+  if (profile.location) contactParts.push(escapeLatex(profile.location));
+  if (profile.phone) contactParts.push(escapeLatex(profile.phone));
+  if (profile.email) contactParts.push(escapeLatex(profile.email));
+  if (profile.linkedin) contactParts.push(escapeLatex(profile.linkedin.replace(/^https?:\/\/(?:www\.)?linkedin\.com\/in\//i, "linkedin.com/in/")));
+  const contactLine = contactParts.join(String.raw` \quad $\cdot$ \quad `);
+
   return String.raw`\documentclass[11pt,a4paper]{article}
-\usepackage[margin=25mm]{geometry}
+\usepackage[margin=24mm]{geometry}
 \usepackage[hidelinks]{hyperref}
 \usepackage{parskip}
-\begin{document}
-\textbf{\Large ${escapeLatex(profile.name)}}\\
-${escapeLatex(profile.location)} $|$ ${escapeLatex(profile.email)} $|$ ${escapeLatex(profile.phone)}
+\usepackage{xcolor}
+\pagestyle{empty}
 
-${escapeLatex(date)}
+\begin{document}
+
+\textbf{\Large ${escapeLatex(profile.name)}}\\[2pt]
+${profile.headline ? `{\\large \\color[gray]{0.35} ${escapeLatex(profile.headline)}}\\\\[3pt]` : ""}
+{\small \color[gray]{0.45} ${contactLine}}
+
+\vspace{6pt}
+\hrule height 0.6pt
+\vspace{14pt}
+
+{\small \color[gray]{0.35} ${escapeLatex(date)}}
+
+\vspace{14pt}
 
 \textbf{Hiring Team}\\
 ${escapeLatex(companyClean)}\\
 ${escapeLatex(job.location || "")}
 
-\vspace{1em}
-\textbf{Application for ${escapeLatex(roleClean)}}
+\vspace{14pt}
 
-\vspace{0.5em}
+\textbf{\large Application for ${escapeLatex(roleClean)}}
+
+\vspace{12pt}
+
 ${pack.dearHiringManager}
 
 ${bodyContent}
 
-${pack.yoursSincerely}
+\vspace{16pt}
 
-${escapeLatex(profile.name)}
+${pack.yoursSincerely.replace(/,$/, "")},\\[28pt]
+\textbf{${escapeLatex(profile.name)}}
 \end{document}
 `;
 }

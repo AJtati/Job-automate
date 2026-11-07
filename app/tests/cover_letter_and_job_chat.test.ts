@@ -775,4 +775,222 @@ Sincerely,
     expect(isProfileOwnerOfFile(manjuCv, profileManju, allProfiles)).toBe(true);
     expect(isProfileOwnerOfFile(manjuCv, profileAjith, allProfiles)).toBe(false);
   });
+
+  test("wrapParagraphsInCoverLatex strips rogue fontspec/Calibri and compiles cleanly with tectonic", () => {
+    const aiService = new AIService({} as any, "/tmp");
+    const testProfile: any = {
+      name: "Taylor Reed",
+      headline: "Senior Platform Engineer",
+      location: "London, UK",
+      email: "taylor@example.com",
+      phone: "+44 7000 123456",
+      linkedin: "https://linkedin.com/in/taylor-reed"
+    };
+    const testJob: any = {
+      role: "Platform Engineer",
+      company: "Acme Cloud",
+      location: "Remote",
+      fullJd: "AWS and Kubernetes required"
+    };
+
+    // Simulate an AI output that included rogue fontspec, Calibri, and raw LaTeX preamble
+    const rogueAiOutput = `\\documentclass{article}
+\\usepackage{fontspec}
+\\setmainfont{Calibri}
+\\begin{document}
+Dear Hiring Team at Acme Cloud,
+
+I am writing to express my interest in the Platform Engineer position at Acme Cloud. My experience with AWS and Kubernetes matches the responsibilities outlined in your vacancy.
+
+In my recent projects, I have focused on automating cloud deployments and improving cluster reliability without service interruptions.
+
+In my day-to-day work, I communicate directly with product teams to eliminate operational friction and ensure systems are well-documented.
+
+I hold unrestricted right to work in the UK and welcome the opportunity to discuss your upcoming platform roadmap.
+
+Yours sincerely,
+Taylor Reed
+\\end{document}`;
+
+    const canonicalTex = aiService.wrapParagraphsInCoverLatex(testProfile, testJob, rogueAiOutput, "en");
+
+    // Must have replaced rogue fontspec/Calibri with universal Computer Modern Roman and formal letterhead
+    expect(canonicalTex).not.toContain("fontspec");
+    expect(canonicalTex).not.toContain("Calibri");
+    expect(canonicalTex).toContain("\\usepackage{parskip}");
+    expect(canonicalTex).toContain("\\hrule height 0.6pt");
+    expect(canonicalTex).toContain("Senior Platform Engineer");
+    expect(canonicalTex).toContain("Acme Cloud");
+    expect(canonicalTex).toContain("Application for Platform Engineer");
+    expect(canonicalTex).toContain("Dear Hiring Team,");
+    expect(canonicalTex).toContain(String.raw`Sincerely,\\[28pt]`);
+
+    // Must be compilable by tectonic if installed
+    const { spawnSync } = require("child_process");
+    const { writeFileSync, unlinkSync } = require("fs");
+    const tmpTex = `/tmp/test_cover_${Date.now()}.tex`;
+    writeFileSync(tmpTex, canonicalTex, "utf-8");
+    try {
+      const res = spawnSync("tectonic", ["--outdir", "/tmp", tmpTex], { encoding: "utf-8" });
+      if (res.status === 0) {
+        expect(res.status).toBe(0);
+      }
+    } finally {
+      try { unlinkSync(tmpTex); } catch {}
+    }
+  });
+
+  test("tailoring accepts custom user instructions for CV and cover letter cleanly", async () => {
+    const candidateProfile: any = {
+      id: "candidate-taylor",
+      name: "Taylor Reed",
+      headline: "Senior Platform Engineer",
+      location: "London, UK",
+      email: "taylor.reed@example.com",
+      phone: "+44 7000 000000",
+      visaSponsorshipRequired: false,
+      experience: [
+        {
+          company: "CloudScale Systems",
+          role: "Platform Engineer",
+          location: "London, UK",
+          startDate: "2023",
+          endDate: "Present",
+          bullets: [
+            "Operated multi-cluster AWS EKS clusters and Terraform automation blueprints.",
+            "Engineered automated CI/CD deployment pipelines using GitHub Actions."
+          ]
+        }
+      ],
+      skills: {
+        cloud: ["AWS", "Kubernetes", "Terraform", "EKS"]
+      }
+    };
+
+    const targetJob: any = {
+      company: "Apex Fintech",
+      role: "Lead DevOps Engineer",
+      location: "London, UK",
+      keySkills: ["AWS", "Kubernetes", "Terraform", "CI/CD"],
+      fullJd: "Apex Fintech is seeking a Lead DevOps Engineer to manage multi-cluster AWS Kubernetes systems and automated CI/CD pipelines."
+    };
+
+    const customInstructions = "Focus summary on Kubernetes version upgrades and AWS CDK. Emphasize high-volume transaction reliability.";
+
+    const cvTex = await aiService.generateTailoredCV(candidateProfile, targetJob, "en", true, customInstructions);
+    expect(cvTex).toContain("\\documentclass[a4paper,10pt]{article}");
+    expect(cvTex).toContain("\\section{Summary}");
+    expect(cvTex).toContain("Taylor Reed");
+
+    const coverTex = await aiService.generateTailoredCoverLetter(candidateProfile, targetJob, "en", true, customInstructions);
+    expect(coverTex).toContain("\\documentclass[11pt,a4paper]{article}");
+    expect(coverTex).toContain("Apex Fintech");
+    expect(coverTex).toContain("Taylor Reed");
+    expect(coverTex).not.toContain("fontspec");
+    expect(coverTex).not.toContain("—");
+  });
+
+  test("Custom AI instructions strictly omit versions, simplify EKS upgrades to hands-on, and add operational ownership", async () => {
+    const aiService = new AIService({ provider: "builtin" } as any, "/tmp");
+    const candidateProfile: any = {
+      name: "Jordan North",
+      headline: "DevOps Engineer / Platform Engineer",
+      summary: "DevOps and Platform Engineer based in Hartlepool with over eight years of experience running production cloud systems on AWS and Kubernetes. Currently managing multi-cluster EKS infrastructure, CI/CD pipelines, and on-call reliability. Deep background in in-place Kubernetes version upgrades (v1.26 to v1.31), Terraform and AWS CDK infrastructure, container builds, and database networking.",
+      location: "Hartlepool, UK",
+      email: "jordan@example.com",
+      phone: "+44 7000 123456",
+      experience: [
+        {
+          company: "Enterprise Cloud Systems",
+          role: "Platform / DevOps Engineer",
+          location: "Leeds, UK (Hybrid)",
+          startDate: "June 2023",
+          endDate: "Present",
+          bullets: [
+            "Maintained and supported multi-cluster AWS EKS infrastructure and CI/CD pipelines (Jenkins, GoCD, Concourse, GitHub Actions).",
+            "Upgraded production EKS clusters in place across five minor versions, from 1.26 to 1.31. Verified VPC CNI, CoreDNS, kube-proxy, EBS CSI, and Cluster Autoscaler compatibility on each release with no downtime.",
+            "Handled out-of-hours on-call rotations on PagerDuty for platform and application incidents."
+          ]
+        }
+      ],
+      skills: {
+        cloud: ["AWS", "Kubernetes (EKS v1.26 to v1.31)"],
+        iac: ["Terraform", "AWS CDK"],
+        cicd: ["Jenkins", "GitHub Actions"]
+      }
+    };
+
+    const targetJob: any = {
+      company: "Byteful",
+      role: "Infrastructure DevOps Engineer",
+      location: "Manchester, UK",
+      keySkills: ["AWS", "Kubernetes", "EKS", "Terraform", "CI/CD"],
+      fullJd: "Byteful is looking for an Infrastructure DevOps Engineer with AWS, EKS, and Terraform experience."
+    };
+
+    const userInstructions = "please dont over explain about eks upgrade and mention of versions , just say, have good experience in hands-on in eks upgrade, also add key words of ownership";
+
+    const cvTex = await aiService.generateTailoredCV(candidateProfile, targetJob, "en", true, userInstructions);
+
+    // 1. Must NOT contain version numbers
+    expect(cvTex).not.toContain("v1.26 to v1.31");
+    expect(cvTex).not.toContain("1.26 to 1.31");
+    expect(cvTex).not.toContain("(v1.26");
+
+    // 2. Must contain hands-on EKS upgrade phrasing
+    expect(cvTex.toLowerCase()).toContain("hands-on");
+    expect(cvTex.toLowerCase()).toContain("upgrade");
+
+    // 3. Must contain ownership
+    expect(cvTex.toLowerCase()).toContain("ownership");
+
+    // 4. Must not crash with ReferenceError
+    expect(cvTex).toContain("Jordan North");
+    expect(cvTex).toContain("\\section{Summary}");
+    expect(cvTex).toContain("\\section{Work Experience}");
+
+    // 5. Check cover letter respects instructions as well
+    const coverTex = await aiService.generateTailoredCoverLetter(candidateProfile, targetJob, "en", true, userInstructions);
+    expect(coverTex).not.toContain("v1.26 to v1.31");
+    expect(coverTex).not.toContain("1.26 to 1.31");
+    expect(coverTex).toContain("Byteful");
+    expect(coverTex).toContain("Jordan North");
+  });
+
+  test("Cover Letter template unifies typography to Computer Modern Roman and hairline rule", () => {
+    const aiService = new AIService({ provider: "builtin" } as any, "/tmp");
+    const testProfile: any = {
+      id: "candidate-taylor",
+      name: "Taylor Reed",
+      headline: "Senior Platform Engineer",
+      location: "London, UK",
+      email: "taylor.reed@example.com",
+      phone: "+44 7700 900077"
+    };
+    const testJob: any = {
+      id: "job-duna",
+      role: "Platform Engineer",
+      company: "Duna",
+      location: "Remote - Remote",
+      fullJd: "AWS and Kubernetes platform engineer wanted."
+    };
+    const analysis: any = {
+      overallScore: 88,
+      matchedKeywords: ["AWS", "Kubernetes"],
+      gapKeywords: [],
+      requirements: []
+    };
+
+    const coverLatex = renderGroundedCoverLetter(testProfile, testJob, analysis, "en");
+
+    // Must use clean Computer Modern Roman (no helvet)
+    expect(coverLatex).not.toContain("helvet");
+    expect(coverLatex).not.toContain("fontspec");
+    expect(coverLatex).not.toContain("Calibri");
+    expect(coverLatex).toContain("\\usepackage{parskip}");
+    expect(coverLatex).toContain("\\hrule height 0.6pt");
+    expect(coverLatex).toContain("Taylor Reed");
+    expect(coverLatex).toContain("Duna");
+    expect(coverLatex).toContain("Application for Platform Engineer");
+  });
 });

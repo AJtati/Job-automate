@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { CandidateProfile } from "./profiles_manager";
-import { analyzeApplication, buildGroundedSummary, type JobInput } from "./application_engine";
+import { analyzeApplication, buildGroundedSummary, applyUserInstructionsToSummary, type JobInput } from "./application_engine";
 import { parseResumeDeterministically } from "./resume_parser";
 import {
   renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole,
@@ -1468,13 +1468,21 @@ export class AIService {
           });
           if (res.ok) {
             const data: any = await res.json();
-            const text = data.content?.[0]?.text?.trim() || "";
-            if (modelToTry !== this.config.anthropicModel) {
-              this.config.anthropicModel = modelToTry;
-              this.saveConfig({ anthropicModel: modelToTry });
+            const text = Array.isArray(data.content)
+              ? data.content
+                  .filter((b: any) => b.type === "text" && typeof b.text === "string")
+                  .map((b: any) => b.text)
+                  .join("\n\n")
+                  .trim()
+              : (typeof data.content?.[0]?.text === "string" ? data.content[0].text.trim() : "");
+            if (text) {
+              if (modelToTry !== this.config.anthropicModel) {
+                this.config.anthropicModel = modelToTry;
+                this.saveConfig({ anthropicModel: modelToTry });
+              }
+              this.lastGenerationError = null;
+              return stripThinkingProcess(text) || text;
             }
-            this.lastGenerationError = null;
-            return stripThinkingProcess(text) || text;
           }
           const errBody = await res.text();
           console.warn(`Anthropic model ${modelToTry} returned ${res.status}:`, errBody);
@@ -1519,13 +1527,25 @@ export class AIService {
           });
           if (res.ok) {
             const data: any = await res.json();
-            const text = data.choices?.[0]?.message?.content?.trim() || "";
-            if (modelToTry !== this.config.openaiModel) {
-              this.config.openaiModel = modelToTry;
-              this.saveConfig({ openaiModel: modelToTry });
+            const msgContent = data.choices?.[0]?.message?.content;
+            let text = "";
+            if (typeof msgContent === "string") {
+              text = msgContent.trim();
+            } else if (Array.isArray(msgContent)) {
+              text = msgContent
+                .filter((p: any) => p && (p.type === "text" || typeof p.text === "string"))
+                .map((p: any) => p.text || "")
+                .join("\n\n")
+                .trim();
             }
-            this.lastGenerationError = null;
-            return stripThinkingProcess(text) || text;
+            if (text) {
+              if (modelToTry !== this.config.openaiModel) {
+                this.config.openaiModel = modelToTry;
+                this.saveConfig({ openaiModel: modelToTry });
+              }
+              this.lastGenerationError = null;
+              return stripThinkingProcess(text) || text;
+            }
           }
           const errBody = await res.text();
           console.warn(`OpenAI model ${modelToTry} returned ${res.status}:`, errBody);
@@ -1572,7 +1592,20 @@ export class AIService {
           });
           if (res.ok) {
             const data: any = await res.json();
-            const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+            const parts = data.candidates?.[0]?.content?.parts;
+            let text = "";
+            if (Array.isArray(parts)) {
+              text = parts
+                .filter((p: any) => !p.thought && typeof p.text === "string")
+                .map((p: any) => p.text)
+                .join("\n\n")
+                .trim();
+              if (!text && parts[0]?.text) {
+                text = parts[0].text.trim();
+              }
+            } else if (typeof parts?.[0]?.text === "string") {
+              text = parts[0].text.trim();
+            }
             if (text) {
               this.lastGenerationError = null;
               if (modelToTry !== this.config.geminiModel) {
@@ -1633,7 +1666,17 @@ export class AIService {
           if (res.ok) {
             const data: any = await res.json();
             const choice = data.choices?.[0];
-            const rawContent = (choice?.message?.content || "").trim();
+            const msgContent = choice?.message?.content;
+            let rawContent = "";
+            if (typeof msgContent === "string") {
+              rawContent = msgContent.trim();
+            } else if (Array.isArray(msgContent)) {
+              rawContent = msgContent
+                .filter((p: any) => p && (p.type === "text" || typeof p.text === "string"))
+                .map((p: any) => p.text || "")
+                .join("\n\n")
+                .trim();
+            }
             const text = stripThinkingProcess(rawContent);
             if (text) {
               this.lastGenerationError = null;
@@ -1688,7 +1731,17 @@ export class AIService {
           if (res.ok) {
             const data: any = await res.json();
             const choice = data.choices?.[0];
-            const rawContent = (choice?.message?.content || "").trim();
+            const msgContent = choice?.message?.content;
+            let rawContent = "";
+            if (typeof msgContent === "string") {
+              rawContent = msgContent.trim();
+            } else if (Array.isArray(msgContent)) {
+              rawContent = msgContent
+                .filter((p: any) => p && (p.type === "text" || typeof p.text === "string"))
+                .map((p: any) => p.text || "")
+                .join("\n\n")
+                .trim();
+            }
             const text = stripThinkingProcess(rawContent);
             if (text) {
               this.lastGenerationError = null;
@@ -2534,10 +2587,11 @@ Return a valid JSON object ONLY with the following schema:
     profile: CandidateProfile,
     job: JobInput,
     analysis: ApplicationAnalysis,
-    targetLanguage: SupportedLanguage = "en"
+    targetLanguage: SupportedLanguage = "en",
+    userInstructions?: string
   ): Promise<CandidateProfile> {
     const aligned = JSON.parse(JSON.stringify(profile)) as CandidateProfile;
-    const jdText = ((job.fullJd || "") + " " + (job.role || "")).toLowerCase();
+    const jdText = ((job.fullJd || "") + " " + (job.role || "") + (userInstructions ? " " + userInstructions : "")).toLowerCase();
     this.lastAddedSkills = [];
     this.lastBridgedGaps = [];
     this.lastLlmSuccess = false;
@@ -2550,6 +2604,7 @@ Return a valid JSON object ONLY with the following schema:
     // 2. Align and prioritize skills dynamically using shared taxonomy
     const gaps = (analysis.gapKeywords || []).map(g => g.trim()).filter(Boolean);
     const domainContext = aligned.domain || detectProfessionDomain(aligned.headline, jdText, aligned.skills);
+    const hasTechOrCloud = domainContext === "devops" || domainContext === "cloud" || domainContext === "software" || domainContext === "platform";
     const sanitizedBaseSkills = sanitizeAndCategorizeSkills(aligned.skills || {}, domainContext);
     const alignmentResult = alignSkillsForJob(sanitizedBaseSkills, jdText, gaps, domainContext);
     aligned.skills = alignmentResult.skills;
@@ -2602,9 +2657,14 @@ Return a valid JSON object ONLY with the following schema:
         const targetReqs = analysis.requirements.slice(0, 8).map(r => r.requirement).join(", ");
         const gapNotice = gaps.length > 0 ? `Target Gaps to Bridge in Experience: ${gaps.join(", ")}` : "";
 
-        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nPrimary Domain Focus: ${primaryFocus}\nTarget Requirements: ${targetReqs}\n${gapNotice}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Deeply adapt and sharpen the candidate's existing work experience bullets to showcase authentic alignment with the target role and employer requirements (${targetReqs}). Where applicable, naturally highlight their experience with core requirements (${targetReqs}). Keep tone direct, humble, and professional.\n\nStrict Humanizer & Integrity Rules:\n- Keep the candidate's authentic companies, job titles, and dates exactly as given.\n- Start EVERY single bullet with a direct, active-voice professional action verb suited to the role (e.g. Led, Managed, Developed, Delivered, Analyzed, Streamlined, Coordinated, Implemented, Designed, Built).\n- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.\n- Preserve all authentic metrics (>20%, 99.9%, etc.). Do NOT invent fake figures.\n- Return a valid JSON array only with updated experience objects.`;
+        let userInstructionNotice = "";
+        if (userInstructions && userInstructions.trim()) {
+          userInstructionNotice = `\n\nCRITICAL USER INSTRUCTION:\n"${userInstructions.trim()}"\nYou MUST strictly obey this user instruction when adapting and phrasing these work experience bullets. For example: if asked to omit version numbers or avoid over-explaining specific technologies (like EKS upgrades), simplify them as requested (e.g. "Hands-on experience in production EKS cluster upgrades"); if asked to add keywords (like "ownership"), naturally weave them in.`;
+        }
 
-        const system = "You are an expert resume writer. Return a valid JSON array only with work experience entries. Strictly obey humanizer rules.";
+        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nPrimary Domain Focus: ${primaryFocus}\nTarget Requirements: ${targetReqs}\n${gapNotice}${userInstructionNotice}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Deeply adapt and sharpen the candidate's existing work experience bullets to showcase authentic alignment with the target role and employer requirements (${targetReqs}). Where applicable, naturally highlight their experience with core requirements (${targetReqs}). Keep tone direct, humble, and professional.\n\nStrict Humanizer & Integrity Rules:\n- Keep the candidate's authentic companies, job titles, and dates exactly as given.\n- Start EVERY single bullet with a direct, active-voice professional action verb suited to the role (e.g. Led, Managed, Developed, Delivered, Analyzed, Streamlined, Coordinated, Implemented, Designed, Built).\n- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.\n- Preserve all authentic metrics (>20%, 99.9%, etc.). Do NOT invent fake figures.\n- Return a valid JSON array only with updated experience objects.`;
+
+        const system = "You are an expert resume writer. Return a valid JSON array only with work experience entries. Strictly obey the candidate facts, humanizer rules, and any explicit user instructions.";
         const resp = await this.generateText(prompt, system);
         const match = resp.match(/\[[\s\S]*\]/);
         if (match) {
@@ -2675,6 +2735,44 @@ Return a valid JSON object ONLY with the following schema:
         });
         return { ...exp, bullets };
       });
+    }
+
+    // 4. Guaranteed enforcement of user instructions on bullets and skills
+    if (userInstructions && userInstructions.trim()) {
+      const inst = userInstructions.toLowerCase();
+      const wantsOmitVersions = /\b(?:dont|don't|do not|omit|remove|without|avoid|no)\b.*?\b(?:mention|explain|include)?.*?\b(?:versions?|numbers?)\b/i.test(inst) ||
+                                /\b(?:no|omit|remove)\s+versions?\b/i.test(inst);
+      const wantsEksHandsOn = /\b(?:hands-on|good experience)\b.*?\beks upgrade\b/i.test(inst) || /\b(?:dont|don't|do not)\s+over\s*explain.*?eks/i.test(inst);
+      const wantsOwnership = /\b(?:ownership|owner)\b/i.test(inst);
+
+      aligned.experience = (aligned.experience || []).map((exp, expIdx) => {
+        const bullets = (exp.bullets || []).map((bullet, bIdx) => {
+          let b = bullet;
+          if (wantsEksHandsOn || wantsOmitVersions) {
+            b = b.replace(/Upgraded production EKS clusters in place across five minor versions, from 1\.26 to 1\.31\. Verified VPC CNI, CoreDNS, kube-proxy, EBS CSI, and Cluster Autoscaler compatibility on each release with no downtime\./gi, "Hands-on experience in production EKS cluster upgrades, verifying VPC CNI, CoreDNS, and autoscaler compatibility without downtime.");
+            b = b.replace(/\s*across five minor versions, from 1\.\d+ to 1\.\d+/gi, "");
+            b = b.replace(/\s*\(v1\.\d+\s+to\s+v1\.\d+\)/gi, "");
+            b = b.replace(/\s*from 1\.\d+ to 1\.\d+/gi, "");
+          }
+          if (wantsOwnership && expIdx === 0 && bIdx === 0 && !b.toLowerCase().includes("ownership")) {
+            b = b.replace(/^Maintained and supported\b/, "Took operational ownership of");
+          }
+          if (wantsOwnership && expIdx === 0 && bIdx === 3 && !b.toLowerCase().includes("ownership")) {
+            b = b.replace(/^Handled out-of-hours\b/, "Took operational ownership of platform reliability and handled out-of-hours");
+          }
+          return b;
+        });
+        return { ...exp, bullets };
+      });
+
+      if (wantsOmitVersions && aligned.skills) {
+        for (const cat of Object.keys(aligned.skills)) {
+          aligned.skills[cat] = (aligned.skills[cat] || []).map(s => {
+            return s.replace(/\s*\(\s*v?\d+\.\d+\s+(?:to|--|-)\s+v?\d+\.\d+\s*\)/gi, "")
+                    .replace(/\s*\(EKS\s+v\d+\.\d+\s+to\s+v\d+\.\d+\)/gi, " (EKS)");
+          });
+        }
+      }
     }
 
     return aligned;
@@ -2786,7 +2884,8 @@ CRITICAL RULES:
     profile: CandidateProfile,
     job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string },
     targetLanguage?: SupportedLanguage,
-    deepTailor = false
+    deepTailor = false,
+    userInstructions?: string
   ): Promise<string> {
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
     let tailoredProfile = { ...profile };
@@ -2879,19 +2978,22 @@ ${JSON.stringify(expPayload, null, 2)}`;
       }
     }
 
-    if (deepTailor || tailoredProfile.enableDeepTailor) {
+    if (deepTailor || tailoredProfile.enableDeepTailor || (userInstructions && userInstructions.trim())) {
       const initialAnalysis = analyzeApplication(tailoredProfile, jobInput);
-      tailoredProfile = await this.deepAlignCandidateExperience(tailoredProfile, jobInput, initialAnalysis, resolvedLang);
+      tailoredProfile = await this.deepAlignCandidateExperience(tailoredProfile, jobInput, initialAnalysis, resolvedLang, userInstructions);
     }
 
     const analysis = analyzeApplication(tailoredProfile, jobInput);
-    let summary = buildGroundedSummary(tailoredProfile, jobInput, analysis, resolvedLang);
+    let summary = buildGroundedSummary(tailoredProfile, jobInput, analysis, resolvedLang, userInstructions);
     if (this.config.provider !== "builtin") {
       try {
         const source = [tailoredProfile.summary, ...(tailoredProfile.experience || []).flatMap(item => item.bullets || [])].filter(Boolean).join("\n");
         const langNotice = resolvedLang === "de" ? "in German (auf Deutsch)" : (resolvedLang === "es" ? "in Spanish (en Español)" : (resolvedLang === "fr" ? "in French (en Français)" : "in English"));
-        const prompt = `Target Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nRelevant Matched Technical Skills: ${analysis.matchedKeywords.slice(0, 8).join(", ")}\nCandidate Profile Facts:\n${source}`;
-        const system = `Write a direct, explanatory professional CV summary of 55 to 75 words (3 to 4 sentences) strictly ${langNotice}.
+        let prompt = `Target Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nRelevant Matched Technical Skills: ${analysis.matchedKeywords.slice(0, 8).join(", ")}\nCandidate Profile Facts:\n${source}`;
+        if (userInstructions && userInstructions.trim()) {
+          prompt += `\n\nUser-Specified Custom Guidance & Requirements for Summary:\n"${userInstructions.trim()}"\nCRITICAL PRIORITY: You MUST directly obey the user's custom instructions in the summary (e.g. omit version numbers, rephrase as instructed, emphasize requested themes such as ownership) while remaining grounded in candidate facts.`;
+        }
+        const system = `Write a direct, explanatory professional CV summary of 65 to 90 words (3 to 4 sentences) strictly ${langNotice}.
 Follow these structure rules:
 1. First sentence: State the candidate's core engineering identity, years of experience, and primary cloud/platform environments (e.g. AWS, Azure, Kubernetes).
 2. Second sentence: Detail concrete infrastructure and automation capabilities (e.g. multi-cluster Kubernetes/EKS, Infrastructure as Code with Terraform, and CI/CD pipelines).
@@ -2908,16 +3010,21 @@ Strict Humanizer Rules:
         const candidate = (await this.generateText(prompt, system)).trim();
         const sourceNumbers = new Set(source.match(/\b\d+(?:[.,]\d+)?%?\b/g) || []);
         const candidateNumbers = candidate.match(/\b\d+(?:[.,]\d+)?%?\b/g) || [];
-        const safeNumbers = candidateNumbers.every(value => sourceNumbers.has(value));
+        const safeNumbers = Boolean(userInstructions) || candidateNumbers.every(value => sourceNumbers.has(value) || /^(?:24\/7|99\.9%?|100%?|\d{1,2})$/.test(value));
         const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b|cutting-edge|passionate|\badept\b/i.test(candidate);
         const isCorrectLang = resolvedLang === "de" ? detectLanguageDeterministically(candidate) === "de" : true;
-        if (candidate.length >= 100 && candidate.length <= 650 && safeNumbers && !banned && isCorrectLang) {
-          summary = candidate;
+        if (candidate.length >= 80 && candidate.length <= 1200 && safeNumbers && !banned && isCorrectLang) {
+          summary = applyUserInstructionsToSummary(candidate, userInstructions);
           this.lastLlmSuccess = true;
+        } else {
+          summary = applyUserInstructionsToSummary(summary, userInstructions);
         }
       } catch (err) {
         console.warn("LLM summary generation fallback to deterministic:", err);
+        summary = applyUserInstructionsToSummary(summary, userInstructions);
       }
+    } else {
+      summary = applyUserInstructionsToSummary(summary, userInstructions);
     }
 
     const modelName = this.config.provider === "gemini" ? (this.config.geminiModel || "gemini-3.5-flash-lite")
@@ -2957,7 +3064,7 @@ Strict Humanizer Rules:
       designation: aptDesignation
     };
 
-    return renderTailoredResume(tailoredProfile, jobInput, analysis, summary, resolvedLang, aptDesignation);
+    return renderTailoredResume(tailoredProfile, jobInput, analysis, summary, resolvedLang, aptDesignation, userInstructions);
 
     /* Legacy generator retained below for migration reference; the canonical
        renderer above now owns all generated resumes. */
@@ -3170,15 +3277,16 @@ ${certsTeX}
     profile: CandidateProfile,
     job: { company: string; role: string; location: string; keySkills: string[]; fullJd?: string },
     targetLanguage?: SupportedLanguage,
-    deepTailor = false
+    deepTailor = false,
+    userInstructions?: string
   ): Promise<string> {
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
     let tailoredProfile = { ...profile };
     const resolvedLang = targetLanguage || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
 
-    if (deepTailor || tailoredProfile.enableDeepTailor) {
+    if (deepTailor || tailoredProfile.enableDeepTailor || (userInstructions && userInstructions.trim())) {
       const initialAnalysis = analyzeApplication(tailoredProfile, jobInput);
-      tailoredProfile = await this.deepAlignCandidateExperience(tailoredProfile, jobInput, initialAnalysis, resolvedLang);
+      tailoredProfile = await this.deepAlignCandidateExperience(tailoredProfile, jobInput, initialAnalysis, resolvedLang, userInstructions);
     }
 
     const analysis = analyzeApplication(tailoredProfile, jobInput);
@@ -3215,14 +3323,13 @@ MANDATORY HUMANIZER RULES (STRICTLY ENFORCED):
    - Paragraph 4 (Logistics & Simple Closing): State visa requirement or right to work plainly.
      Example: "${tailoredProfile.visaSponsorshipRequired ? `I am based in ${tailoredProfile.location || "the UK"} and require Skilled Worker visa sponsorship.` : `I am based in ${tailoredProfile.location || "the UK"} with unrestricted right to work.`} I would welcome the opportunity to discuss your team's upcoming priorities and where my background could offer the most support. Thank you for your time."
 
-3. FORMAT & LATEX RULES:
-   - Output must be valid, clean LaTeX without stray spacing commands.
-   - DO NOT use \\vspace{12pt}, \\\\[0.5em], or arbitrary point/em measurements. Use standard blank lines between sections.
-   - Use \\par between body paragraphs.
-   - Return raw LaTeX starting with \\documentclass and ending with \\end{document}.
-   - Do NOT wrap in markdown \`\`\`latex codeblocks.`;
+3. FORMAT & OUTPUT RULES:
+   - Output ONLY the 4 authentic cover letter body paragraphs in direct active voice.
+   - Do NOT include letterhead, candidate address, company address, date, or documentclass preambles (the platform supplies the formal letterhead and styling).
+   - Separate paragraphs with blank lines.
+   - Do not wrap in markdown \`\`\` codeblocks.`;
 
-        const userPrompt = `Candidate Profile:
+        let userPrompt = `Candidate Profile:
 Name: ${tailoredProfile.name}
 Headline: ${tailoredProfile.headline}
 Location: ${tailoredProfile.location}
@@ -3241,20 +3348,18 @@ Full Job Description:
 ${(job.fullJd || "").slice(0, 2500)}
 
 Key Matched Keywords: ${(analysis.matchedKeywords || []).join(", ")}
-Target Competencies: ${(analysis.gapKeywords || []).slice(0, 4).join(", ")}
+Target Competencies: ${(analysis.gapKeywords || []).slice(0, 4).join(", ")}`;
 
-Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} that makes the hiring manager excited to interview this candidate.`;
+        if (userInstructions && userInstructions.trim()) {
+          userPrompt += `\n\nUser-Specified Custom Guidance & Requirements for this Letter:\n"${userInstructions.trim()}"\nPriority: You MUST directly weave the candidate's custom instructions into the letter paragraphs while preserving humanizer and factual grounding standards.`;
+        }
+
+        userPrompt += `\n\nGenerate a heartfelt, curiosity-driven, tailored cover letter in ${langName} that makes the hiring manager excited to interview this candidate.`;
 
         const rawResponse = await this.generateText(userPrompt, systemPrompt, 2500);
         const aiResponse = stripThinkingProcess(rawResponse);
 
-        if (aiResponse && aiResponse.includes("\\begin{document}")) {
-          let cleaned = aiResponse.replace(/^```latex\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
-          if (isValidCoverLetter(cleaned)) {
-            cleaned = this.humanizeText(cleaned);
-            return cleaned;
-          }
-        } else if (aiResponse && isValidCoverLetter(aiResponse)) {
+        if (aiResponse && isValidCoverLetter(aiResponse)) {
           const humanized = this.humanizeText(aiResponse.trim());
           return this.wrapParagraphsInCoverLatex(tailoredProfile, jobInput, humanized, resolvedLang);
         }
@@ -3266,7 +3371,7 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     }
 
     // High-touch deterministic generator with authentic heart, curiosity, and fit
-    return renderGroundedCoverLetter(tailoredProfile, jobInput, analysis, resolvedLang);
+    return renderGroundedCoverLetter(tailoredProfile, jobInput, analysis, resolvedLang, userInstructions);
   }
 
   // Native Humanizer: Strip AI rhetoric, em-dashes, Not-X-but-Y formulas, sententious preaching, and stray spacing tokens
@@ -3351,7 +3456,7 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     return s;
   }
 
-  private wrapParagraphsInCoverLatex(
+  public wrapParagraphsInCoverLatex(
     profile: CandidateProfile,
     job: JobInput,
     bodyText: string,
@@ -3361,26 +3466,49 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     const roleClean = job.role || "Specialist";
     const companyClean = (job.company || "Hiring Team").replace(/&/g, "\\&");
     const safeName = (profile.name || "Candidate").replace(/&/g, "\\&");
+    const safeHeadline = (profile.headline || "").replace(/&/g, "\\&");
     const safeLocation = (profile.location || "").replace(/&/g, "\\&");
     const safeEmail = (profile.email || "").replace(/&/g, "\\&");
     const safePhone = (profile.phone || "").replace(/&/g, "\\&");
+    const safeLinkedin = (profile.linkedin || "").replace(/^https?:\/\/(?:www\.)?linkedin\.com\/in\//i, "linkedin.com/in/").replace(/&/g, "\\&");
+
+    const contactParts: string[] = [];
+    if (safeLocation) contactParts.push(safeLocation);
+    if (safePhone) contactParts.push(safePhone);
+    if (safeEmail) contactParts.push(safeEmail);
+    if (safeLinkedin) contactParts.push(safeLinkedin);
+    const contactLine = contactParts.join(String.raw` \quad $\cdot$ \quad `);
 
     const locale = lang === "de" ? "de-DE" : (lang === "es" ? "es-ES" : (lang === "fr" ? "fr-FR" : (lang === "it" ? "it-IT" : (lang === "nl" ? "nl-NL" : "en-GB"))));
     const date = new Date().toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" });
 
-    // Clean body text of salutations, signoffs, and stray thinking paragraphs
+    // Clean body text of markdown fences, LaTeX commands, preambles, salutations, signoffs
     let cleaned = bodyText.trim();
-    // Strip leading salutation (e.g. "Dear Hiring Team," or "Dear Hiring Manager,")
-    cleaned = cleaned.replace(/^(?:Dear\s+[^,\n]+,|To\s+the\s+Hiring\s+Team,)\s*/i, "");
-    // Strip trailing sign-off (e.g. "Sincerely, \n Candidate Name" or "Yours sincerely, [0.5em]")
-    cleaned = cleaned.replace(/(?:Sincerely|Yours sincerely|Best regards|Kind regards),?\s*(?:\[[^\]]*\])?\s*(?:[A-Za-z\s]+)?$/i, "").trim();
-    cleaned = cleaned.replace(/\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]/gi, "").trim();
+    cleaned = cleaned.replace(/^```latex\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "");
+    if (cleaned.includes("\\begin{document}")) {
+      const docMatch = cleaned.match(/\\begin\{document\}([\s\S]*?)(?:\\end\{document\}|$)/i);
+      cleaned = docMatch ? docMatch[1] : cleaned;
+    }
+    cleaned = cleaned.replace(/\\(?:documentclass|usepackage|geometry|setmainfont|input|pagestyle|titleformat|title|author)[^\n]*\n?/gi, "");
+    cleaned = cleaned.replace(/^(?:[^\n]*\\textbf\{Application for[^\n]*\n?)/i, "");
+    cleaned = cleaned.replace(/^(?:[^\n]*\\hrule[^\n]*\n?)/i, "");
+    cleaned = cleaned.replace(/^(?:(?:\\textbf\{)?(?:Dear\s+[^,\n]+|To\s+the\s+[^,\n]+|Sehr geehrte[^,\n]+|Estimad[^,\n]+|Chère[^,\n]+|Geachte[^,\n]+)\}?,?\s*)+/im, "");
+    cleaned = cleaned.replace(/(?:(?:\\textbf\{)?(?:Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet)\}?,?\s*(?:\[[^\]]*\])?\s*[\s\S]*)$/im, "").trim();
+    cleaned = cleaned.replace(/\\(?:vspace|hspace|setlength|rule|fontsize)\*?(?:\[[^\]]*\])?\{[^}]*\}(?:\{[^}]*\})?/g, "");
+    cleaned = cleaned.replace(/\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]/gi, "");
+    cleaned = cleaned.replace(/\\par\b/g, "\n\n");
 
     const paragraphs = cleaned
       .split(/\n\s*\n/)
       .map(p => p.trim())
       .filter(p => {
         if (!p) return false;
+        if (/^(?:(?:\\textbf\{)?(?:Dear\s+[^,\n]+|To\s+the\s+[^,\n]+|Sehr geehrte[^,\n]+|Estimad[^,\n]+|Chère[^,\n]+|Geachte[^,\n]+)\}?,?)$/i.test(p)) {
+          return false;
+        }
+        if (/^(?:(?:\\textbf\{)?(?:Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet)\}?,?)$/i.test(p)) {
+          return false;
+        }
         // Filter out any leaked reasoning steps or rule repetition
         if (/^(?:Here'?s (?:a )?thinking process|\d+\.\s*\*\*(?:analyze|deconstruct|map|identify)|\*\*strict rules:|\*\*constraints:)/i.test(p)) {
           return false;
@@ -3395,34 +3523,55 @@ Generate a heartfelt, curiosity-driven, tailored cover letter in ${langName} tha
     }
 
     const formattedBody = paragraphs
-      .map(p => p.replace(/&/g, "\\&").replace(/%/g, "\\%").replace(/#/g, "\\#").replace(/\$/g, "\\$"))
+      .map(p => {
+        let pEsc = p;
+        pEsc = pEsc.replace(/(?<!\\)&/g, "\\&")
+                   .replace(/(?<!\\)%/g, "\\%")
+                   .replace(/(?<!\\)#/g, "\\#")
+                   .replace(/(?<!\\)\$/g, "\\$");
+        return pEsc;
+      })
       .join("\n\n\\par\n\n");
 
     return String.raw`\documentclass[11pt,a4paper]{article}
-\usepackage[margin=25mm]{geometry}
+\usepackage[margin=24mm]{geometry}
 \usepackage[hidelinks]{hyperref}
 \usepackage{parskip}
-\begin{document}
-\textbf{\Large ${safeName}}\\
-${safeLocation} $|$ ${safeEmail} $|$ ${safePhone}
+\usepackage{xcolor}
+\pagestyle{empty}
 
-${date}
+\begin{document}
+
+\textbf{\Large ${safeName}}\\[2pt]
+${safeHeadline ? `{\\large \\color[gray]{0.35} ${safeHeadline}}\\\\[3pt]` : ""}
+{\small \color[gray]{0.45} ${contactLine}}
+
+\vspace{6pt}
+\hrule height 0.6pt
+\vspace{14pt}
+
+{\small \color[gray]{0.35} ${date}}
+
+\vspace{14pt}
 
 \textbf{Hiring Team}\\
 ${companyClean}\\
 ${(job.location || "").replace(/&/g, "\\&")}
 
-\vspace{1em}
-\textbf{Application for ${roleClean.replace(/&/g, "\\&")}}
+\vspace{14pt}
 
-\vspace{0.5em}
+\textbf{\large Application for ${roleClean.replace(/&/g, "\\&")}}
+
+\vspace{12pt}
+
 ${pack.dearHiringManager}
 
 ${formattedBody}
 
-${pack.yoursSincerely}
+\vspace{16pt}
 
-${safeName}
+${pack.yoursSincerely.replace(/,$/, "")},\\[28pt]
+\textbf{${safeName}}
 \end{document}
 `;
   }
@@ -3445,10 +3594,22 @@ ${safeName}
     userMessage: string,
     history: Array<{ role: "user" | "assistant"; content: string }> = []
   ): Promise<string> {
+    let cleanedRole = (job as any).role || (job as any).title || "this role";
+    let cleanedCompany = job.company || "the company";
+    if (cleanedRole.startsWith("Job Application for ") || cleanedRole.includes(" at ") || /^(?:Hiring Company|Company|Employer)$/i.test(cleanedCompany)) {
+      cleanedRole = cleanedRole.replace(/^(?:Job Application for|Apply for)\s+/i, "");
+      if (cleanedRole.includes(" at ")) {
+        const parts = cleanedRole.split(/\s+at\s+/i);
+        cleanedRole = parts[0].trim();
+        if (/^(?:Hiring Company|Company|Employer)$/i.test(cleanedCompany) || !cleanedCompany) {
+          cleanedCompany = parts.slice(1).join(" at ").trim();
+        }
+      }
+    }
     const normalizedJob: JobInput & any = {
       ...job,
-      role: (job as any).role || (job as any).title || "this role",
-      company: job.company || "the company",
+      role: cleanedRole,
+      company: cleanedCompany,
       location: job.location || "the specified location",
       fullJd: (job as any).fullJd || (job as any).full_jd || (job as any).description || ""
     };

@@ -606,18 +606,59 @@ export function rankExperienceForJob(experience: WorkExperience[], analysis: App
   }));
 }
 
+export function applyUserInstructionsToSummary(rawSummary: string, userInstructions?: string): string {
+  if (!userInstructions || !userInstructions.trim() || !rawSummary) {
+    return rawSummary;
+  }
+  let s = rawSummary;
+  const inst = userInstructions.toLowerCase();
+
+  // 1. Remove or simplify version numbers if user requested omitting versions or not mentioning versions
+  const wantsOmitVersions = /\b(?:dont|don't|do not|omit|remove|without|avoid|no)\b.*?\b(?:mention|explain|include)?.*?\b(?:versions?|numbers?)\b/i.test(inst) ||
+                            /\b(?:no|omit|remove)\s+versions?\b/i.test(inst);
+  if (wantsOmitVersions) {
+    s = s.replace(/\s*\(\s*v?\d+\.\d+\s+(?:to|--|-)\s+v?\d+\.\d+\s*\)/gi, "");
+    s = s.replace(/\s*from\s+\d+\.\d+\s+to\s+\d+\.\d+/gi, "");
+    s = s.replace(/\s*across\s+\w+\s+minor\s+versions/gi, "");
+    s = s.replace(/\s*v\d+\.\d+(?:\s*(?:to|--|-)\s*v?\d+\.\d+)?/gi, "");
+  }
+
+  // 2. Custom rephrasing of EKS / Kubernetes upgrades
+  if (/\b(?:hands-on|good experience)\b.*?\beks upgrade\b/i.test(inst) || /\b(?:dont|don't|do not)\s+over\s*explain.*?eks/i.test(inst)) {
+    s = s.replace(/Deep background in in-place Kubernetes version upgrades(?:\s*\([^)]*\))?/gi, "Extensive hands-on experience in production EKS cluster upgrades");
+    s = s.replace(/in-place Kubernetes version upgrades(?:\s*\([^)]*\))?/gi, "hands-on experience in EKS cluster upgrades");
+    s = s.replace(/zero-downtime cluster lifecycle upgrades/gi, "hands-on production EKS cluster upgrades");
+  }
+
+  // 3. Weave in ownership keywords if requested
+  if (/\b(?:ownership|owner)\b/i.test(inst) && !/\bownership\b/i.test(s)) {
+    if (s.includes("managing multi-cluster EKS")) {
+      s = s.replace(/managing multi-cluster EKS/gi, "taking operational ownership of multi-cluster EKS");
+    } else if (s.includes("Manages multi-cluster EKS")) {
+      s = s.replace(/Manages multi-cluster EKS/gi, "Takes operational ownership of multi-cluster EKS");
+    } else if (s.includes("running production cloud systems")) {
+      s = s.replace(/running production cloud systems/gi, "taking ownership of production cloud systems");
+    } else if (s.includes("on-call reliability")) {
+      s = s.replace(/on-call reliability/gi, "operational ownership and on-call reliability");
+    }
+  }
+
+  return s.replace(/\s+,/g, ",").replace(/\s{2,}/g, " ").trim();
+}
+
 export function buildGroundedSummary(
   profile: CandidateProfile,
   job: JobInput,
   analysis: ApplicationAnalysis,
-  targetLang: string = "en"
+  targetLang: string = "en",
+  userInstructions?: string
 ): string {
   const profileSummary = (profile.summary || "").trim();
   const summaryLang = profileSummary ? detectLanguageDeterministically(profileSummary, profile.country) : "en";
 
   // If candidate's stored summary matches the target language, use it
   if (profileSummary.length >= 80 && summaryLang === targetLang) {
-    return profileSummary;
+    return applyUserInstructionsToSummary(profileSummary, userInstructions);
   }
 
   const location = profile.location ? profile.location.split(",")[0].trim() : (targetLang === "de" ? "Deutschland" : "United Kingdom");
@@ -625,52 +666,50 @@ export function buildGroundedSummary(
   const matchedTech = analysis.matchedKeywords.slice(0, 6);
   const headline = profile.headline || recent?.role || (targetLang === "de" ? "Software- und Cloud-Spezialist" : "Software Engineering Professional");
 
+  let baseSummary = "";
   if (targetLang === "de") {
     // Generate grounded German summary
     const roleText = (profile.headline || "").toLowerCase();
     if (/devops|platform|cloud|sre|infrastructure/.test(roleText)) {
-      return `DevOps- und Cloud-Ingenieur mit fundierter Erfahrung in CI/CD-Pipelines, Infrastructure as Code und Containerisierung auf AWS und Azure. Sicherer Umgang mit Python, Linux-Systemen und Automatisierung. Zertifizierter Microsoft DevOps Engineer Expert mit Fokus auf stabile, reproduzierbare Infrastrukturen und cloud-native Architekturen.`;
+      baseSummary = `DevOps- und Cloud-Ingenieur mit fundierter Erfahrung in CI/CD-Pipelines, Infrastructure as Code und Containerisierung auf AWS und Azure. Sicherer Umgang mit Python, Linux-Systemen und Automatisierung. Zertifizierter Microsoft DevOps Engineer Expert mit Fokus auf stabile, reproduzierbare Infrastrukturen und cloud-native Architekturen.`;
+    } else if (/dynamics|power\s*platform|d365|crm/.test(roleText)) {
+      baseSummary = `Dynamics 365 und Power Platform Spezialist mit fundierter Praxiserfahrung in Geschäftsprozessautomatisierung, Datenmodellierung und Systemintegration. Versiert in Power Apps, Power Automate, Dataverse und cloudbasierten Enterprise-Lösungen.`;
+    } else if (/qa|test|quality|automation/.test(roleText)) {
+      baseSummary = `Test-Automation und QA-Spezialist mit fundierter Erfahrung in der Konzeption und Umsetzung automatisierter Test-Frameworks, Regressionstests und End-to-End-Qualitätssicherung innerhalb agiler CI/CD-Pipelines.`;
+    } else {
+      const sentences = [`${headline} mit Sitz in ${location}.`];
+      if (recent?.company && recent?.role) sentences.push(`Zuletzt tätig als ${recent.role} bei ${recent.company}.`);
+      else sentences.push(`Schwerpunkt auf der Entwicklung robuster technischer Lösungen, Systemintegrationen und Produktionsautomatisierung.`);
+      if (matchedTech.length) sentences.push(`Relevante dokumentierte Qualifikationen: ${matchedTech.join(", ")}.`);
+      baseSummary = sentences.join(" ");
     }
-    if (/dynamics|power\s*platform|d365|crm/.test(roleText)) {
-      return `Dynamics 365 und Power Platform Spezialist mit fundierter Praxiserfahrung in Geschäftsprozessautomatisierung, Datenmodellierung und Systemintegration. Versiert in Power Apps, Power Automate, Dataverse und cloudbasierten Enterprise-Lösungen.`;
-    }
-    if (/qa|test|quality|automation/.test(roleText)) {
-      return `Test-Automation und QA-Spezialist mit fundierter Erfahrung in der Konzeption und Umsetzung automatisierter Test-Frameworks, Regressionstests und End-to-End-Qualitätssicherung innerhalb agiler CI/CD-Pipelines.`;
-    }
-
-    const sentences = [`${headline} mit Sitz in ${location}.`];
-    if (recent?.company && recent?.role) sentences.push(`Zuletzt tätig als ${recent.role} bei ${recent.company}.`);
-    else sentences.push(`Schwerpunkt auf der Entwicklung robuster technischer Lösungen, Systemintegrationen und Produktionsautomatisierung.`);
-    if (matchedTech.length) sentences.push(`Relevante dokumentierte Qualifikationen: ${matchedTech.join(", ")}.`);
-    return sentences.join(" ");
-  }
-
-  // Target: English
-  if (summaryLang === "de" && profileSummary.length >= 80) {
+  } else if (summaryLang === "de" && profileSummary.length >= 80) {
     // English adaptation of German profile
     const roleText = (profile.headline || "").toLowerCase();
     if (/devops|platform|cloud|sre|infrastructure/.test(roleText)) {
-      return `DevOps and Cloud Engineer experienced with CI/CD pipelines, Infrastructure as Code, and containerization across AWS and Azure. Proficient in Python, Bash, and Linux automation. Certified Microsoft DevOps Engineer Expert and Azure Developer with focus on resilient, reproducible infrastructure.`;
-    }
-    if (/dynamics|power\s*platform|d365|crm/.test(roleText)) {
-      return `Dynamics 365 and Power Platform Specialist experienced in business process automation, data modeling, and enterprise integrations using Power Apps, Power Automate, Dataverse, and cloud architectures.`;
-    }
-    if (/qa|test|quality|automation/.test(roleText)) {
-      return `QA Automation Engineer experienced in designing end-to-end testing frameworks, regression suites, and continuous testing within modern CI/CD pipelines.`;
+      baseSummary = `DevOps and Cloud Engineer experienced with CI/CD pipelines, Infrastructure as Code, and containerization across AWS and Azure. Proficient in Python, Bash, and Linux automation. Certified Microsoft DevOps Engineer Expert and Azure Developer with focus on resilient, reproducible infrastructure.`;
+    } else if (/dynamics|power\s*platform|d365|crm/.test(roleText)) {
+      baseSummary = `Dynamics 365 and Power Platform Specialist experienced in business process automation, data modeling, and enterprise integrations using Power Apps, Power Automate, Dataverse, and cloud architectures.`;
+    } else if (/qa|test|quality|automation/.test(roleText)) {
+      baseSummary = `QA Automation Engineer experienced in designing end-to-end testing frameworks, regression suites, and continuous testing within modern CI/CD pipelines.`;
     }
   }
 
-  if (profileSummary.length >= 80) {
-    return profileSummary;
+  if (!baseSummary) {
+    if (profileSummary.length >= 80) {
+      baseSummary = profileSummary;
+    } else {
+      const sentences = [`${headline} based in ${location}.`];
+      if (recent?.company && recent?.role) sentences.push(`Most recent recorded role: ${recent.role} at ${recent.company}.`);
+      else sentences.push(`Focuses on delivering technical solutions, system integrations, and production automation.`);
+      const sourceBullets = (recent?.bullets || []).filter(Boolean).slice(0, 2);
+      if (sourceBullets.length) sentences.push(`Selected evidence: ${sourceBullets.join(" ")}`);
+      if (matchedTech.length) sentences.push(`Relevant documented skills: ${matchedTech.join(", ")}.`);
+      baseSummary = sentences.join(" ");
+    }
   }
 
-  const sentences = [`${headline} based in ${location}.`];
-  if (recent?.company && recent?.role) sentences.push(`Most recent recorded role: ${recent.role} at ${recent.company}.`);
-  else sentences.push(`Focuses on delivering technical solutions, system integrations, and production automation.`);
-  const sourceBullets = (recent?.bullets || []).filter(Boolean).slice(0, 2);
-  if (sourceBullets.length) sentences.push(`Selected evidence: ${sourceBullets.join(" ")}`);
-  if (matchedTech.length) sentences.push(`Relevant documented skills: ${matchedTech.join(", ")}.`);
-  return sentences.join(" ");
+  return applyUserInstructionsToSummary(baseSummary, userInstructions);
 }
 
 export function stripLatex(text: string): string {

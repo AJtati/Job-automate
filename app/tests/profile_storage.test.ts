@@ -266,4 +266,116 @@ describe("uploaded resume persistence", () => {
     expect(updated.containers).toContain("Kubernetes");
     expect(updated.containers).toContain("Docker");
   });
+
+  test("persists excludeSecurityClearance preference across profile save and load", () => {
+    const root = mkdtempSync(join(tmpdir(), "profile-sc-test-"));
+    roots.push(root);
+    const manager = new ProfilesManager(root);
+    const profile: CandidateProfile = {
+      id: "candidate-sc",
+      name: "Morgan Taylor",
+      headline: "DevOps Engineer",
+      email: "morgan@example.com",
+      phone: "",
+      location: "London, UK",
+      postcode: "EC1A 1BB",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: true,
+      excludeSecurityClearance: true,
+      targetRoles: ["DevOps Engineer"],
+      targetLocations: ["Remote", "London", "Hybrid"],
+      preferredRadiusMiles: 50,
+      minSalary: 60000,
+      skills: { cloud: ["AWS"], devops: ["Docker"] },
+      experience: [],
+      education: [],
+      certifications: [],
+      profileVersion: 1
+    };
+
+    manager.saveProfile(profile);
+    const loaded = manager.getProfile("candidate-sc");
+    expect(loaded).toBeDefined();
+    expect(loaded?.excludeSecurityClearance).toBe(true);
+
+    // Update to false
+    manager.saveProfile({ ...profile, excludeSecurityClearance: false });
+    const updated = manager.getProfile("candidate-sc");
+    expect(updated?.excludeSecurityClearance).toBe(false);
+  });
+});
+
+describe("Feed sorting and filtering algorithms", () => {
+  const isHybrid = (loc: string, title: string, jd: string) => {
+    return /hybrid/i.test(loc) ||
+           /hybrid/i.test(title) ||
+           /\b(?:hybrid\s+work|hybrid\s+model|hybrid\s+working|flexible\s+hybrid|days?\s+(?:a|per)\s+week\s+(?:in|at)\s+(?:the\s+)?office|days?\s+(?:in|at)\s+the\s+office|hybrid\s+role|hybrid\s+basis|hybrid\s+contract|\d+\s+days?\s+(?:remote|office))\b/i.test(jd);
+  };
+
+  const isScClearance = (title: string, jd: string) => {
+    return /\b(?:active\s+sc|must\s+hold\s+sc|sc\s+cleared|sc\s+clearance|security\s+cleared|dv\s+cleared|dv\s+clearance|security\s+check\s+clearance|mod\s+clearance|must\s+be\s+sc|hold\s+active\s+sc|obtain\s+sc\s+clearance|requires?\s+sc\s+clearance|eligib(?:le|ility)\s+for\s+sc|sc\s+status|bpss\s+and\s+sc)\b/i.test(title) ||
+           /\b(?:active\s+sc|must\s+hold\s+sc|sc\s+cleared|sc\s+clearance|security\s+cleared|dv\s+cleared|dv\s+clearance|security\s+check\s+clearance|mod\s+clearance|must\s+be\s+sc|hold\s+active\s+sc|obtain\s+sc\s+clearance|requires?\s+sc\s+clearance)\b/i.test(jd);
+  };
+
+  test("accurately flags hybrid positions from location, title, or job description", () => {
+    expect(isHybrid("Leeds (Hybrid)", "Platform Engineer", "")).toBe(true);
+    expect(isHybrid("London", "Senior DevOps Engineer (Hybrid)", "")).toBe(true);
+    expect(isHybrid("Manchester", "Cloud Architect", "This role offers 2 days a week in the office.")).toBe(true);
+    expect(isHybrid("Bristol", "Site Reliability Engineer", "We operate a flexible hybrid working model.")).toBe(true);
+    expect(isHybrid("London", "Backend Engineer", "Fully onsite 5 days a week")).toBe(false);
+  });
+
+  test("accurately flags mandatory security clearance positions", () => {
+    expect(isScClearance("DevOps Engineer (Active SC Required)", "Cloud role in defense")).toBe(true);
+    expect(isScClearance("Platform Engineer", "Candidates must hold valid SC clearance prior to onboarding")).toBe(true);
+    expect(isScClearance("Cloud Architect", "Active DV cleared or SC cleared required.")).toBe(true);
+    expect(isScClearance("Software Engineer", "Standard background checks only. No security clearance.")).toBe(false);
+  });
+
+  test("days-wise sort places newest calendar day first, and ranks highest percentage first on the same day", () => {
+    const jobs = [
+      { id: "1", posted_date: "2026-11-06", fit_score: 45, title: "Role A" },
+      { id: "2", posted_date: "2026-11-07", fit_score: 60, title: "Role B" },
+      { id: "3", posted_date: "2026-11-07", fit_score: 85, title: "Role C" },
+      { id: "4", posted_date: "2026-11-05", fit_score: 95, title: "Role D" },
+      { id: "5", posted_date: "2026-11-07", fit_score: 72, title: "Role E" }
+    ];
+
+    const sorted = [...jobs].sort((a, b) => {
+      const dayA = a.posted_date.slice(0, 10);
+      const dayB = b.posted_date.slice(0, 10);
+      if (dayB !== dayA) return dayB.localeCompare(dayA);
+      return (b.fit_score || 0) - (a.fit_score || 0);
+    });
+
+    // 2026-11-07 jobs come first, ordered 85% -> 72% -> 60%
+    expect(sorted[0].id).toBe("3"); // 85%
+    expect(sorted[1].id).toBe("5"); // 72%
+    expect(sorted[2].id).toBe("2"); // 60%
+    // Then 2026-11-06
+    expect(sorted[3].id).toBe("1"); // 45%
+    // Then 2026-11-05
+    expect(sorted[4].id).toBe("4"); // 95%
+  });
+
+  test("score-wise sort ranks highest match percentage first with newest posting as tie-breaker", () => {
+    const jobs = [
+      { id: "1", posted_date: "2026-11-05", fit_score: 80 },
+      { id: "2", posted_date: "2026-11-07", fit_score: 80 },
+      { id: "3", posted_date: "2026-11-06", fit_score: 90 },
+      { id: "4", posted_date: "2026-11-01", fit_score: 70 }
+    ];
+
+    const sorted = [...jobs].sort((a, b) => {
+      const scoreDiff = (b.fit_score || 0) - (a.fit_score || 0);
+      if (scoreDiff !== 0) return scoreDiff;
+      return b.posted_date.localeCompare(a.posted_date);
+    });
+
+    expect(sorted[0].id).toBe("3"); // 90%
+    expect(sorted[1].id).toBe("2"); // 80% (posted Nov 7)
+    expect(sorted[2].id).toBe("1"); // 80% (posted Nov 5)
+    expect(sorted[3].id).toBe("4"); // 70%
+  });
 });

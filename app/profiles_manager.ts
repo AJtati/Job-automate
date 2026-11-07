@@ -104,6 +104,7 @@ export interface CandidateProfile {
   scenarioHistory?: string[];
   schedule?: ProfileScheduleConfig;
   enableDeepTailor?: boolean;
+  excludeSecurityClearance?: boolean;
 }
 
 export interface ProfileScheduleConfig {
