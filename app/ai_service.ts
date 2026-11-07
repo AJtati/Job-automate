@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { CandidateProfile } from "./profiles_manager";
-import { analyzeApplication, buildGroundedSummary, applyUserInstructionsToSummary, type JobInput } from "./application_engine";
+import { analyzeApplication, buildGroundedSummary, applyUserInstructionsToSummary, applyUserInstructionsToCoverLetter, type JobInput } from "./application_engine";
 import { parseResumeDeterministically } from "./resume_parser";
 import {
   renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole,
@@ -3361,7 +3361,7 @@ Target Competencies: ${(analysis.gapKeywords || []).slice(0, 4).join(", ")}`;
 
         if (aiResponse && isValidCoverLetter(aiResponse)) {
           const humanized = this.humanizeText(aiResponse.trim());
-          return this.wrapParagraphsInCoverLatex(tailoredProfile, jobInput, humanized, resolvedLang);
+          return this.wrapParagraphsInCoverLatex(tailoredProfile, jobInput, humanized, resolvedLang, userInstructions);
         }
 
         console.warn("[generateTailoredCoverLetter] AI response did not contain valid letter content after stripping thinking tokens. Falling back to grounded deterministic engine.");
@@ -3460,7 +3460,8 @@ Target Competencies: ${(analysis.gapKeywords || []).slice(0, 4).join(", ")}`;
     profile: CandidateProfile,
     job: JobInput,
     bodyText: string,
-    lang: SupportedLanguage
+    lang: SupportedLanguage,
+    userInstructions?: string
   ): string {
     const pack = LANGUAGE_PACKS[lang] || LANGUAGE_PACKS.en;
     const roleClean = job.role || "Specialist";
@@ -3516,13 +3517,18 @@ Target Competencies: ${(analysis.gapKeywords || []).slice(0, 4).join(", ")}`;
         return true;
       });
 
-    // If filtering left fewer than 2 paragraphs, fallback to grounded deterministic renderer
-    if (paragraphs.length < 2) {
-      const analysis = analyzeApplication(profile, job);
-      return renderGroundedCoverLetter(profile, job, analysis, lang);
+    let finalParagraphs = paragraphs;
+    if (userInstructions && userInstructions.trim()) {
+      finalParagraphs = applyUserInstructionsToCoverLetter(finalParagraphs, userInstructions, profile, job);
     }
 
-    const formattedBody = paragraphs
+    // If filtering left fewer than 2 paragraphs, fallback to grounded deterministic renderer
+    if (finalParagraphs.length < 2) {
+      const analysis = analyzeApplication(profile, job);
+      return renderGroundedCoverLetter(profile, job, analysis, lang, userInstructions);
+    }
+
+    const formattedBody = finalParagraphs
       .map(p => {
         let pEsc = p;
         pEsc = pEsc.replace(/(?<!\\)&/g, "\\&")

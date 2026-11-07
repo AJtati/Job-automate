@@ -2280,8 +2280,8 @@ serve({
           const candidateSlug = safeSlug(activeProfile.name || "candidate").replace(/-/g, "_");
           const cvPath = job.cv_file || `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
           const coverPath = job.cover_file || `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
-          let cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd });
-          let coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd });
+          let cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, undefined, undefined, prompt);
+          let coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, undefined, undefined, prompt);
           if (edit.mode === "concise") cvContent = makeResumeConcise(cvContent);
           if (edit.mode === "remove" && term) {
             cvContent = removeGroundedTerm(cvContent, term);
@@ -2823,7 +2823,6 @@ serve({
         })();
         if (isCoverStale) {
           coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang, isDeepTailor, effectiveInstructions);
-          coverContent = aiService.humanizeText(coverContent);
           writeFileSync(coverFullPath, coverContent);
         } else {
           coverContent = readFileSync(coverFullPath, "utf-8");
@@ -2865,8 +2864,7 @@ serve({
           })();
 
           if (isCoverEnStale) {
-            coverEnglishContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, "en", isDeepTailor);
-            coverEnglishContent = aiService.humanizeText(coverEnglishContent);
+            coverEnglishContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, "en", isDeepTailor, effectiveInstructions);
             writeFileSync(coverEnFull, coverEnglishContent);
           } else {
             coverEnglishContent = readFileSync(coverEnFull, "utf-8");

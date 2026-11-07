@@ -21,3 +21,7 @@ To prevent duplication and configuration drift across different AI agent framewo
    - All generated and tailored CVs, cover letters, and application materials MUST strictly adhere to the `humanizer` skill.
    - Strictly ban AI marketing clichés ("proven track record", "mission-critical", "seamlessly executed"), shallow "-ing" riders ("reducing X while ensuring Y and driving Z"), forced triads, and robotic uniform cadences.
    - Write in plain, direct, active-voice engineering prose ("Upgraded...", "Wrote...", "Migrated...").
+5. **Explicit Git Commit and Push Protocol:**
+   - Do not commit or push changes until the user explicitly requests it.
+   - Never run `git commit` or `git push` autonomously. Always wait for explicit user confirmation or command.
+6. when ever i give some problem first debug and tell where issue is only once the use says to fix it then fix it

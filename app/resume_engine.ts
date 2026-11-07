@@ -1,5 +1,5 @@
 import type { ApplicationAnalysis, JobInput } from "./application_engine";
-import { buildGroundedSummary, applyUserInstructionsToSummary, rankExperienceForJob } from "./application_engine";
+import { buildGroundedSummary, applyUserInstructionsToSummary, applyUserInstructionsToCoverLetter, rankExperienceForJob } from "./application_engine";
 import type { CandidateProfile } from "./profiles_manager";
 import { sanitizeAndCategorizeSkills } from "./taxonomy";
 
@@ -1095,7 +1095,7 @@ export function renderGroundedCoverLetter(
   paragraphs.push(p4_closing);
 
   if (userInstructions && userInstructions.trim()) {
-    paragraphs = paragraphs.map(p => applyUserInstructionsToSummary(p, userInstructions));
+    paragraphs = applyUserInstructionsToCoverLetter(paragraphs, userInstructions, profile, job);
   }
 
   const bodyContent = paragraphs.join("\n\n\\par\n\n");
