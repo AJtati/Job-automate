@@ -646,6 +646,104 @@ export function applyUserInstructionsToSummary(rawSummary: string, userInstructi
   return s.replace(/\s+,/g, ",").replace(/\s{2,}/g, " ").trim();
 }
 
+export function applyUserInstructionsToCoverLetter(
+  paragraphs: string[],
+  userInstructions?: string,
+  profile?: CandidateProfile,
+  job?: JobInput
+): string[] {
+  if (!userInstructions || !userInstructions.trim() || !paragraphs.length) {
+    return paragraphs;
+  }
+  const inst = userInstructions.trim();
+  const lower = inst.toLowerCase();
+  let updated = [...paragraphs];
+
+  // 1. Omit or simplify version numbers if requested
+  const wantsOmitVersions = /\b(?:dont|don't|do not|omit|remove|without|avoid|no)\b.*?\b(?:mention|explain|include)?.*?\b(?:versions?|numbers?)\b/i.test(lower) ||
+                            /\b(?:no|omit|remove)\s+versions?\b/i.test(lower);
+  if (wantsOmitVersions) {
+    updated = updated.map(p =>
+      p.replace(/\s*\(\s*v?\d+\.\d+\s+(?:to|--|-)\s+v?\d+\.\d+\s*\)/gi, "")
+       .replace(/\s*from\s+\d+\.\d+\s+to\s+\d+\.\d+/gi, "")
+       .replace(/\s*across\s+\w+\s+minor\s+versions/gi, "")
+       .replace(/\s*v\d+\.\d+(?:\s*(?:to|--|-)\s*v?\d+\.\d+)?/gi, "")
+       .replace(/\s{2,}/g, " ")
+    );
+  }
+
+  // 2. Custom rephrasing of EKS / cluster upgrades
+  const wantsEksUpgradePhrasing = /\b(?:hands-on|good experience)\b.*?\beks upgrade\b/i.test(lower) ||
+                                  /\b(?:dont|don't|do not)\s+over\s*explain.*?eks/i.test(lower);
+  let handledUpgradeReplacement = false;
+  if (wantsEksUpgradePhrasing) {
+    const upgradeReplacement = "I have extensive hands-on experience in production EKS cluster upgrades and reliable platform automation.";
+    if (updated.length >= 2) {
+      if (/handled\s+complex\s+infrastructure\s+upgrades\s+in\s+production[^\.]*\./i.test(updated[1])) {
+        updated[1] = updated[1].replace(/handled\s+complex\s+infrastructure\s+upgrades\s+in\s+production[^\.]*\./i, "extensive hands-on experience in production EKS cluster upgrades and reliable platform automation.");
+        handledUpgradeReplacement = true;
+      } else if (/I(?:'ve|\s+have)\s+handled\s+complex\s+infrastructure\s+upgrades[^\.]*\./gi.test(updated[1])) {
+        updated[1] = updated[1].replace(/I(?:'ve|\s+have)\s+handled\s+complex\s+infrastructure\s+upgrades[^\.]*\./gi, upgradeReplacement);
+        handledUpgradeReplacement = true;
+      } else if (/in-place\s+Kubernetes\s+version\s+upgrades[^\.]*\./gi.test(updated[1])) {
+        updated[1] = updated[1].replace(/in-place\s+Kubernetes\s+version\s+upgrades[^\.]*\./gi, upgradeReplacement);
+        handledUpgradeReplacement = true;
+      } else if (!/hands-on.*?eks upgrade/i.test(updated[1])) {
+        updated[1] = updated[1] + " I have extensive hands-on experience in production EKS cluster upgrades and platform reliability.";
+        handledUpgradeReplacement = true;
+      }
+    }
+  }
+
+  // 3. Ownership keywords
+  const wantsOwnership = /\b(?:ownership|owner)\b/i.test(lower);
+  if (wantsOwnership) {
+    if (updated.length >= 2 && !/\bownership\b/i.test(updated[1])) {
+      if (/I have maintained and supported/i.test(updated[1])) {
+        updated[1] = updated[1].replace(/I have maintained and supported/gi, "I have maintained and taken operational ownership of");
+      } else if (/Maintained and supported/i.test(updated[1])) {
+        updated[1] = updated[1].replace(/Maintained and supported/gi, "Maintained and taken operational ownership of");
+      } else if (/maintained and supported/i.test(updated[1])) {
+        updated[1] = updated[1].replace(/maintained and supported/gi, "taken operational ownership of");
+      } else if (/my work focused on/i.test(updated[1])) {
+        updated[1] = updated[1].replace(/my work focused on/gi, "I took operational ownership of");
+      } else {
+        updated[1] = updated[1] + " Throughout these roles, I have taken full operational ownership of platform reliability and CI/CD pipelines.";
+      }
+    }
+    if (updated.length >= 3 && !/\bownership\b/i.test(updated[2])) {
+      updated[2] = updated[2].replace(/keep architectures simple/gi, "take end-to-end ownership and keep architectures simple");
+    }
+  }
+
+  // 4. Specific custom line/phrase requested ("just say ...", "say ...", "mention ...", "add ...")
+  const justSayMatch = inst.match(/\b(?:just say|say that|say|mention that)\s*[:,]?\s*["']?([^.,;\n]+?)(?:,\s*(?:also|and)|(?:\s+also|\s+and\s+(?:add|mention|highlight))|[.;\n]|$)/i);
+  if (justSayMatch) {
+    const rawPhrase = justSayMatch[1].trim();
+    const isEksUpgradePhrase = /eks|upgrade/i.test(rawPhrase);
+    if (rawPhrase.length > 5 && !/dont|don't|do not|omit|remove/i.test(rawPhrase) && (!isEksUpgradePhrase || !handledUpgradeReplacement)) {
+      const formattedPhrase = rawPhrase.charAt(0).toUpperCase() + rawPhrase.slice(1);
+      const cleanSentence = formattedPhrase.endsWith(".") ? formattedPhrase : `${formattedPhrase}.`;
+      if (updated.length >= 2 && !updated[1].toLowerCase().includes(rawPhrase.toLowerCase())) {
+        updated[1] += ` ${cleanSentence}`;
+      }
+    }
+  }
+
+  // 5. Omit mobile / desktop apps if requested
+  const wantsOmitMobile = /\b(?:omit|remove|without|no)\b.*?\b(?:mobile|android|ios|desktop|app development)\b/i.test(lower);
+  if (wantsOmitMobile) {
+    updated = updated.map(p =>
+      p.replace(/,?\s*(?:along with|as well as)?\s*full-stack mobile and desktop application development/gi, "")
+       .replace(/,?\s*mobile and desktop apps?/gi, "")
+       .replace(/,?\s*(?:iOS|Android)\b[^,.]*/gi, "")
+    );
+  }
+
+  // Clean double spaces or punctuation glitches
+  return updated.map(p => p.replace(/\s+,/g, ",").replace(/\s{2,}/g, " ").replace(/\.\s*\./g, ".").trim());
+}
+
 export function buildGroundedSummary(
   profile: CandidateProfile,
   job: JobInput,

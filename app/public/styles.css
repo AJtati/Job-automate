@@ -1870,6 +1870,48 @@ html[data-platform="windows"] .titlebar input {
   color: var(--text-secondary);
 }
 
+.latex-live-preview-wrapper {
+  margin-top: 24px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  padding-top: 20px;
+}
+
+.latex-live-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 0 4px;
+}
+
+.latex-live-preview-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.latex-live-preview-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.9); }
+}
+
+.latex-live-preview-canvas {
+  max-width: 820px;
+  margin: 0 auto;
+}
+
 /* Toast Notifications (Sonner-inspired) */
 #toastContainer {
   position: fixed;

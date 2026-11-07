@@ -3353,6 +3353,748 @@ let currentCoverViewMode = "visual";
 let currentDocLang = "native"; // "native" (original language) or "english"
 let currentRenderJobId = null;
 
+function cleanLatexText(str) {
+  if (!str) return "";
+  let s = str;
+  // 1. Sanitize HTML entities first for XSS safety
+  s = s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // 2. Format tags and macros into clean inline elements
+  s = s.replace(/\\href\{([^}]+)\}\{([^}]+)\}/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$2</a>');
+  s = s.replace(/\\textbf\{([^}]*)\}/g, '<strong>$1</strong>');
+  s = s.replace(/\\(?:textit|emph)\{([^}]*)\}/g, '<em>$1</em>');
+  s = s.replace(/\\underline\{([^}]*)\}/g, '<u>$1</u>');
+  s = s.replace(/\\&amp;/g, "&")
+       .replace(/\\&/g, "&")
+       .replace(/\\%/g, "%")
+       .replace(/\\#/g, "#")
+       .replace(/\\\$/g, "$")
+       .replace(/\\_/g, "_");
+  s = s.replace(/\\quad\s*(?:\$\s*\\cdot\s*\$|·|\$·\$)\s*\\quad/g, " &nbsp;·&nbsp; ");
+  s = s.replace(/(?:\\quad\s*)?\$\\cdot\$(?:\s*\\quad)?/g, " &nbsp;·&nbsp; ");
+  s = s.replace(/\\quad/g, " ");
+  s = s.replace(/\$\|\$/g, " &nbsp;|&nbsp; ");
+  s = s.replace(/--/g, "–");
+  s = s.replace(/\\(?:color(?:\[[^\]]*\])?\{[^}]*\}|fontsize\{[^}]*\}\{[^}]*\}|selectfont|raggedright|raggedbottom)/g, "");
+  s = s.replace(/\\(?:vspace|hspace)\*?\{[^}]*\}/g, "");
+  s = s.replace(/\\(?:small|large|Large|Huge|huge|scshape|bfseries|itshape)\b/g, "");
+  s = s.replace(/[{}]/g, "");
+  return s.trim();
+}
+
+function convertLatexCoverInline(str) {
+  return cleanLatexText(str);
+}
+
+function extractSectionContent(latex, sectionPattern) {
+  if (!latex) return "";
+  const match = latex.match(sectionPattern);
+  if (!match) return "";
+  const startIdx = match.index + match[0].length;
+  const afterStart = latex.slice(startIdx);
+  const nextSectionMatch = afterStart.match(/\\section\{|\\end\{document\}/i);
+  const endIdx = nextSectionMatch ? nextSectionMatch.index : afterStart.length;
+  return afterStart.slice(0, endIdx).trim();
+}
+
+function extractSubheadingArgs(text) {
+  const args = [];
+  let i = 0;
+  while (i < text.length && args.length < 4) {
+    if (text[i] === "{") {
+      let depth = 1;
+      let start = i + 1;
+      let j = start;
+      while (j < text.length && depth > 0) {
+        if (text[j] === "{") depth++;
+        else if (text[j] === "}") depth--;
+        j++;
+      }
+      args.push(text.substring(start, j - 1));
+      i = j;
+    } else {
+      i++;
+    }
+  }
+  return args;
+}
+
+function extractResumeItems(blockText) {
+  if (!blockText) return [];
+  const pieces = blockText.split(/\\resumeItem\s*\{/).slice(1);
+  return pieces.map(piece => {
+    let depth = 1;
+    let endIdx = piece.length;
+    for (let i = 0; i < piece.length; i++) {
+      if (piece[i] === "{") depth++;
+      else if (piece[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          endIdx = i;
+          break;
+        }
+      }
+    }
+    const rawItem = piece.substring(0, endIdx);
+    return cleanLatexText(rawItem);
+  }).filter(Boolean);
+}
+
+function parseLatexCV(latex) {
+  const result = {
+    summary: "",
+    experience: [],
+    skillsHtml: "",
+    skillsCategories: [],
+    projects: [],
+    education: [],
+    educationTitle: "",
+    language: "en",
+    hasParsedSummarySection: false
+  };
+  if (!latex) return result;
+
+  try {
+    // Detect document language from babel, section headers, or keywords
+    if (/\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(latex) || /\\section\{Profil\}/i.test(latex) || /\\section\{Berufserfahrung\}/i.test(latex)) {
+      result.language = "de";
+    } else if (/\\usepackage\[spanish\]\{babel\}/i.test(latex) || /\\section\{Perfil/i.test(latex)) {
+      result.language = "es";
+    } else if (/\\usepackage\[french\]\{babel\}/i.test(latex) || /\\section\{Expérience/i.test(latex)) {
+      result.language = "fr";
+    } else if (/\\usepackage\[italian\]\{babel\}/i.test(latex) || /\\section\{Profilo/i.test(latex)) {
+      result.language = "it";
+    } else if (/\\usepackage\[dutch\]\{babel\}/i.test(latex) || /\\section\{Profiel/i.test(latex)) {
+      result.language = "nl";
+    }
+
+    // Header extraction (Candidate name, role, contact)
+    const nameMatch = latex.match(/\\textbf\{\\Huge\s*(?:\\scshape\s*)?([^}]+)\}/i) ||
+                      latex.match(/\\Huge\s*\{?\\scshape\s*([^\\}\n]+)\}?/i) ||
+                      latex.match(/\\textbf\{\\huge\s*([^}]+)\}/i) ||
+                      latex.match(/\\textbf\{\\Large\s*([^}]+)\}/i);
+    if (nameMatch) {
+      result.name = cleanLatexText(nameMatch[1]);
+    }
+
+    const roleMatch = latex.match(/\\textbf\{\\large\s*([^}]+)\}/i) ||
+                      latex.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
+    if (roleMatch) {
+      result.role = cleanLatexText(roleMatch[1]);
+    }
+
+    const centerMatch = latex.match(/\\begin\{center\}([\s\S]*?)\\end\{center\}/i);
+    if (centerMatch) {
+      const smallMatch = centerMatch[1].match(/\\small\s*([\s\S]*?)$/i);
+      if (smallMatch) {
+        result.contactHtml = cleanLatexText(smallMatch[1]);
+      }
+    }
+
+    // 1. Summary
+    const summaryPattern = /\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}/i;
+    if (summaryPattern.test(latex)) {
+      result.hasParsedSummarySection = true;
+      const rawSummaryContent = extractSectionContent(latex, summaryPattern);
+      if (rawSummaryContent) {
+        if (/\\resumeItem\{/i.test(rawSummaryContent)) {
+          const items = extractResumeItems(rawSummaryContent);
+          result.summary = items.join(" ");
+        } else {
+          let s = rawSummaryContent
+            .replace(/\\resumeItemListStart|\\resumeItemListEnd/g, "")
+            .replace(/\\small\s*\{/g, "")
+            .replace(/(?:^|\n)\s*[•\-\*]\s*/g, " ")
+            .replace(/\s+/g, " ");
+          result.summary = cleanLatexText(s);
+        }
+      }
+    }
+
+    // 2. Experience
+    const expPattern = /\\section\{(?:Professional\s+Experience|Work\s+Experience|Berufserfahrung|Experiencia\s+Laboral|Expérience\s+Professionnelle|Esperienza\s+Lavorativa|Werkervaring)\}/i;
+    const expContent = extractSectionContent(latex, expPattern);
+    if (expContent) {
+      const blocks = expContent.split(/\\resumeSubheading/).slice(1);
+      for (const block of blocks) {
+        const [rawCo, rawLoc, rawTitle, rawDates] = extractSubheadingArgs(block);
+        const company = cleanLatexText(rawCo);
+        const location = cleanLatexText(rawLoc);
+        const title = cleanLatexText(rawTitle);
+        const dates = cleanLatexText(rawDates);
+        const items = extractResumeItems(block);
+        if (company || title) {
+          result.experience.push({ company, location, title, dates, items });
+        }
+      }
+    }
+
+    // 3. Technical Projects
+    const projPattern = /\\section\{(?:(?:Technical\s+)?Projects|Projekte|Proyectos|Projets|Progetti|Projecten)\}/i;
+    const projContent = extractSectionContent(latex, projPattern);
+    if (projContent) {
+      const blocks = projContent.split(/\\resumeProjectHeading/).slice(1);
+      for (const block of blocks) {
+        const [rawHeading, rawCat] = extractSubheadingArgs(block);
+        let name = "";
+        let tools = "";
+        const m = (rawHeading || "").match(/\\textbf\{([^}]*)\}\s*\$?\|\$?\s*\\emph\{([^}]*)\}/i);
+        if (m) {
+          name = cleanLatexText(m[1]);
+          tools = cleanLatexText(m[2]);
+        } else {
+          name = cleanLatexText(rawHeading);
+        }
+        const category = cleanLatexText(rawCat);
+        const items = extractResumeItems(block);
+        if (name) {
+          result.projects.push({ name, tools, category, items });
+        }
+      }
+    }
+
+    // 4. Skills
+    const skillsPattern = /\\section\{(?:Technical\s+Skills|Skills|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}/i;
+    const skillsContent = extractSectionContent(latex, skillsPattern);
+    if (skillsContent) {
+      const lines = skillsContent.split(/\\\\|\n/).map(l => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        if (/^\\begin\{itemize\}|^\\end\{itemize\}|^\\small|^\[/i.test(line)) continue;
+        const cleanLine = line.replace(/^\\item\s*/, "").replace(/^\{\\item\s*/, "");
+        const m = cleanLine.match(/^(?:\\textbf\{([^}]+)\}|([^:{]+))\s*(?:\{:\s*|:\s*|\s*)\s*([\s\S]*)/);
+        if (m) {
+          const cat = cleanLatexText(m[1] || m[2] || "");
+          const itemsStr = cleanLatexText((m[3] || "").replace(/^\{:\s*/, "").replace(/^\s*:\s*/, "").replace(/\}\s*$/, ""));
+          if (cat || itemsStr) {
+            result.skillsCategories.push({ category: cat, items: itemsStr });
+          }
+        }
+      }
+      result.skillsHtml = result.skillsCategories.map(c => c.category ? `${c.category}: ${c.items}` : c.items).join("\n");
+    }
+
+    // 5. Education
+    const eduPattern = /\\section\{(?:(?:Education(?:\s*(?:&|and)\s*Certifications?)?)|Ausbildung|Formación|Formation|Formazione|Opleiding)\}/i;
+    const eduTitleMatch = latex.match(eduPattern);
+    if (eduTitleMatch) {
+      result.educationTitle = cleanLatexText(eduTitleMatch[0].replace(/\\section\{|\}/g, ""));
+    }
+    const eduContent = extractSectionContent(latex, eduPattern);
+    if (eduContent) {
+      const blocks = eduContent.split(/\\resumeSubheading/).slice(1);
+      for (const block of blocks) {
+        const [rawInst, rawLoc, rawDeg, rawDates] = extractSubheadingArgs(block);
+        const institution = cleanLatexText(rawInst);
+        const location = cleanLatexText(rawLoc);
+        const degree = cleanLatexText(rawDeg);
+        const dates = cleanLatexText(rawDates);
+        if (institution || degree) {
+          result.education.push({ institution, location, degree, dates });
+        }
+      }
+    }
+  } catch (err) {
+    console.error("LaTeX parse error:", err);
+  }
+  return result;
+}
+
+function renderVisualCVHtml(texCode) {
+  if (!texCode) return "";
+  const parsed = parseLatexCV(texCode);
+  const isGermanDoc = currentDocLang === "english"
+    ? false
+    : Boolean(
+        activeTailoredData?.language === "de" ||
+        parsed.language === "de" ||
+        /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) ||
+        /\\section\{Profil\}/i.test(texCode)
+      );
+  const nameToRender = parsed.name || activeProfile?.name || "Candidate";
+  const latexRoleMatch = texCode.match(/\\textbf\{\\large\s*([^}]+)\}/i) || texCode.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
+  const rawHeadline = parsed.role || (latexRoleMatch ? cleanLatexText(latexRoleMatch[1]) : (selectedJob?.title || activeProfile?.headline));
+  const headlineRole = cleanCandidateHeadline(rawHeadline, activeProfile?.headline);
+
+  let contactHtml = parsed.contactHtml;
+  if (!contactHtml) {
+    const contactParts = [];
+    if (activeProfile?.location) contactParts.push(escapeHtml(activeProfile.location));
+    if (activeProfile?.phone) contactParts.push(escapeHtml(activeProfile.phone));
+    if (activeProfile?.email) contactParts.push(escapeHtml(activeProfile.email));
+    if (activeProfile?.linkedin) contactParts.push(`<a href="${escapeHtml(activeProfile.linkedin)}" target="_blank" rel="noopener noreferrer">LinkedIn</a>`);
+    if (activeProfile?.github) contactParts.push(`<a href="${escapeHtml(activeProfile.github)}" target="_blank" rel="noopener noreferrer">GitHub</a>`);
+    contactHtml = contactParts.join(" &nbsp;|&nbsp; ");
+  }
+
+  const expToRender = (parsed.experience && parsed.experience.length > 0)
+    ? parsed.experience
+    : (activeProfile?.experience || []).map(exp => ({
+        company: exp.company,
+        title: exp.role,
+        location: exp.location,
+        dates: `${exp.startDate} – ${exp.endDate}`,
+        items: (exp.bullets || []).map(cleanLatexText)
+      }));
+
+  const projectsToRender = (parsed.projects && parsed.projects.length > 0)
+    ? parsed.projects
+    : ((activeProfile?.projects || []).map(p => ({
+        name: p.name,
+        tools: p.tools,
+        category: p.category,
+        items: (p.bullets || []).map(cleanLatexText)
+      })));
+
+  let summaryToRender = parsed.summary;
+  if (!summaryToRender && !parsed.hasParsedSummarySection) {
+    if (activeProfile?.summary) {
+      summaryToRender = cleanLatexText(activeProfile.summary);
+    } else if (isGermanDoc) {
+      summaryToRender = activeProfile?.headline
+        ? `${escapeHtml(activeProfile.headline)} mit fundierter Praxiserfahrung und Fokus auf verlässliche Ergebnisse.`
+        : "Erfahrene Fachkraft mit strukturierter Arbeitsweise und Fokus auf verlässliche Ergebnisse.";
+    } else {
+      summaryToRender = activeProfile?.headline
+        ? `${escapeHtml(activeProfile.headline)} experienced in delivering dependable outcomes and collaborating effectively with multidisciplinary teams.`
+        : "";
+    }
+  }
+
+  let skillsTextToRender = parsed.skillsHtml;
+  if (!skillsTextToRender && (!parsed.skillsCategories || parsed.skillsCategories.length === 0) && activeProfile?.skills) {
+    const s = activeProfile.skills;
+    const parts = [];
+    for (const [cat, items] of Object.entries(s)) {
+      if (Array.isArray(items) && items.length) {
+        const catLabel = cat.replace(/[_-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        parts.push(`${catLabel}: ${items.join(", ")}`);
+      }
+    }
+    skillsTextToRender = parts.join("\n");
+  }
+
+  const eduToRender = (parsed.education && parsed.education.length > 0)
+    ? parsed.education
+    : (activeProfile?.education || []).map(rawEdu => {
+        const cleanEdu = cleanEducationItemClient(rawEdu);
+        return {
+          institution: cleanEdu.institution || "University",
+          location: cleanEdu.details || "",
+          degree: cleanEdu.degree || "Degree",
+          dates: cleanEdu.dates || ""
+        };
+      });
+
+  return `
+    <div class="doc-preview-container ats-resume-sheet">
+      <div class="ats-header">
+        <h1 class="ats-name">${escapeHtml(nameToRender)}</h1>
+        ${headlineRole ? `<div class="ats-role">${escapeHtml(headlineRole)}</div>` : ''}
+        <div class="ats-contact">
+          ${contactHtml}
+        </div>
+      </div>
+
+      ${summaryToRender ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Profil' : 'Summary'}</div>
+        <div class="ats-summary">${formatSummaryClient(summaryToRender)}</div>
+      </div>` : ''}
+
+      ${expToRender.length > 0 ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Berufserfahrung' : 'Work Experience'}</div>
+        ${expToRender.map(exp => `
+          <div class="ats-entry">
+            <div class="ats-subheading-row1">
+              <span class="ats-company">${escapeHtml(exp.company)}</span>
+              <span class="ats-location">${escapeHtml(exp.location)}</span>
+            </div>
+            <div class="ats-subheading-row2">
+              <span class="ats-title">${escapeHtml(exp.title)}</span>
+              <span class="ats-dates">${escapeHtml(exp.dates)}</span>
+            </div>
+            <ul class="ats-bullet-list">
+              ${exp.items.map(bullet => `<li>${bullet}</li>`).join("")}
+            </ul>
+          </div>
+        `).join("")}
+      </div>` : ''}
+
+      ${(parsed.skillsCategories && parsed.skillsCategories.length > 0) ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Kenntnisse und Fähigkeiten' : 'Technical Skills'}</div>
+        <div class="ats-skills-block">
+          ${parsed.skillsCategories.map(c => `
+            <div class="ats-skills-line">
+              ${c.category ? `<span class="ats-skill-cat">${escapeHtml(c.category)}:</span>` : ''}
+              <span class="ats-skill-items"> ${escapeHtml(c.items)}</span>
+            </div>
+          `).join("")}
+        </div>
+      </div>` : (skillsTextToRender ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Kenntnisse und Fähigkeiten' : 'Technical Skills'}</div>
+        <div class="ats-skills-block">
+          <div class="ats-skills-line" style="white-space: pre-line;">${escapeHtml(skillsTextToRender)}</div>
+        </div>
+      </div>` : '')}
+
+      ${projectsToRender.length > 0 ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Projekte' : 'Technical Projects'}</div>
+        ${projectsToRender.map(proj => `
+          <div class="ats-entry">
+            <div class="ats-subheading-row1">
+              <span class="ats-company">${escapeHtml(proj.name)} ${proj.tools ? `<span style="font-weight: 400; font-style: italic;">| ${escapeHtml(proj.tools)}</span>` : ''}</span>
+              <span class="ats-location">${escapeHtml(proj.category || "")}</span>
+            </div>
+            <ul class="ats-bullet-list">
+              ${proj.items.map(b => `<li>${b}</li>`).join("")}
+            </ul>
+          </div>
+        `).join("")}
+      </div>` : ''}
+
+      ${eduToRender.length > 0 ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${parsed.educationTitle || (isGermanDoc ? 'Ausbildung' : 'Education')}</div>
+        ${eduToRender.map(edu => `
+          <div class="ats-entry">
+            <div class="ats-subheading-row1">
+              <span class="ats-company">${escapeHtml(edu.institution || "University")}</span>
+              <span class="ats-location">${escapeHtml(edu.location || "")}</span>
+            </div>
+            <div class="ats-subheading-row2">
+              <span class="ats-title">${escapeHtml(edu.degree || "Degree")}</span>
+              <span class="ats-dates">${escapeHtml(edu.dates || "")}</span>
+            </div>
+          </div>
+        `).join("")}
+      </div>` : ''}
+
+      ${((!parsed.education || parsed.education.length === 0) && (activeProfile?.certifications || []).length > 0) ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Zertifizierungen' : 'Certifications'}</div>
+        <div class="ats-skills-line" style="margin-top: 4px;">
+          ${activeProfile.certifications.map(c => `${escapeHtml(c.name)} (${escapeHtml(c.issuer)}${c.year ? ` - ${escapeHtml(c.year)}` : ''})`).join(" · ")}
+        </div>
+      </div>` : ''}
+    </div>
+  `;
+}
+
+function parseLatexCoverLetter(texCode) {
+  const result = {
+    name: "",
+    headline: "",
+    contactHtml: "",
+    isCentered: false,
+    hasDivider: false,
+    date: "",
+    recipientLines: [],
+    subject: "",
+    salutation: "",
+    paragraphsHtml: "",
+    closing: "Sincerely,",
+    signer: "",
+    signerTitle: ""
+  };
+
+  if (!texCode) return result;
+
+  if (/\\begin\{center\}/i.test(texCode)) result.isCentered = true;
+  if (/\\hrule/i.test(texCode)) result.hasDivider = true;
+
+  // 1. Candidate Name
+  const nameMatch = texCode.match(/\\textbf\{\\Huge\s*(?:\\scshape\s*)?([^}]+)\}/) ||
+                    texCode.match(/\\namesection\{[^{}]*\}\{\\Huge\{?([^}]+)\}?\}/) ||
+                    texCode.match(/\\textbf\{\\Large\s*(?:\\scshape\s*)?([^}]+)\}/) ||
+                    texCode.match(/\\Large\s*\{?\\textbf\{([^}]+)\}\}/) ||
+                    texCode.match(/\\textbf\{([^}\n]+)\}\s*\\\\\s*(?:\[[^\]]*\])?\s*\{?\\large/);
+  if (nameMatch) {
+    result.name = cleanLatexText(nameMatch[1]);
+  } else {
+    result.name = activeProfile?.name || "Candidate";
+  }
+
+  // 2. Headline
+  const headlineMatch = texCode.match(/\{\\large\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*\\textbf\{([^}]+)\}\}/) ||
+                        texCode.match(/\{\\large\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*([^\n\\{}]+)\}/) ||
+                        texCode.match(/(?<!\\textbf\{)\\textbf\{\\large\s+(?!Application for)([^}]+)\}/);
+  if (headlineMatch) {
+    const rawHeadline = cleanLatexText(headlineMatch[1]);
+    if (rawHeadline && rawHeadline.toLowerCase() !== result.name.toLowerCase() && !rawHeadline.toLowerCase().startsWith("application for")) {
+      result.headline = rawHeadline;
+    } else {
+      result.headline = "";
+    }
+  } else {
+    result.headline = "";
+  }
+
+  // 3. Contact Info (before \hrule)
+  const beforeHrule = texCode.split(/\\hrule/)[0] || texCode;
+  const smallMatches = [...beforeHrule.matchAll(/\{\\small\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*([\s\S]*?)\}/g)];
+  for (const sm of smallMatches) {
+    const raw = sm[1].trim();
+    const cleaned = cleanLatexText(raw);
+    if (/\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\b/.test(cleaned) || /\\today\b/.test(raw)) continue;
+    if (cleaned.length > 0) {
+      result.contactHtml = cleaned;
+      break;
+    }
+  }
+
+  if (!result.contactHtml) {
+    const centerBlock = texCode.match(/\\begin\{center\}([\s\S]*?)\\end\{center\}/);
+    if (centerBlock) {
+      const smallContact = centerBlock[1].match(/\\small\s*([\s\S]*?)$/);
+      if (smallContact) {
+        const cleaned = cleanLatexText(smallContact[1]);
+        if (!/\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\b/.test(cleaned) && !/\\today\b/.test(smallContact[1])) {
+          result.contactHtml = cleaned;
+        }
+      }
+    }
+  }
+
+  // 4. Date
+  const dateMatch = texCode.match(/\{\\small\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})\}/i) ||
+                    texCode.match(/(\d{1,2}\s+[A-Za-z]+\s+\d{4})/i) ||
+                    texCode.match(/\\currentdate\{([^}]+)\}/i);
+  if (dateMatch) {
+    result.date = dateMatch[1].trim();
+    if (result.date === "\\today") {
+      result.date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+    }
+  } else {
+    result.date = "";
+  }
+
+  // 5. Recipient
+  let recipientLines = [];
+  const afterHeader = texCode.split(/\\hrule/)[1] || texCode;
+  let contentAfterDate = afterHeader;
+  const datePosMatch = afterHeader.match(/(?:\d{1,2}\s+[A-Za-z]+\s+\d{4}|\\today|\\currentdate\{[^}]*\})/i);
+  if (datePosMatch && datePosMatch.index !== undefined) {
+    contentAfterDate = afterHeader.slice(datePosMatch.index + datePosMatch[0].length);
+  }
+  const stopMatch = contentAfterDate.match(/(?:\\textbf\{\\large\s+Application|\\textbf\{Application|Application for|Dear\s+|To\s+the\s+|Sehr geehrte|Estimad|Ch[eè]re|Geachte)/i);
+  const recipientBlockRaw = stopMatch ? contentAfterDate.slice(0, stopMatch.index) : "";
+  const cleanRecipientText = recipientBlockRaw
+    .replace(/%.*$/gm, "")
+    .replace(/\\(?:vspace|hspace|setlength)\*?\{[^}]*\}/g, "")
+    .replace(/\\par\b/g, "\n")
+    .trim();
+
+  if (cleanRecipientText) {
+    const lines = cleanRecipientText
+      .split(/\n|\\\\/)
+      .map(cleanLatexText)
+      .filter(l => Boolean(l) && !/^\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em)\s*\]$/.test(l));
+    if (lines.length > 0) {
+      recipientLines = lines;
+    }
+  }
+  result.recipientLines = recipientLines;
+
+  // 6. Subject
+  const subjectMatch = texCode.match(/\\textbf\{\\large\s+((?:Application|Bewerbung|Candidature|Postulaci[oó]n|Sollicitatie)[^}]+)\}/i) ||
+                       texCode.match(/\\textbf\{((?:Application|Bewerbung|Candidature|Postulaci[oó]n|Sollicitatie)[^}]+)\}/i) ||
+                       texCode.match(/\\subject\{([^}]+)\}/i) ||
+                       texCode.match(/(?:Application for|Bewerbung als|Candidature pour|Postulaci[oó]n a|Sollicitatie voor)\s+([^\n\\]+)/i);
+  if (subjectMatch) {
+    const rawSubj = cleanLatexText(subjectMatch[1]);
+    if (rawSubj && !/^(?:Hiring Team|Dear|Sincerely)/i.test(rawSubj) && rawSubj.toLowerCase() !== result.name.toLowerCase()) {
+      result.subject = rawSubj.startsWith("Application for") || /^(?:Bewerbung|Candidature|Postulaci|Sollicitatie)/i.test(rawSubj) ? rawSubj : "Application for " + rawSubj;
+    } else {
+      result.subject = "";
+    }
+  } else {
+    result.subject = "";
+  }
+
+  // 7. Salutation
+  const salPattern = /(?:\\textbf\{)?(Dear\s+[^,\n]+|To\s+the\s+[^,\n]+|Sehr geehrte[^,\n]+|Estimad[^,\n]+|Ch[eè]re[^,\n]+|Geachte[^,\n]+)\}?,?/i;
+  const salMatch = texCode.match(salPattern) || texCode.match(/\\lettercontent\{(Dear\s+[^}]+|Sehr geehrte[^}]+|Estimad[^}]+)\}/i);
+  if (salMatch) {
+    let sal = salMatch[1].trim();
+    if (!sal.endsWith(",")) sal += ",";
+    result.salutation = cleanLatexText(sal);
+  } else {
+    result.salutation = "";
+  }
+
+  // 8. Body & Paragraphs
+  const closePattern = /(?:Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet|\\closing\{)/i;
+  let rawBody = "";
+
+  if (/\\lettercontent\{/i.test(texCode)) {
+    const contentMatches = [...texCode.matchAll(/\\lettercontent\{([\s\S]*?)\}/gi)];
+    const pList = [];
+    for (const cm of contentMatches) {
+      const text = cm[1].trim();
+      if (/^(?:Dear|Sehr geehrte|Estimad|To the)/i.test(text)) continue;
+      pList.push(text);
+    }
+    const itemizeMatch = texCode.match(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/i);
+    if (itemizeMatch && pList.length >= 2) {
+      const bulletMatches = [...itemizeMatch[1].matchAll(/\\item\s*([\s\S]*?)(?=\\item|\s*$)/gi)];
+      const bullets = bulletMatches.map(bm => cleanLatexText(bm[1])).filter(Boolean);
+      if (bullets.length) {
+        const ulHtml = "<ul>" + bullets.map(b => "<li>" + b + "</li>").join("") + "</ul>";
+        pList.splice(2, 0, ulHtml);
+      }
+    }
+    rawBody = pList.join("\n\n");
+  } else {
+    const salIdx = texCode.search(salPattern);
+    if (salIdx !== -1) {
+      const matchedSalStr = (texCode.match(salPattern) || [""])[0];
+      const afterSal = texCode.slice(salIdx + matchedSalStr.length);
+      const closeIdx = afterSal.search(closePattern);
+      rawBody = closeIdx !== -1 ? afterSal.slice(0, closeIdx).trim() : afterSal.replace(/\\end\{document\}[\s\S]*$/, "").trim();
+    } else {
+      const docMatch = texCode.match(/\\begin\{document\}([\s\S]*?)(?:\\end\{document\}|$)/i);
+      rawBody = docMatch ? docMatch[1] : texCode;
+      const subjMatch = rawBody.match(/\\textbf\{\\large\s+Application[^\}]+\}/i);
+      if (subjMatch) {
+        rawBody = rawBody.slice(subjMatch.index + subjMatch[0].length);
+      }
+      const closeIdx = rawBody.search(closePattern);
+      if (closeIdx !== -1) rawBody = rawBody.slice(0, closeIdx).trim();
+    }
+  }
+
+  if (rawBody) {
+    const rawBlocks = rawBody
+      .replace(/%.*$/gm, "")
+      .replace(/\\par\b/gi, "\n\n")
+      .split(/\n\s*\n/)
+      .map(b => b.trim())
+      .filter(b => {
+        if (!b) return false;
+        if (/^\\begin\{document\}|^\\end\{document\}/i.test(b)) return false;
+        if (/^\\(?:vspace|hspace|setlength|rule|fontsize|pagestyle|thispagestyle)/i.test(b)) return false;
+        if (/^\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]$/i.test(b)) return false;
+        return true;
+      });
+
+    const renderedBlocks = [];
+    for (const block of rawBlocks) {
+      if (block.startsWith("<ul") && block.endsWith("</ul>")) {
+        renderedBlocks.push(block);
+        continue;
+      }
+      if (/\\begin\{itemize\}/i.test(block)) {
+        const items = [...block.matchAll(/\\item\s*([\s\S]*?)(?=\\item|\\end\{itemize\}|\s*$)/gi)]
+          .map(im => cleanLatexText(im[1]))
+          .filter(Boolean);
+        if (items.length) {
+          renderedBlocks.push("<ul>" + items.map(it => "<li>" + it + "</li>").join("") + "</ul>");
+        }
+        continue;
+      }
+      const inlineClean = cleanLatexText(block)
+        .replace(/\\\\(?:\s*\[[^\]]*\])?/g, "<br>")
+        .replace(/\n/g, " ")
+        .trim();
+      if (inlineClean) {
+        renderedBlocks.push("<p>" + inlineClean + "</p>");
+      }
+    }
+    result.paragraphsHtml = renderedBlocks.join("\n");
+  }
+
+  // 9. Closing
+  const closingMatch = texCode.match(/(Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet)(?:,)?/i) ||
+                       texCode.match(/\\closing\{([^}]+)\}/i);
+  if (closingMatch) {
+    let cl = closingMatch[1].trim();
+    if (!cl.endsWith(",")) cl += ",";
+    result.closing = cl;
+  }
+
+  // 10. Signer
+  const closeIdx = texCode.search(closePattern);
+  if (closeIdx !== -1) {
+    const afterClose = texCode.slice(closeIdx);
+    const sm = afterClose.match(/\\textbf\{([^}]+)\}/i) || afterClose.match(/\\signature\{([^}]+)\}/i);
+    if (sm) {
+      result.signer = cleanLatexText(sm[1]);
+    }
+  }
+  if (!result.signer) {
+    result.signer = result.name || activeProfile?.name || "Candidate";
+  }
+
+  // 11. Signer Title
+  const signerTitleMatch = texCode.match(/\\textbf\{[^}]+\}\s*\\\\\s*(?:\[[^\]]*\])?\s*([^\n\\{}]+)(?=\s*\\end\{document\}|\s*$)/i);
+  if (signerTitleMatch) {
+    const rawTitle = signerTitleMatch[1].trim();
+    if (rawTitle && !/\\end\{document\}/i.test(rawTitle)) {
+      result.signerTitle = cleanLatexText(rawTitle);
+    }
+  }
+
+  return result;
+}
+
+function renderVisualCoverHtml(texCode) {
+  if (!texCode) return "";
+  const parsedCover = parseLatexCoverLetter(texCode);
+
+  return `
+    <div class="doc-preview-container ats-cover-sheet">
+      <div class="ats-cover-header ${parsedCover.isCentered ? "centered" : ""}">
+        <div class="ats-cover-name">${parsedCover.name}</div>
+        ${parsedCover.headline ? `<div class="ats-cover-headline">${parsedCover.headline}</div>` : ""}
+        ${parsedCover.contactHtml ? `<div class="ats-cover-contact">${parsedCover.contactHtml}</div>` : ""}
+        ${parsedCover.hasDivider ? `<div class="ats-cover-divider"></div>` : ""}
+      </div>
+
+      ${parsedCover.date ? `<div class="ats-cover-date">${parsedCover.date}</div>` : ""}
+
+      ${parsedCover.recipientLines && parsedCover.recipientLines.length ? `
+        <div class="ats-cover-recipient">
+          ${parsedCover.recipientLines.join("<br>")}
+        </div>
+      ` : ""}
+
+      ${parsedCover.subject ? `
+        <div class="ats-cover-subject">
+          ${parsedCover.subject}
+        </div>
+      ` : ""}
+
+      ${parsedCover.salutation ? `
+        <div class="ats-cover-salutation">
+          ${parsedCover.salutation}
+        </div>
+      ` : ""}
+
+      <div class="ats-cover-body">
+        ${parsedCover.paragraphsHtml || `<p>The generated cover letter could not be previewed. Switch to Raw LaTeX to review the source.</p>`}
+      </div>
+
+      <div class="ats-cover-signoff">
+        ${parsedCover.closing}
+        <div class="ats-cover-signature-gap"></div>
+        <div class="ats-cover-signer">${parsedCover.signer}</div>
+        ${parsedCover.signerTitle ? `<div class="ats-cover-signer-title">${parsedCover.signerTitle}</div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function extractCoverParagraphs(texCode) {
+  const parsed = parseLatexCoverLetter(texCode);
+  if (!parsed.paragraphsHtml) return [];
+  const tempDiv = document.createElement("div");
+  tempDiv.innerHTML = parsed.paragraphsHtml;
+  return [...tempDiv.querySelectorAll("p, li")].map(el => el.textContent.trim()).filter(Boolean);
+}
+
 function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
   let lastSavedCode = initialCode;
   const container = document.getElementById(containerId);
@@ -3378,6 +4120,19 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
         <span>Shortcuts: <b>Cmd+S</b> / <b>Ctrl+S</b> to save &bull; <b>Tab</b> inserts 2 spaces</span>
         <span id="latexCharCount_${type}">${initialCode.length.toLocaleString()} characters</span>
       </div>
+
+      <div class="latex-live-preview-wrapper" id="latexLivePreviewSection_${type}">
+        <div class="latex-live-preview-header">
+          <div class="latex-live-preview-title">
+            <span class="latex-live-preview-dot"></span>
+            <span>Dynamic Live Preview (updates as you type)</span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-tertiary);">
+            Instant visual rendering &bull; Save & Apply (Cmd+S) persists to disk
+          </div>
+        </div>
+        <div id="latexLivePreview_${type}" class="latex-live-preview-canvas"></div>
+      </div>
     </div>
   `;
 
@@ -3386,6 +4141,25 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
   const charCountEl = document.getElementById(`latexCharCount_${type}`);
   const btnSave = document.getElementById(`btnSaveLatex_${type}`);
   const btnRevert = document.getElementById(`btnRevertLatex_${type}`);
+  const livePreviewCanvas = document.getElementById(`latexLivePreview_${type}`);
+
+  let livePreviewDebounce = null;
+  function updateLivePreview() {
+    if (!livePreviewCanvas || !textarea) return;
+    const currentCode = textarea.value;
+    try {
+      if (type === "cv") {
+        livePreviewCanvas.innerHTML = renderVisualCVHtml(currentCode);
+      } else {
+        livePreviewCanvas.innerHTML = renderVisualCoverHtml(currentCode);
+      }
+    } catch (err) {
+      console.warn("Live preview parse error:", err);
+    }
+  }
+
+  // Render preview immediately on load
+  updateLivePreview();
 
   function updateState() {
     if (!textarea) return;
@@ -3433,6 +4207,7 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
         if (typeof onSaved === "function") {
           onSaved(newContent);
         }
+        updateLivePreview();
         showToast("LaTeX saved successfully!");
         setTimeout(() => {
           if (textarea && textarea.value === lastSavedCode && statusEl) {
@@ -3466,7 +4241,11 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
     }
   };
 
-  textarea.addEventListener("input", updateState);
+  textarea.addEventListener("input", () => {
+    updateState();
+    clearTimeout(livePreviewDebounce);
+    livePreviewDebounce = setTimeout(updateLivePreview, 120);
+  });
 
   textarea.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
@@ -3483,6 +4262,8 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
       textarea.value = val.substring(0, start) + "  " + val.substring(end);
       textarea.selectionStart = textarea.selectionEnd = start + 2;
       updateState();
+      clearTimeout(livePreviewDebounce);
+      livePreviewDebounce = setTimeout(updateLivePreview, 120);
     }
   });
 
@@ -3492,6 +4273,7 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
     if (!textarea || textarea.value === lastSavedCode) return;
     textarea.value = lastSavedCode;
     updateState();
+    updateLivePreview();
     showToast("Restored last saved LaTeX code");
   });
 }
@@ -3649,458 +4431,7 @@ async function renderCVTab() {
     return;
   }
 
-  // Visual Parsing
-  const parsed = parseLatexCV(texCode);
-  const isGermanDoc = currentDocLang === "english"
-    ? false
-    : Boolean(
-        activeTailoredData?.language === "de" ||
-        parsed.language === "de" ||
-        /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) ||
-        /\\section\{Profil\}/i.test(texCode)
-      );
-  // Candidate Header info
-  const nameToRender = parsed.name || activeProfile?.name || "Candidate";
-  const latexRoleMatch = texCode.match(/\\textbf\{\\large\s*([^}]+)\}/i) || texCode.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
-  const rawHeadline = parsed.role || (latexRoleMatch ? latexRoleMatch[1].replace(/\\&/g, "&").trim() : (selectedJob.title || activeProfile?.headline));
-  const headlineRole = cleanCandidateHeadline(rawHeadline, activeProfile?.headline);
-
-  let contactHtml = parsed.contactHtml;
-  if (!contactHtml) {
-    const contactParts = [];
-    if (activeProfile?.location) contactParts.push(escapeHtml(activeProfile.location));
-    if (activeProfile?.phone) contactParts.push(escapeHtml(activeProfile.phone));
-    if (activeProfile?.email) contactParts.push(escapeHtml(activeProfile.email));
-    if (activeProfile?.linkedin) contactParts.push(`<a href="${escapeHtml(activeProfile.linkedin)}" target="_blank">LinkedIn</a>`);
-    if (activeProfile?.github) contactParts.push(`<a href="${escapeHtml(activeProfile.github)}" target="_blank">GitHub</a>`);
-    contactHtml = contactParts.join(" &nbsp;|&nbsp; ");
-  }
-
-  const expToRender = (parsed.experience && parsed.experience.length > 0)
-    ? parsed.experience
-    : (activeProfile?.experience || []).map(exp => ({
-        company: exp.company,
-        title: exp.role,
-        location: exp.location,
-        dates: `${exp.startDate} – ${exp.endDate}`,
-        items: exp.bullets || []
-      }));
-
-  // Fallback to activeProfile projects if LaTeX returned empty
-  const projectsToRender = (parsed.projects && parsed.projects.length > 0)
-    ? parsed.projects
-    : ((activeProfile?.projects || []).map(p => ({
-        name: p.name,
-        tools: p.tools,
-        category: p.category,
-        items: p.bullets || []
-      })));
-
-  let summaryToRender = parsed.summary;
-  if (!summaryToRender) {
-    if (activeProfile?.summary) {
-      summaryToRender = activeProfile.summary;
-    } else if (isGermanDoc) {
-      summaryToRender = activeProfile?.headline
-        ? `${activeProfile.headline} mit fundierter Praxiserfahrung und Fokus auf verlässliche Ergebnisse.`
-        : "Erfahrene Fachkraft mit strukturierter Arbeitsweise und Fokus auf verlässliche Ergebnisse.";
-    } else {
-      summaryToRender = activeProfile?.headline
-        ? `${activeProfile.headline} experienced in delivering dependable outcomes and collaborating effectively with multidisciplinary teams.`
-        : "";
-    }
-  }
-
-  // Format skills fallback if not parsed
-  let skillsTextToRender = parsed.skillsHtml;
-  if (!skillsTextToRender && activeProfile?.skills) {
-    const s = activeProfile.skills;
-    const parts = [];
-    for (const [cat, items] of Object.entries(s)) {
-      if (Array.isArray(items) && items.length) {
-        const catLabel = cat.replace(/[_-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-        parts.push(`${catLabel}: ${items.join(", ")}`);
-      }
-    }
-    skillsTextToRender = parts.join("\n");
-  }
-
-  const eduToRender = (parsed.education && parsed.education.length > 0)
-    ? parsed.education
-    : (activeProfile?.education || []).map(rawEdu => {
-        const cleanEdu = cleanEducationItemClient(rawEdu);
-        return {
-          institution: cleanEdu.institution || "University",
-          location: cleanEdu.details || "",
-          degree: cleanEdu.degree || "Degree",
-          dates: cleanEdu.dates || ""
-        };
-      });
-
-  document.getElementById("cvContainer").innerHTML = `
-    <div class="doc-preview-container ats-resume-sheet">
-      <div class="ats-header">
-        <h1 class="ats-name">${escapeHtml(nameToRender)}</h1>
-        ${headlineRole ? `<div class="ats-role">${escapeHtml(headlineRole)}</div>` : ''}
-        <div class="ats-contact">
-          ${contactHtml}
-        </div>
-      </div>
-
-      ${summaryToRender ? `
-      <div class="ats-section">
-        <div class="ats-section-title">${isGermanDoc ? 'Profil' : 'Summary'}</div>
-        <div class="ats-summary">${escapeHtml(formatSummaryClient(summaryToRender))}</div>
-      </div>` : ''}
-
-      ${expToRender.length > 0 ? `
-      <div class="ats-section">
-        <div class="ats-section-title">${isGermanDoc ? 'Berufserfahrung' : 'Work Experience'}</div>
-        ${expToRender.map(exp => `
-          <div class="ats-entry">
-            <div class="ats-subheading-row1">
-              <span class="ats-company">${escapeHtml(exp.company)}</span>
-              <span class="ats-location">${escapeHtml(exp.location)}</span>
-            </div>
-            <div class="ats-subheading-row2">
-              <span class="ats-title">${escapeHtml(exp.title)}</span>
-              <span class="ats-dates">${escapeHtml(exp.dates)}</span>
-            </div>
-            <ul class="ats-bullet-list">
-              ${exp.items.map(bullet => `<li>${escapeHtml(bullet)}</li>`).join("")}
-            </ul>
-          </div>
-        `).join("")}
-      </div>` : ''}
-
-      ${skillsTextToRender ? `
-      <div class="ats-section">
-        <div class="ats-section-title">${isGermanDoc ? 'Kenntnisse und Fähigkeiten' : 'Technical Skills'}</div>
-        <div class="ats-skills-block">
-          ${(parsed.skillsCategories && parsed.skillsCategories.length > 0)
-            ? parsed.skillsCategories.map(c => `
-                <div class="ats-skills-line">
-                  ${c.category ? `<span class="ats-skill-cat">${escapeHtml(c.category)}:</span>` : ''}
-                  <span class="ats-skill-items"> ${escapeHtml(c.items)}</span>
-                </div>
-              `).join("")
-            : `<div class="ats-skills-line" style="white-space: pre-line;">${escapeHtml(skillsTextToRender)}</div>`}
-        </div>
-      </div>` : ''}
-
-      ${projectsToRender.length > 0 ? `
-      <div class="ats-section">
-        <div class="ats-section-title">${isGermanDoc ? 'Projekte' : 'Technical Projects'}</div>
-        ${projectsToRender.map(proj => `
-          <div class="ats-entry">
-            <div class="ats-subheading-row1">
-              <span class="ats-company">${escapeHtml(proj.name)} ${proj.tools ? `<span style="font-weight: 400; font-style: italic;">| ${escapeHtml(proj.tools)}</span>` : ''}</span>
-              <span class="ats-location">${escapeHtml(proj.category || "")}</span>
-            </div>
-            <ul class="ats-bullet-list">
-              ${proj.items.map(b => `<li>${escapeHtml(b)}</li>`).join("")}
-            </ul>
-          </div>
-        `).join("")}
-      </div>` : ''}
-
-      ${eduToRender.length > 0 ? `
-      <div class="ats-section">
-        <div class="ats-section-title">${parsed.educationTitle || (isGermanDoc ? 'Ausbildung' : 'Education')}</div>
-        ${eduToRender.map(edu => `
-          <div class="ats-entry">
-            <div class="ats-subheading-row1">
-              <span class="ats-company">${escapeHtml(edu.institution || "University")}</span>
-              <span class="ats-location">${escapeHtml(edu.location || "")}</span>
-            </div>
-            <div class="ats-subheading-row2">
-              <span class="ats-title">${escapeHtml(edu.degree || "Degree")}</span>
-              <span class="ats-dates">${escapeHtml(edu.dates || "")}</span>
-            </div>
-          </div>
-        `).join("")}
-      </div>` : ''}
-
-      ${((!parsed.education || parsed.education.length === 0) && (activeProfile?.certifications || []).length > 0) ? `
-      <div class="ats-section">
-        <div class="ats-section-title">${isGermanDoc ? 'Zertifizierungen' : 'Certifications'}</div>
-        <div class="ats-skills-line" style="margin-top: 4px;">
-          ${activeProfile.certifications.map(c => `${escapeHtml(c.name)} (${escapeHtml(c.issuer)}${c.year ? ` - ${escapeHtml(c.year)}` : ''})`).join(" · ")}
-        </div>
-      </div>` : ''}
-    </div>
-  `;
-}
-
-function convertLatexCoverInline(str) {
-  if (!str) return "";
-  let s = str;
-  s = s.replace(/\\href\{([^}]+)\}\{([^}]+)\}/g, '<a href="$1" target="_blank">$2</a>');
-  s = s.replace(/\\textbf\{([^}]*)\}/g, '<strong>$1</strong>');
-  s = s.replace(/\\(?:textit|emph)\{([^}]*)\}/g, '<em>$1</em>');
-  s = s.replace(/\\underline\{([^}]*)\}/g, '<u>$1</u>');
-  s = s.replace(/\\&/g, "&")
-       .replace(/\\%/g, "%")
-       .replace(/\\#/g, "#")
-       .replace(/\\\$/g, "$")
-       .replace(/\\_/g, "_");
-  s = s.replace(/\\quad\s*(?:\$\s*\\cdot\s*\$|·|\$·\$)\s*\\quad/g, " &nbsp;·&nbsp; ");
-  s = s.replace(/(?:\\quad\s*)?\$\\cdot\$(?:\s*\\quad)?/g, " &nbsp;·&nbsp; ");
-  s = s.replace(/\\quad/g, " ");
-  s = s.replace(/\$\|\$/g, " &nbsp;|&nbsp; ");
-  s = s.replace(/--/g, "–");
-  s = s.replace(/\\(?:color(?:\[[^\]]*\])?\{[^}]*\}|fontsize\{[^}]*\}\{[^}]*\}|selectfont|raggedright|raggedbottom)/g, "");
-  s = s.replace(/\\(?:vspace|hspace)\*?\{[^}]*\}/g, "");
-  s = s.replace(/[{}]/g, "");
-  return s;
-}
-
-function parseLatexCoverLetter(texCode) {
-  const result = {
-    name: "",
-    headline: "",
-    contactHtml: "",
-    isCentered: false,
-    hasDivider: false,
-    date: "",
-    recipientLines: [],
-    subject: "",
-    salutation: "",
-    paragraphsHtml: "",
-    closing: "Sincerely,",
-    signer: "",
-    signerTitle: ""
-  };
-
-  if (!texCode) return result;
-
-  // 1. Check if centered header or has divider
-  if (/\\begin\{center\}/i.test(texCode)) {
-    result.isCentered = true;
-  }
-  if (/\\hrule/i.test(texCode)) {
-    result.hasDivider = true;
-  }
-
-  // 2. Extract Candidate Name (case-preserving \Huge / \Large)
-  const nameMatch = texCode.match(/\\textbf\{\\Huge\s*(?:\\scshape\s*)?([^}]+)\}/) ||
-                    texCode.match(/\\namesection\{[^{}]*\}\{\\Huge\{?([^}]+)\}?\}/) ||
-                    texCode.match(/\\textbf\{\\Large\s*(?:\\scshape\s*)?([^}]+)\}/) ||
-                    texCode.match(/\\Large\s*\{?\\textbf\{([^}]+)\}\}/) ||
-                    texCode.match(/\\textbf\{([^}\n]+)\}\s*\\\\\s*(?:\[[^\]]*\])?\s*\{?\\large/);
-  if (nameMatch) {
-    result.name = convertLatexCoverInline(nameMatch[1]).replace(/<[^>]+>/g, "").trim();
-  } else {
-    result.name = activeProfile?.name || "Candidate";
-  }
-
-  // 3. Extract Headline (Case sensitive \large, not \Large, distinct from Candidate Name)
-  const headlineMatch = texCode.match(/\{\\large\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*\\textbf\{([^}]+)\}\}/) ||
-                        texCode.match(/\{\\large\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*([^\n\\{}]+)\}/) ||
-                        texCode.match(/\\textbf\{\\large\s+(?!Application for)([^}]+)\}/);
-  if (headlineMatch) {
-    result.headline = convertLatexCoverInline(headlineMatch[1]).replace(/<[^>]+>/g, "").trim();
-  } else {
-    result.headline = activeProfile?.headline || "";
-  }
-  if (result.headline === result.name) {
-    result.headline = activeProfile?.headline || "";
-  }
-
-  // 4. Extract Contact Info (Look before \hrule, skipping date lines)
-  const beforeHrule = texCode.split(/\\hrule/)[0] || texCode;
-  const smallMatches = [...beforeHrule.matchAll(/\{\\small\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*([\s\S]*?)\}/g)];
-  for (const sm of smallMatches) {
-    const raw = sm[1].trim();
-    if (/^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(raw) || raw === "\\today") continue;
-    result.contactHtml = convertLatexCoverInline(raw).trim();
-    break;
-  }
-
-  if (!result.contactHtml) {
-    const centerBlock = texCode.match(/\\begin\{center\}([\s\S]*?)\\end\{center\}/);
-    if (centerBlock) {
-      const smallContact = centerBlock[1].match(/\\small\s*([\s\S]*?)$/);
-      if (smallContact) {
-        result.contactHtml = convertLatexCoverInline(smallContact[1]).trim();
-      }
-    } else {
-      const contactMatch = texCode.match(/\\namesection\{[^{}]*\}\{[^{}]*\}\{([\s\S]*?)\}/);
-      if (contactMatch) {
-        result.contactHtml = convertLatexCoverInline(contactMatch[1]).trim();
-      }
-    }
-  }
-
-  if (!result.contactHtml && activeProfile) {
-    const parts = [];
-    if (activeProfile.location) parts.push(escapeHtml(activeProfile.location));
-    if (activeProfile.phone) parts.push(escapeHtml(activeProfile.phone));
-    if (activeProfile.email) parts.push(escapeHtml(activeProfile.email));
-    result.contactHtml = parts.join(" &nbsp;·&nbsp; ");
-  }
-
-  // 5. Extract Date
-  const dateMatch = texCode.match(/\{\\small\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})\}/i) ||
-                    texCode.match(/(\d{1,2}\s+[A-Za-z]+\s+\d{4})/i) ||
-                    texCode.match(/\\currentdate\{([^}]+)\}/i);
-  if (dateMatch) {
-    result.date = dateMatch[1].trim();
-    if (result.date === "\\today") {
-      result.date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-    }
-  } else {
-    result.date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-  }
-
-  // 6. Extract Recipient Block
-  const recipientMatch = texCode.match(/\\textbf\{Hiring Team\}([\s\S]*?)(?=\\textbf\{\\large Application|Dear|\n\s*\n\s*Dear)/i);
-  if (recipientMatch) {
-    const lines = ["Hiring Team", ...recipientMatch[1].split(/\n|\\\\/).map(l => convertLatexCoverInline(l).replace(/<[^>]+>/g, "").trim()).filter(Boolean)];
-    result.recipientLines = lines;
-  } else if (selectedJob) {
-    result.recipientLines = ["Hiring Team", selectedJob.company || "", selectedJob.location || ""].filter(Boolean);
-  }
-
-  // 7. Extract Subject Line
-  const subjectMatch = texCode.match(/\\textbf\{\\large\s+Application for\s+([^}]+)\}/i) ||
-                       texCode.match(/\\textbf\{Application for\s+([^}]+)\}/i) ||
-                       texCode.match(/Application for\s+([^\n\\]+)/i);
-  if (subjectMatch) {
-    result.subject = "Application for " + convertLatexCoverInline(subjectMatch[1]).replace(/<[^>]+>/g, "").trim();
-  } else if (selectedJob) {
-    const cleanRole = cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
-    result.subject = "Application for " + cleanRole;
-  }
-
-  // 8. Extract Salutation
-  const salPattern = /(?:\\textbf\{)?(Dear\s+[^,\n]+|To\s+the\s+[^,\n]+|Sehr geehrte[^,\n]+|Estimad[^,\n]+|Ch[eè]re[^,\n]+|Geachte[^,\n]+)\}?,?/i;
-  const salMatch = texCode.match(salPattern) || texCode.match(/\\lettercontent\{(Dear\s+[^}]+|Sehr geehrte[^}]+|Estimad[^}]+)\}/i);
-  if (salMatch) {
-    let sal = salMatch[1].trim();
-    if (!sal.endsWith(",")) sal += ",";
-    result.salutation = convertLatexCoverInline(sal);
-  } else {
-    result.salutation = "Dear Hiring Team,";
-  }
-
-  // 9. Extract Body & Paragraphs
-  const closePattern = /(?:Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet|\\closing\{)/i;
-  let rawBody = "";
-
-  if (/\\lettercontent\{/i.test(texCode)) {
-    const contentMatches = [...texCode.matchAll(/\\lettercontent\{([\s\S]*?)\}/gi)];
-    const pList = [];
-    for (const cm of contentMatches) {
-      const text = cm[1].trim();
-      if (/^(?:Dear|Sehr geehrte|Estimad|To the)/i.test(text)) continue;
-      pList.push(text);
-    }
-    const itemizeMatch = texCode.match(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/i);
-    if (itemizeMatch && pList.length >= 2) {
-      const bulletMatches = [...itemizeMatch[1].matchAll(/\\item\s*([\s\S]*?)(?=\\item|\s*$)/gi)];
-      const bullets = bulletMatches.map(bm => convertLatexCoverInline(bm[1]).trim()).filter(Boolean);
-      if (bullets.length) {
-        const ulHtml = "<ul>" + bullets.map(b => "<li>" + b + "</li>").join("") + "</ul>";
-        pList.splice(2, 0, ulHtml);
-      }
-    }
-    rawBody = pList.join("\n\n");
-  } else {
-    const salIdx = texCode.search(salPattern);
-    if (salIdx !== -1) {
-      const matchedSalStr = (texCode.match(salPattern) || [""])[0];
-      const afterSal = texCode.slice(salIdx + matchedSalStr.length);
-      const closeIdx = afterSal.search(closePattern);
-      if (closeIdx !== -1) {
-        rawBody = afterSal.slice(0, closeIdx).trim();
-      } else {
-        rawBody = afterSal.replace(/\\end\{document\}[\s\S]*$/, "").trim();
-      }
-    } else {
-      const docMatch = texCode.match(/\\begin\{document\}([\s\S]*?)(?:\\end\{document\}|$)/i);
-      rawBody = docMatch ? docMatch[1] : texCode;
-      const closeIdx = rawBody.search(closePattern);
-      if (closeIdx !== -1) rawBody = rawBody.slice(0, closeIdx).trim();
-    }
-  }
-
-  if (rawBody) {
-    const rawBlocks = rawBody
-      .replace(/%.*$/gm, "")
-      .replace(/\\par\b/gi, "\n\n")
-      .split(/\n\s*\n/)
-      .map(b => b.trim())
-      .filter(b => {
-        if (!b) return false;
-        if (/^\\begin\{document\}|^\\end\{document\}/i.test(b)) return false;
-        if (/^\\(?:vspace|hspace|setlength|rule|fontsize|pagestyle|thispagestyle)/i.test(b)) return false;
-        if (/^\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]$/i.test(b)) return false;
-        return true;
-      });
-
-    const renderedBlocks = [];
-    for (const block of rawBlocks) {
-      if (block.startsWith("<ul") && block.endsWith("</ul>")) {
-        renderedBlocks.push(block);
-        continue;
-      }
-      if (/\\begin\{itemize\}/i.test(block)) {
-        const items = [...block.matchAll(/\\item\s*([\s\S]*?)(?=\\item|\\end\{itemize\}|\s*$)/gi)]
-          .map(im => convertLatexCoverInline(im[1]).trim())
-          .filter(Boolean);
-        if (items.length) {
-          renderedBlocks.push("<ul>" + items.map(it => "<li>" + it + "</li>").join("") + "</ul>");
-        }
-        continue;
-      }
-      const inlineClean = convertLatexCoverInline(block)
-        .replace(/\\\\(?:\s*\[[^\]]*\])?/g, "<br>")
-        .replace(/\n/g, " ")
-        .trim();
-      if (inlineClean) {
-        renderedBlocks.push("<p>" + inlineClean + "</p>");
-      }
-    }
-    result.paragraphsHtml = renderedBlocks.join("\n");
-  }
-
-  // 10. Extract Closing & Signer
-  const closingMatch = texCode.match(/(Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet)(?:,)?/i) ||
-                       texCode.match(/\\closing\{([^}]+)\}/i);
-  if (closingMatch) {
-    let cl = closingMatch[1].trim();
-    if (!cl.endsWith(",")) cl += ",";
-    result.closing = cl;
-  }
-
-  const signerMatch = texCode.match(/(?:Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet),?\s*(?:\\\\\[[^\]]*\]|\\\\|\s*\\vspace\{[^}]*\})*\s*\\textbf\{([^}]+)\}/i) ||
-                      texCode.match(/\\signature\{([^}]+)\}/i) ||
-                      texCode.match(/\\closing\{[^}]*\}\s*(?:\\vspace\{[^}]*\}|\s*)*\\textbf\{([^}]+)\}/i);
-  if (signerMatch) {
-    result.signer = convertLatexCoverInline(signerMatch[1]).replace(/<[^>]+>/g, "").trim();
-  } else {
-    result.signer = result.name || activeProfile?.name || "Candidate";
-  }
-
-  // 11. Extract Signer Title if present
-  const signerTitleMatch = texCode.match(/\\textbf\{[^}]+\}\s*\\\\\s*(?:\[[^\]]*\])?\s*([^\n\\{}]+)(?=\s*\\end\{document\}|\s*$)/i);
-  if (signerTitleMatch) {
-    const rawTitle = signerTitleMatch[1].trim();
-    if (rawTitle && !/\\end\{document\}/i.test(rawTitle)) {
-      result.signerTitle = convertLatexCoverInline(rawTitle).replace(/<[^>]+>/g, "").trim();
-    }
-  }
-
-  return result;
-}
-
-function extractCoverParagraphs(texCode) {
-  const parsed = parseLatexCoverLetter(texCode);
-  if (!parsed.paragraphsHtml) return [];
-  const tempDiv = document.createElement("div");
-  tempDiv.innerHTML = parsed.paragraphsHtml;
-  return [...tempDiv.querySelectorAll("p, li")].map(el => el.textContent.trim()).filter(Boolean);
+  document.getElementById("cvContainer").innerHTML = renderVisualCVHtml(texCode);
 }
 
 async function renderCoverTab() {
@@ -4251,50 +4582,7 @@ async function renderCoverTab() {
     return;
   }
 
-  // Visual View (Pixel-Perfect LaTeX CSS Twin)
-  const parsedCover = parseLatexCoverLetter(texCode);
-
-  document.getElementById("coverContainer").innerHTML = `
-    <div class="doc-preview-container ats-cover-sheet">
-      <div class="ats-cover-header ${parsedCover.isCentered ? "centered" : ""}">
-        <div class="ats-cover-name">${escapeHtml(parsedCover.name)}</div>
-        ${parsedCover.headline ? `<div class="ats-cover-headline">${escapeHtml(parsedCover.headline)}</div>` : ""}
-        ${parsedCover.contactHtml ? `<div class="ats-cover-contact">${parsedCover.contactHtml}</div>` : ""}
-        ${parsedCover.hasDivider ? `<div class="ats-cover-divider"></div>` : ""}
-      </div>
-
-      ${parsedCover.date ? `<div class="ats-cover-date">${escapeHtml(parsedCover.date)}</div>` : ""}
-
-      ${parsedCover.recipientLines && parsedCover.recipientLines.length ? `
-        <div class="ats-cover-recipient">
-          ${parsedCover.recipientLines.map(l => escapeHtml(l)).join("<br>")}
-        </div>
-      ` : ""}
-
-      ${parsedCover.subject ? `
-        <div class="ats-cover-subject">
-          ${escapeHtml(parsedCover.subject)}
-        </div>
-      ` : ""}
-
-      ${parsedCover.salutation ? `
-        <div class="ats-cover-salutation">
-          ${escapeHtml(parsedCover.salutation)}
-        </div>
-      ` : ""}
-
-      <div class="ats-cover-body">
-        ${parsedCover.paragraphsHtml || `<p>The generated cover letter could not be previewed. Switch to Raw LaTeX to review the source.</p>`}
-      </div>
-
-      <div class="ats-cover-signoff">
-        ${escapeHtml(parsedCover.closing)}
-        <div class="ats-cover-signature-gap"></div>
-        <div class="ats-cover-signer">${escapeHtml(parsedCover.signer)}</div>
-        ${parsedCover.signerTitle ? `<div class="ats-cover-signer-title">${escapeHtml(parsedCover.signerTitle)}</div>` : ""}
-      </div>
-    </div>
-  `;
+  document.getElementById("coverContainer").innerHTML = renderVisualCoverHtml(texCode);
 }
 
 function renderDetailsTab() {
@@ -6484,194 +6772,4 @@ function cleanCandidateHeadline(role, fallback = "Professional Candidate") {
   if (lower.includes("data scientist")) return lower.includes("senior") ? "Senior Data Scientist" : "Data Scientist";
 
   return chosen || fallback;
-}
-
-function parseLatexCV(latex) {
-  const result = { summary: "", experience: [], skillsHtml: "", projects: [], education: [], language: "en" };
-  if (!latex) return result;
-
-  try {
-    // Detect document language from babel, section headers, or keywords
-    if (/\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(latex) || /\\section\{Profil\}/i.test(latex) || /\\section\{Berufserfahrung\}/i.test(latex)) {
-      result.language = "de";
-    } else if (/\\usepackage\[spanish\]\{babel\}/i.test(latex) || /\\section\{Perfil/i.test(latex)) {
-      result.language = "es";
-    } else if (/\\usepackage\[french\]\{babel\}/i.test(latex) || /\\section\{Expérience/i.test(latex)) {
-      result.language = "fr";
-    } else if (/\\usepackage\[italian\]\{babel\}/i.test(latex) || /\\section\{Profilo/i.test(latex)) {
-      result.language = "it";
-    } else if (/\\usepackage\[dutch\]\{babel\}/i.test(latex) || /\\section\{Profiel/i.test(latex)) {
-      result.language = "nl";
-    }
-
-    // Header extraction (Candidate name, role, contact)
-    const nameMatch = latex.match(/\\textbf\{\\Huge\s*(?:\\scshape\s*)?([^}]+)\}/i) ||
-                      latex.match(/\\Huge\s*\{?\\scshape\s*([^\\}\n]+)\}?/i) ||
-                      latex.match(/\\textbf\{\\huge\s*([^}]+)\}/i);
-    if (nameMatch) {
-      result.name = nameMatch[1].replace(/\\&/g, "&").trim();
-    }
-
-    const roleMatch = latex.match(/\\textbf\{\\large\s*([^}]+)\}/i) ||
-                      latex.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
-    if (roleMatch) {
-      result.role = roleMatch[1].replace(/\\&/g, "&").replace(/--/g, "–").trim();
-    }
-
-    const centerMatch = latex.match(/\\begin\{center\}([\s\S]*?)\\end\{center\}/i);
-    if (centerMatch) {
-      const smallMatch = centerMatch[1].match(/\\small\s*([\s\S]*?)$/i);
-      if (smallMatch) {
-        let rawContact = smallMatch[1].trim();
-        rawContact = rawContact.replace(/\\href\{([^}]+)\}\{([^}]+)\}/g, '<a href="$1" target="_blank">$2</a>');
-        rawContact = rawContact.replace(/\$\|\$/g, " &nbsp;|&nbsp; ").replace(/\\quad\s*\$\\cdot\$\s*\\quad/g, " &nbsp;|&nbsp; ");
-        rawContact = rawContact.replace(/\\&/g, "&").replace(/\\_/g, "_");
-        rawContact = rawContact.replace(/\\vspace\{[^}]*\}/g, "").replace(/\\\\/g, " ");
-        rawContact = rawContact.replace(/[{}]/g, "").trim();
-        if (rawContact) result.contactHtml = rawContact;
-      }
-    }
-
-    // 1. Summary: support English, German, Spanish, French, Italian, Dutch
-    const summaryMatch = latex.match(/\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}[\s\S]*?\\(?:small|resumeItemListStart)\{?([\s\S]*?)\}?(?:\\resumeItemListEnd|\\section)/i) ||
-                         latex.match(/\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}([\s\S]*?)(?:\\section|$)/i);
-    if (summaryMatch) {
-      result.summary = summaryMatch[1]
-        .replace(/\\resumeItemListStart|\\resumeItemListEnd/g, "")
-        .replace(/\\resumeItem\{([^}]*)\}/g, "$1 ")
-        .replace(/\\small\{/g, "")
-        .replace(/[{}]/g, "")
-        .replace(/\\&/g, "&")
-        .replace(/\\%/g, "%")
-        .replace(/\\_/g, "_")
-        .replace(/(?:^|\n)\s*[•\-\*]\s*/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-    }
-
-    // 2. Experience: support English, German, Spanish, French, Italian, Dutch
-    const expSection = latex.match(/\\section\{(?:Professional\s+Experience|Work\s+Experience|Berufserfahrung|Experiencia\s+Laboral|Expérience\s+Professionnelle|Esperienza\s+Lavorativa|Werkervaring)\}[\s\S]*?\\resumeSubHeadingListStart([\s\S]*?)\\resumeSubHeadingListEnd/i);
-    if (expSection) {
-      const expBlocks = expSection[1].split(/\\resumeSubheading/g).filter(b => b.trim().length > 0);
-      expBlocks.forEach(block => {
-        let company = "", location = "", title = "", dates = "";
-        const m = block.match(/\{([^}]*)\}\{([^}]*)\}\s*\{([^}]*)\}\{([^}]*)\}/);
-        if (m) {
-          company = m[1].replace(/\\&/g, "&");
-          location = m[2].replace(/\\&/g, "&");
-          title = m[3].replace(/\\&/g, "&");
-          dates = m[4].replace(/\\&/g, "&").replace(/--/g, "–");
-        }
-        const bulletMatches = block.match(/\\resumeItem\{([\s\S]*?)\}/g) || [];
-        const items = bulletMatches.map(b => {
-          return b.replace(/\\resumeItem\{/, "").replace(/\}$/, "")
-                  .replace(/\\&/g, "&").replace(/\\%/g, "%").replace(/\\#/g, "#").replace(/\\_/g, "_")
-                  .replace(/\\textbf\{([^}]*)\}/g, "$1")
-                  .trim();
-        });
-        if (company) result.experience.push({ company, location, title, dates, items });
-      });
-    }
-
-    // 3. Technical Projects: support English, German, Spanish, French, Italian, Dutch
-    const projSection = latex.match(/\\section\{(?:(?:Technical\s+)?Projects|Projekte|Proyectos|Projets|Progetti|Projecten)\}[\s\S]*?\\resumeSubHeadingListStart([\s\S]*?)\\resumeSubHeadingListEnd/i);
-    if (projSection) {
-      const projBlocks = projSection[1].split(/\\resumeProjectHeading/g).filter(b => b.trim().length > 0);
-      projBlocks.forEach(block => {
-        let name = "", tools = "", category = "";
-        const m = block.match(/\{\\textbf\{([^}]*)\}\s*\$?\|\$?\s*\\emph\{([^}]*)\}\}\s*\{([^}]*)\}/);
-        if (m) {
-          name = m[1].replace(/\\&/g, "&");
-          tools = m[2].replace(/\\&/g, "&");
-          category = m[3].replace(/\\&/g, "&");
-        } else {
-          const simple = block.match(/\{([^}]*)\}\s*\{([^}]*)\}/);
-          if (simple) {
-            name = simple[1].replace(/\\&/g, "&");
-            category = simple[2].replace(/\\&/g, "&");
-          }
-        }
-        const bulletMatches = block.match(/\\resumeItem\{([\s\S]*?)\}/g) || [];
-        const items = bulletMatches.map(b => {
-          return b.replace(/\\resumeItem\{/, "").replace(/\}$/, "")
-                  .replace(/\\&/g, "&").replace(/\\%/g, "%").replace(/\\#/g, "#").replace(/\\_/g, "_")
-                  .replace(/\\textbf\{([^}]*)\}/g, "$1")
-                  .trim();
-        });
-        if (name) result.projects.push({ name, tools, category, items });
-      });
-    }
-
-    // 4. Skills: support English, German, Spanish, French, Italian, Dutch
-    const skillsMatch = latex.match(/\\section\{(?:Technical\s+Skills|Skills|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}[\s\S]*?\\begin\{itemize\}[\s\S]*?\\small\{\\item\{([\s\S]*?)\}\}\s*\\end\{itemize\}/i) ||
-                        latex.match(/\\section\{(?:Technical\s+Skills|Skills|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}[\s\S]*?\\begin\{itemize\}[\s\S]*?\\item\{([\s\S]*?)\}\s*\\end\{itemize\}/i);
-    if (skillsMatch) {
-      const rawBlock = skillsMatch[1];
-      const rawLines = rawBlock.split(/\\\\/g).map(l => l.trim()).filter(Boolean);
-      const parsedCategories = [];
-
-      for (const line of rawLines) {
-        // Matches \textbf{Category}{: items} or \textbf{Category}: items or Category{: items} or Category: items
-        const m = line.match(/^(?:\\textbf\{([^}]+)\}|([^:{]+))\s*(?:\{:\s*|:\s*|\s*)\s*([\s\S]*)/);
-        if (m) {
-          const cat = (m[1] || m[2] || "")
-            .replace(/\\textbf\{([^}]+)\}/g, "$1")
-            .replace(/\\&/g, "&")
-            .replace(/\\_/g, "_")
-            .replace(/[{}]/g, "")
-            .trim();
-          let itemsStr = (m[3] || "")
-            .replace(/^\{:\s*/, "")
-            .replace(/^\s*:\s*/, "")
-            .replace(/\}\s*$/, "")
-            .replace(/\\&/g, "&")
-            .replace(/\\%/g, "%")
-            .replace(/\\#/g, "#")
-            .replace(/\\_/g, "_")
-            .replace(/[{}]/g, "")
-            .trim();
-          if (cat || itemsStr) {
-            parsedCategories.push({ category: cat, items: itemsStr });
-          }
-        } else {
-          const fallbackClean = line
-            .replace(/\\textbf\{([^}]+)\}/g, "$1")
-            .replace(/\{:\s*/g, ": ")
-            .replace(/[\{\}]/g, "")
-            .replace(/\\&/g, "&")
-            .replace(/\\_/g, "_")
-            .trim();
-          if (fallbackClean) {
-            parsedCategories.push({ category: "", items: fallbackClean });
-          }
-        }
-      }
-      result.skillsCategories = parsedCategories;
-      result.skillsHtml = parsedCategories.map(c => c.category ? `${c.category}: ${c.items}` : c.items).join("\n");
-    }
-
-    // 5. Education & Certifications
-    const eduSection = latex.match(/\\section\{(?:(?:Education(?:\s*(?:&|and)\s*Certifications?)?)|Ausbildung|Formación|Formation|Formazione|Opleiding)\}[\s\S]*?\\resumeSubHeadingListStart([\s\S]*?)\\resumeSubHeadingListEnd/i);
-    if (eduSection) {
-      const eduBlocks = eduSection[1].split(/\\resumeSubheading/g).filter(b => b.trim().length > 0);
-      eduBlocks.forEach(block => {
-        let institution = "", location = "", degree = "", dates = "";
-        const m = block.match(/\{([^}]*)\}\{([^}]*)\}\s*\{([^}]*)\}\{([^}]*)\}/);
-        if (m) {
-          institution = m[1].replace(/\\&/g, "&").trim();
-          location = m[2].replace(/\\&/g, "&").trim();
-          degree = m[3].replace(/\\&/g, "&").trim();
-          dates = m[4].replace(/\\&/g, "&").replace(/--/g, "–").trim();
-        }
-        if (institution) result.education.push({ institution, location, degree, dates });
-      });
-      const eduTitleMatch = latex.match(/\\section\{((?:Education(?:\s*(?:&|and)\s*Certifications?)?)|Ausbildung|Formación|Formation|Formazione|Opleiding)\}/i);
-      if (eduTitleMatch) {
-        result.educationTitle = eduTitleMatch[1].replace(/\\&/g, "&");
-      }
-    }
-  } catch (err) {
-    console.error("LaTeX parse error:", err);
-  }
-  return result;
 }

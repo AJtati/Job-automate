@@ -12,7 +12,7 @@ import {
   extractGroundedCoverText
 } from "../ai_service";
 import type { CandidateProfile } from "../profiles_manager";
-import type { JobInput } from "../application_engine";
+import { applyUserInstructionsToCoverLetter, type JobInput } from "../application_engine";
 
 describe("Heartfelt, Curiosity-Driven Cover Letter Generation", () => {
   const profile: CandidateProfile = {
@@ -1046,5 +1046,74 @@ Taylor Reed
         unlinkSync(fullTestPath);
       }
     }
+  });
+
+  test("applyUserInstructionsToCoverLetter dynamically curates cover letter according to user instructions", () => {
+    const rawParagraphs = [
+      "I am writing to apply for the Platform Engineer position at Acme Corp. My background aligns directly with your team focus.",
+      "At previous roles, I have maintained and supported multi-cluster Kubernetes infrastructure across EKS and AKS, and I have handled complex infrastructure upgrades in production (v1.26 to v1.31) without downtime. Earlier, I worked on mobile and desktop apps.",
+      "In my daily engineering work, I keep architectures simple and practical.",
+      "I would welcome the opportunity to discuss how my background can support your growth."
+    ];
+
+    const instructions = "please dont over explain about eks upgrade and mention of versions , just say, have good experience in hands-on in eks upgrade, also add key words of ownership, and omit mobile apps";
+    const tailored = applyUserInstructionsToCoverLetter(rawParagraphs, instructions);
+
+    // 1. Version numbers omitted
+    expect(tailored[1]).not.toContain("v1.26 to v1.31");
+
+    // 2. EKS upgrade phrasing tailored
+    expect(tailored[1].toLowerCase()).toContain("hands-on");
+    expect(tailored[1].toLowerCase()).toContain("eks");
+
+    // 3. Ownership keywords injected
+    expect(tailored[1].toLowerCase()).toContain("ownership");
+    expect(tailored[2].toLowerCase()).toContain("ownership");
+
+    // 4. Mobile mentions omitted
+    expect(tailored[1].toLowerCase()).not.toContain("mobile and desktop");
+  });
+
+  test("parseLatexCoverLetter faithfully reflects raw LaTeX without synthetic fallback injections when recipient or subject are removed", () => {
+    const rawLatexWithoutRecipient = `\\documentclass[11pt,a4paper]{article}
+\\usepackage[margin=24mm]{geometry}
+\\begin{document}
+\\textbf{\\Large Taylor Reed}\\\\[2pt]
+{\\large \\color[gray]{0.35} Cloud Engineer}\\\\[3pt]
+{\\small \\color[gray]{0.45} London \\quad $\\cdot$ \\quad +44 20 7946 0912}
+\\hrule height 0.6pt
+{\\small \\color[gray]{0.35} 7 November 2026}
+\\vspace{14pt}
+
+\\vspace{14pt}
+\\textbf{\\large Application for Senior Infrastructure Engineer}
+\\vspace{12pt}
+Dear Hiring Team,
+I am writing to apply for the Senior Infrastructure Engineer position.
+\\par
+I have substantial hands-on experience in cloud systems.
+\\par
+In my daily work, I prioritize operational stability.
+\\par
+Thank you for your time.
+\\vspace{16pt}
+Sincerely,\\\\[28pt]
+\\textbf{Taylor Reed}
+\\end{document}`;
+
+    const fs = require("fs");
+    const appJs = fs.readFileSync("app/public/app.js", "utf-8");
+    const cleanFn = appJs.match(/function cleanLatexText[\s\S]*?\n\}/)![0];
+    const parseFn = appJs.match(/function parseLatexCoverLetter[\s\S]*?\n\}/)![0];
+    const fn = new Function(`${cleanFn}\n${parseFn}\nreturn parseLatexCoverLetter;`)();
+
+    const result = fn(rawLatexWithoutRecipient);
+    expect(result.name).toBe("Taylor Reed");
+    expect(result.headline).toBe("Cloud Engineer");
+    expect(result.date).toBe("7 November 2026");
+    expect(result.recipientLines).toEqual([]);
+    expect(result.subject).toBe("Application for Senior Infrastructure Engineer");
+    expect(result.paragraphsHtml).toContain("I am writing to apply");
+    expect(result.signer).toBe("Taylor Reed");
   });
 });
