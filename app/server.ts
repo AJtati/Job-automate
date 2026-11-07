@@ -7,7 +7,7 @@ import { createHash } from "crypto";
 import { ProfilesManager, CandidateProfile, type ProfileScheduleConfig } from "./profiles_manager";
 import { AIService } from "./ai_service";
 import { analyzeApplication, analyzeTailoredResume, clearAnalysisCache } from "./application_engine";
-import { createLatexBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, type SupportedLanguage } from "./resume_engine";
+import { createLatexBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, cleanJobTitle, type SupportedLanguage } from "./resume_engine";
 import { parseResumeDeterministically } from "./resume_parser";
 import { taxonomyStore } from "./taxonomy";
 import { SchedulerService, computeNextRun, type ScrapeExecutionResult } from "./scheduler_service";
@@ -74,7 +74,7 @@ function readLastSearchStatus(): any | null {
   try { return existsSync(LAST_SEARCH_STATUS_FILE) ? JSON.parse(readFileSync(LAST_SEARCH_STATUS_FILE, "utf-8")) : null; } catch { return null; }
 }
 
-function isAllowedWorkspacePath(path: string): boolean {
+export function isAllowedWorkspacePath(path: string): boolean {
   const candidate = resolve(ROOT_DIR, path);
   const allowed = ["cv", "cover_letters", "documents", "templates"].map(folder => resolve(ROOT_DIR, folder));
   return allowed.some(folder => {
@@ -772,6 +772,251 @@ function cleanHtmlDescription(html: string): string {
     .trim();
 }
 
+export function extractCompanyFromUrl(urlStr: string): string {
+  if (!urlStr) return "";
+  try {
+    const u = new URL(urlStr);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname;
+
+    // 1. Path-based ATS: greenhouse, lever, ashby, smartrecruiters, rippling, workable
+    if (host.includes("greenhouse.io")) {
+      const forParam = u.searchParams.get("for") || u.searchParams.get("b");
+      if (forParam) {
+        return forParam.replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      }
+      const match = path.match(/^\/(?:embed\/job_board\/|v1\/boards\/)?([^/]+)/);
+      if (match && match[1] && !["jobs", "careers", "posting", "postings", "search", "embed", "v1"].includes(match[1].toLowerCase())) {
+        return match[1].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      }
+    }
+
+    if (host.includes("lever.co") || host.includes("ashbyhq.com") || host.includes("smartrecruiters.com") || host.includes("rippling.com") || (host.includes("workable.com") && path.startsWith("/"))) {
+      const match = path.match(/^\/(?:jobs\/|careers\/|ats\/)?([^/]+)/);
+      if (match && match[1] && !["jobs", "careers", "posting", "postings", "search", "j", "apply"].includes(match[1].toLowerCase())) {
+        return match[1].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      }
+    }
+
+    // 2. Subdomain-based ATS: workable, bamboohr, pinpointhq, breezy, personio, workday, teamtailor
+    const workdayMatch = host.match(/^([a-z0-9_-]+)\.(?:[a-z0-9_-]+\.)?myworkdayjobs\.com/i);
+    if (workdayMatch && workdayMatch[1] && !["jobs", "careers", "apply", "wd1", "wd2", "wd3", "wd4", "wd5"].includes(workdayMatch[1].toLowerCase())) {
+      return workdayMatch[1].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    const submatch = host.match(/^([a-z0-9_-]+)\.(?:workable|bamboohr|pinpointhq|breezy\.hr|jobs\.personio|teamtailor)\./i);
+    if (submatch && submatch[1] && !["jobs", "careers", "apply", "app"].includes(submatch[1].toLowerCase())) {
+      return submatch[1].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    // 3. Regular domain: e.g. genio.com, genio.co.uk, acme.io
+    const domainParts = host.replace(/^www\./, "").split(".");
+    if (domainParts.length >= 2 && !["com", "co", "org", "net", "io", "ai", "uk", "de", "nl", "fr", "jobs"].includes(domainParts[0])) {
+      return domainParts[0].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    }
+  } catch {}
+  return "";
+}
+
+export function extractJobMetadataFromHtml(html: string, targetUrl: string): {
+  title: string;
+  company: string;
+  location: string;
+  salary: string;
+  fullJd: string;
+} {
+  let title = "";
+  let company = "";
+  let location = "";
+  let salary = "";
+  let description = "";
+
+  // 1. JSON-LD Schema (High priority: used by Greenhouse, Lever, Ashby, Workable, Indeed, LinkedIn)
+  const jsonLdMatches = html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  for (const m of jsonLdMatches) {
+    try {
+      const rawJson = m[1].trim();
+      const parsed = JSON.parse(rawJson);
+      const items = Array.isArray(parsed) ? parsed : (parsed["@graph"] || [parsed]);
+      for (const item of items) {
+        if (item["@type"] === "JobPosting" || (Array.isArray(item["@type"]) && item["@type"].includes("JobPosting"))) {
+          if (item.title && !title) title = item.title;
+          const org = item.hiringOrganization;
+          if (org && !company) {
+            company = typeof org === "string" ? org : (org.name || org.legalName || "");
+          }
+          if (item.jobLocation && !location) {
+            const addr = item.jobLocation.address;
+            if (typeof addr === "string") {
+              location = addr;
+            } else if (addr) {
+              location = [addr.addressLocality, addr.addressRegion, addr.addressCountry].filter(Boolean).join(", ");
+            }
+          }
+          if (item.jobLocationType === "TELECOMMUTE" || item.applicantLocationRequirements) {
+            location = location ? `Remote (${location})` : "Remote";
+          }
+          if (item.baseSalary?.value?.value) {
+            salary = String(item.baseSalary.value.value);
+          } else if (item.baseSalary?.value?.minValue && item.baseSalary?.value?.maxValue) {
+            salary = `${item.baseSalary.value.minValue} - ${item.baseSalary.value.maxValue}`;
+          }
+          if (item.description && !description) description = cleanHtmlDescription(item.description);
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  // 2. OpenGraph & Meta Tags
+  if (!company) {
+    const siteNameMatch = html.match(/<meta[^>]*property=["'](?:og:site_name|site_name)["'][^>]*content=["']([^"']+)["']/i) ||
+                          html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["'](?:og:site_name|site_name)["']/i);
+    if (siteNameMatch && siteNameMatch[1]) {
+      const sn = siteNameMatch[1].trim();
+      if (!/greenhouse|lever|ashby|workable|workday|careers|jobs/i.test(sn)) {
+        company = sn;
+      }
+    }
+  }
+  if (!company) {
+    const authorMatch = html.match(/<meta[^>]*name=["'](?:author|company|publisher)["'][^>]*content=["']([^"']+)["']/i) ||
+                        html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["'](?:author|company|publisher)["']/i);
+    if (authorMatch && authorMatch[1]) {
+      const aut = authorMatch[1].trim();
+      if (!/greenhouse|lever|ashby|workable|workday|careers|jobs/i.test(aut)) {
+        company = aut;
+      }
+    }
+  }
+
+  // 3. Page Title Parsing (<title>...</title>)
+  const titleTagMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (titleTagMatch && titleTagMatch[1]) {
+    const rawTitle = titleTagMatch[1]
+      .replace(/&amp;/g, "&")
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"')
+      .trim();
+
+    // Check "Job Application for <Role> at <Company>" or "Apply for <Role> at <Company>"
+    const appForAt = rawTitle.match(/^(?:Job Application for|Apply for)\s+(.+?)\s+at\s+([^-|–—·]+)/i);
+    if (appForAt) {
+      if (!title) title = appForAt[1].trim();
+      if (!company) company = appForAt[2].trim();
+    } else {
+      const atMatch = rawTitle.match(/^(.+?)\s+at\s+([^-|–—·]+)$/i);
+      if (atMatch) {
+        if (!title) title = atMatch[1].trim();
+        if (!company) company = atMatch[2].trim();
+      } else {
+        const parts = rawTitle.split(/\s*[-|–—·]\s*/);
+        if (parts.length >= 2) {
+          const isP0Role = /engineer|developer|manager|lead|architect|consultant|specialist|officer|analyst|tester|sre|qa/i.test(parts[0]);
+          const isP1Role = /engineer|developer|manager|lead|architect|consultant|specialist|officer|analyst|tester|sre|qa/i.test(parts[1]);
+          if (isP0Role && !isP1Role) {
+            if (!title) title = parts[0].trim();
+            if (!company) company = parts[1].replace(/careers|jobs|recruitment|at /i, "").trim();
+          } else if (isP1Role && !isP0Role) {
+            if (!title) title = parts[1].trim();
+            if (!company) company = parts[0].replace(/careers|jobs|recruitment|at /i, "").trim();
+          } else {
+            if (!title) title = parts[0].trim();
+            if (!company) company = parts[1].replace(/careers|jobs|recruitment|at /i, "").trim();
+          }
+        } else {
+          if (!title) title = rawTitle;
+        }
+      }
+    }
+  }
+
+  // Clean title from "Job Application for "
+  if (title) {
+    title = title.replace(/^(?:Job Application for|Apply for)\s+/i, "");
+    if (company && title.toLowerCase().includes(` at ${company.toLowerCase()}`)) {
+      title = title.replace(new RegExp(`\\s+at\\s+${company}`, "i"), "").trim();
+    }
+    title = cleanJobTitle(title) || title;
+  }
+
+  // 4. URL fallback for Company if still generic
+  if (!company || /^(?:Hiring Company|Company|Employer|Job Vacancy)$/i.test(company)) {
+    const urlComp = extractCompanyFromUrl(targetUrl);
+    if (urlComp) company = urlComp;
+  }
+
+  return {
+    title: title || "Job Vacancy",
+    company: company || "Hiring Company",
+    location: location || "Remote / United Kingdom",
+    salary,
+    fullJd: description
+  };
+}
+
+export function sanitizeJobMetadata(job: any): any {
+  if (!job) return job;
+  let title = (job.title || job.role || "").trim();
+  let company = (job.company || "").trim();
+  const url = job.url || "";
+
+  const isGenericCompany = !company || /^(?:Hiring Company|Company|Employer|Job Vacancy)$/i.test(company);
+
+  if (isGenericCompany && title) {
+    const appForAt = title.match(/^(?:Job Application for|Apply for)\s+(.+?)\s+at\s+([^-|–—·]+)/i);
+    if (appForAt) {
+      title = appForAt[1].trim();
+      company = appForAt[2].trim();
+    } else {
+      const atMatch = title.match(/^(.+?)\s+at\s+([^-|–—·]+)$/i);
+      if (atMatch) {
+        title = atMatch[1].trim();
+        company = atMatch[2].trim();
+      } else {
+        const parts = title.split(/\s*[-|–—·]\s*/);
+        if (parts.length >= 2) {
+          const isP0Role = /engineer|developer|manager|lead|architect|consultant|specialist|officer|analyst|tester|sre|qa/i.test(parts[0]);
+          const isP1Role = /engineer|developer|manager|lead|architect|consultant|specialist|officer|analyst|tester|sre|qa/i.test(parts[1]);
+          if (isP0Role && !isP1Role) {
+            title = parts[0].trim();
+            company = parts[1].replace(/careers|jobs|recruitment|at /i, "").trim();
+          } else if (isP1Role && !isP0Role) {
+            title = parts[1].trim();
+            company = parts[0].replace(/careers|jobs|recruitment|at /i, "").trim();
+          }
+        }
+      }
+    }
+  }
+
+  if ((!company || /^(?:Hiring Company|Company|Employer|Job Vacancy)$/i.test(company)) && url) {
+    const urlComp = extractCompanyFromUrl(url);
+    if (urlComp) company = urlComp;
+  }
+
+  if (title) {
+    title = title.replace(/^(?:Job Application for|Apply for)\s+/i, "");
+    if (company && title.toLowerCase().includes(` at ${company.toLowerCase()}`)) {
+      title = title.replace(new RegExp(`\\s+at\\s+${company}`, "i"), "").trim();
+    } else {
+      const genericAt = title.match(/\s+at\s+([^–—|-]+)$/i);
+      if (genericAt && genericAt[1]) {
+        if (!company || /^(?:Hiring Company|Company|Employer|Job Vacancy)$/i.test(company)) {
+          company = genericAt[1].trim();
+        }
+        title = title.slice(0, genericAt.index).trim();
+      }
+    }
+    title = cleanJobTitle(title) || title;
+  }
+
+  job.title = title || job.title;
+  job.role = title || job.role || job.title;
+  job.company = company || job.company;
+  return job;
+}
+
 async function fetchJobDescription(job: { id?: string; url?: string; portal?: string; title?: string }): Promise<string | null> {
   const url = job.url || "";
   const portal = job.portal || "";
@@ -1002,7 +1247,7 @@ async function scrapeJobFromUrl(targetUrl: string, targetProfileId?: string): Pr
   }
 
   // 3. Generic HTTP fetch for any web page (Greenhouse, Lever, Workable, direct website)
-  if (!fullJd || fullJd.length < 50) {
+  if (!fullJd || fullJd.length < 50 || company === "Hiring Company") {
     try {
       const res = await fetch(targetUrl, {
         headers: {
@@ -1012,32 +1257,42 @@ async function scrapeJobFromUrl(targetUrl: string, targetProfileId?: string): Pr
       });
       if (res.ok) {
         const html = await res.text();
-        const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-        if (titleMatch && titleMatch[1]) {
-          const rawTitle = titleMatch[1].replace(/&amp;/g, "&").replace(/&#39;/g, "'").trim();
-          const parts = rawTitle.split(/\s*[-|–—·]\s*/);
-          if (parts.length >= 2) {
-            title = parts[0].trim();
-            company = parts[1].replace(/careers|jobs|recruitment|at /i, "").trim();
-          } else {
-            title = rawTitle;
-          }
+        const extracted = extractJobMetadataFromHtml(html, targetUrl);
+        if (extracted.title && (title === "Job Vacancy" || title.startsWith("Job Application for") || title.includes(" at "))) {
+          title = extracted.title;
         }
-        const cleanText = html
-          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
-          .replace(/<[^>]+>/g, " ")
-          .replace(/\s+/g, " ")
-          .trim();
-
-        if (cleanText.length > 100) {
-          fullJd = cleanText.slice(0, 6000);
+        if (extracted.company && (company === "Hiring Company" || company === "Company")) {
+          company = extracted.company;
+        }
+        if (extracted.location && location === "Remote / United Kingdom") {
+          location = extracted.location;
+        }
+        if (extracted.salary && salary === "Competitive") {
+          salary = extracted.salary;
+        }
+        if (extracted.fullJd && (!fullJd || fullJd.length < 100)) {
+          fullJd = extracted.fullJd;
+        } else if (!fullJd) {
+          const cleanText = html
+            .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+            .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (cleanText.length > 100) {
+            fullJd = cleanText.slice(0, 6000);
+          }
         }
       }
     } catch (e) {
       console.warn("Generic web fetch error for URL:", targetUrl, e);
     }
   }
+
+  // Ensure title and company are fully normalized and sanitized
+  const sanitized = sanitizeJobMetadata({ title, company, location, salary, url: targetUrl });
+  title = sanitized.title;
+  company = sanitized.company;
 
   const activeProfile = targetProfileId
     ? (profilesManager.getProfile(targetProfileId) || profilesManager.getActiveProfile())
@@ -1518,10 +1773,19 @@ serve({
       const allProfiles = profilesManager.getAllProfiles();
       const tracker = readTracker(activeProfile);
 
+      let seenMutated = false;
       const seenEntries = Object.entries(seen);
       const jobsList = seenEntries
         .filter(([id, item]: [string, any]) => isJobRelevantToProfile(item, activeProfile, id))
         .map(([id, item]: [string, any], index: number) => {
+          const origCompany = item.company;
+          const origTitle = item.title;
+          sanitizeJobMetadata(item);
+          if (item.company !== origCompany || item.title !== origTitle) {
+            seen[id] = item;
+            seenMutated = true;
+          }
+
           const dist = profilesManager.calculateDistance(item.location || "", activeProfile);
           const fullJd = item.full_jd || item.summary || "";
           const sponsor = checkSponsor(item.company || "", fullJd);
@@ -1607,6 +1871,18 @@ serve({
             id.startsWith("imported_")
           );
 
+          const isHybrid = !dist.isRemote && (
+            /hybrid/i.test(dist.tag || "") ||
+            /hybrid/i.test(item.location || "") ||
+            /hybrid/i.test(item.title || "") ||
+            /\b(?:hybrid\s+work|hybrid\s+model|hybrid\s+working|flexible\s+hybrid|days?\s+(?:a|per)\s+week\s+(?:in|at)\s+(?:the\s+)?office|days?\s+(?:in|at)\s+the\s+office|hybrid\s+role|hybrid\s+basis|hybrid\s+contract|\d+\s+days?\s+(?:remote|office))\b/i.test(fullJd)
+          );
+
+          const requiresSc = Boolean(
+            /\b(?:active\s+sc|must\s+hold\s+sc|sc\s+cleared|sc\s+clearance|security\s+cleared|dv\s+cleared|dv\s+clearance|security\s+check\s+clearance|mod\s+clearance|must\s+be\s+sc|hold\s+active\s+sc|obtain\s+sc\s+clearance|requires?\s+sc\s+clearance|eligib(?:le|ility)\s+for\s+sc|sc\s+status|bpss\s+and\s+sc)\b/i.test(item.title || "") ||
+            /\b(?:active\s+sc|must\s+hold\s+sc|sc\s+cleared|sc\s+clearance|security\s+cleared|dv\s+cleared|dv\s+clearance|security\s+check\s+clearance|mod\s+clearance|must\s+be\s+sc|hold\s+active\s+sc|obtain\s+sc\s+clearance|requires?\s+sc\s+clearance)\b/i.test(fullJd)
+          );
+
         return {
           id,
           title: item.title,
@@ -1615,6 +1891,8 @@ serve({
           distance_miles: dist.miles,
           commute_tag: dist.tag,
           is_remote: dist.isRemote,
+          is_hybrid: isHybrid,
+          requires_sc: requiresSc,
           salary: item.salary || "Competitive Market Rate",
           url: item.url,
           posted_date: item.posted_date || item.first_seen,
@@ -1683,7 +1961,9 @@ serve({
             status: mergedStatus,
             cv_file: mergedCvFile,
             cover_file: mergedCoverFile,
-            full_jd: mergedFullJd
+            full_jd: mergedFullJd,
+            is_hybrid: Boolean(existing.is_hybrid || job.is_hybrid),
+            requires_sc: Boolean(existing.requires_sc || job.requires_sc)
           });
         }
       }
@@ -1705,6 +1985,14 @@ serve({
         return (b.fit_score || 0) - (a.fit_score || 0);
       });
 
+      if (seenMutated) {
+        try {
+          saveSeenJobs(seen);
+        } catch (e) {
+          console.warn("Failed to persist self-healed jobs in GET /api/jobs:", e);
+        }
+      }
+
       return new Response(JSON.stringify({
         jobs: uniqueJobsList,
         total: uniqueJobsList.length,
@@ -1716,6 +2004,7 @@ serve({
           postcode: activeProfile.postcode,
           country: activeProfile.country,
           visaSponsorshipRequired: activeProfile.visaSponsorshipRequired,
+          excludeSecurityClearance: Boolean(activeProfile.excludeSecurityClearance),
           targetLocations: activeProfile.targetLocations,
           preferredRadiusMiles: activeProfile.preferredRadiusMiles
         }
@@ -2292,12 +2581,30 @@ serve({
         const seen = readSeenJobs();
         const storedJob = (jobId && seen[jobId]) ? seen[jobId] : (incomingJob || {});
 
-        const company = incomingJob?.company || storedJob.company || "Company";
-        const role = incomingJob?.title || incomingJob?.role || storedJob.title || storedJob.role || "Role";
-        const location = incomingJob?.location || storedJob.location || "";
+        const rawCompany = incomingJob?.company || storedJob.company || "";
+        const rawRole = incomingJob?.title || incomingJob?.role || storedJob.title || storedJob.role || "";
+        const rawUrl = incomingJob?.url || storedJob.url || "";
+        const sanitizedMeta = sanitizeJobMetadata({
+          title: rawRole,
+          company: rawCompany,
+          url: rawUrl,
+          location: incomingJob?.location || storedJob.location || ""
+        });
+        const company = sanitizedMeta.company || "Company";
+        const role = sanitizedMeta.title || "Role";
+        const location = sanitizedMeta.location || incomingJob?.location || storedJob.location || "";
         const fullJd = incomingJob?.full_jd || incomingJob?.fullJd || storedJob.full_jd || storedJob.summary || "";
         const salary = incomingJob?.salary || storedJob.salary || "";
         const keySkills = incomingJob?.key_skills || storedJob.key_skills || storedJob.keySkills || [];
+
+        if (jobId && seen[jobId]) {
+          if (seen[jobId].company !== company || seen[jobId].title !== role) {
+            seen[jobId].company = company;
+            seen[jobId].title = role;
+            seen[jobId].role = role;
+            try { saveSeenJobs(seen); } catch {}
+          }
+        }
 
         const candidateSlug = (activeProfile.name || "candidate").toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
         const cleanCompany = (company || "Company").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
@@ -2395,7 +2702,8 @@ serve({
     if (url.pathname === "/api/tailor" && req.method === "POST") {
       try {
         const body = await req.json();
-        const { jobId, force, deepTailor } = body;
+        const { jobId, force, deepTailor, userInstructions } = body;
+        const cleanInstructions = typeof userInstructions === "string" ? userInstructions.trim() : "";
         const activeProfile = profilesManager.getActiveProfile();
         const hasExp = (activeProfile.experience || []).some(e => e.bullets && e.bullets.length > 0);
         const hasText = activeProfile.sourceResume?.text && activeProfile.sourceResume.text.trim().length > 100;
@@ -2412,12 +2720,31 @@ serve({
         const storedJob = seen[jobId] || {};
         const isDeepTailor = Boolean(deepTailor !== undefined ? deepTailor : activeProfile.enableDeepTailor);
         const deepTailorChanged = storedJob.is_deep_tailored !== undefined && storedJob.is_deep_tailored !== isDeepTailor;
+        const effectiveInstructions = cleanInstructions || storedJob.user_instructions || "";
 
         const incomingJob = body.job || {};
-        const company = body.company || incomingJob.company || storedJob.company || "Company";
-        const role = body.role || incomingJob.role || incomingJob.title || storedJob.role || storedJob.title || "Platform Engineer";
-        const location = body.location || incomingJob.location || storedJob.location || "United Kingdom";
+        const rawCompany = body.company || incomingJob.company || storedJob.company || "";
+        const rawRole = body.role || incomingJob.role || incomingJob.title || storedJob.role || storedJob.title || "";
+        const rawUrl = body.url || incomingJob.url || storedJob.url || "";
+        const sanitizedMeta = sanitizeJobMetadata({
+          title: rawRole,
+          company: rawCompany,
+          url: rawUrl,
+          location: body.location || incomingJob.location || storedJob.location || "United Kingdom"
+        });
+        const company = sanitizedMeta.company || "Company";
+        const role = sanitizedMeta.title || "Platform Engineer";
+        const location = sanitizedMeta.location || "United Kingdom";
         const keySkills = (body.keySkills && body.keySkills.length) ? body.keySkills : (incomingJob.keySkills || incomingJob.key_skills || storedJob.key_skills || storedJob.keySkills || []);
+
+        if (jobId && seen[jobId]) {
+          if (seen[jobId].company !== company || seen[jobId].title !== role) {
+            seen[jobId].company = company;
+            seen[jobId].title = role;
+            seen[jobId].role = role;
+            try { saveSeenJobs(seen); } catch {}
+          }
+        }
 
         let fullJd = String(body.fullJd || body.full_jd || incomingJob.fullJd || incomingJob.full_jd || storedJob.full_jd || storedJob.summary || "").trim();
         if (fullJd.length < 150) {
@@ -2471,29 +2798,31 @@ serve({
         let cvContent = "";
         let coverContent = "";
 
-        // Regenerate if force requested, file doesn't exist, deep alignment changed, or file is a legacy basic stub / wrong language
-        const isCvStale = !existsSync(cvFullPath) || force || deepTailorChanged || (() => {
+        // Regenerate if force requested, user instructions provided, file doesn't exist, deep alignment changed, or file is a legacy basic stub / wrong language
+        const isCvStale = !existsSync(cvFullPath) || force || deepTailorChanged || Boolean(cleanInstructions) || (() => {
           const content = readFileSync(cvFullPath, "utf-8");
           if (content.split("\n").length < 100) return true;
           if (detectedLang === "de" && !/\\section\{Profil\}/i.test(content)) return true;
           return false;
         })();
         if (isCvStale) {
-          cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang, isDeepTailor);
+          cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang, isDeepTailor, effectiveInstructions);
           writeFileSync(cvFullPath, cvContent);
         } else {
           cvContent = readFileSync(cvFullPath, "utf-8");
         }
 
-        const isCoverStale = !existsSync(coverFullPath) || force || deepTailorChanged || (() => {
+        const isCoverStale = !existsSync(coverFullPath) || force || deepTailorChanged || Boolean(cleanInstructions) || (() => {
           const content = readFileSync(coverFullPath, "utf-8");
           if (content.split("\n").length < 20) return true;
           if (detectedLang === "de" && /Dear Hiring/i.test(content)) return true;
           if (/proven track record|proven ability|solid track record|deep practical experience|dedication to building scalable|superficial patches|technical craftsmanship with active empathy|CI\/CD:\s*DevOps|not as boxes to tick|operate without heroics|systems serve the people|whether that means|—|\\vspace\{12pt\}|12pt/i.test(content)) return true;
+          if (/\\setmainfont|Calibri/i.test(content)) return true;
+          if (!/\\hrule/i.test(content)) return true;
           return false;
         })();
         if (isCoverStale) {
-          coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang, isDeepTailor);
+          coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, detectedLang, isDeepTailor, effectiveInstructions);
           coverContent = aiService.humanizeText(coverContent);
           writeFileSync(coverFullPath, coverContent);
         } else {
@@ -2584,6 +2913,7 @@ serve({
             tailored_score: tailoredAnalysis.overallScore,
             baseline_score: baselineAnalysis.overallScore,
             is_deep_tailored: isDeepTailor,
+            user_instructions: effectiveInstructions,
             status: preservedStatus,
             analysis: tailoredAnalysis,
             tailor_report: tailorReport,
@@ -2600,6 +2930,7 @@ serve({
             seen[jobId].baseline_score = baselineAnalysis.overallScore;
             seen[jobId].tailored_score = tailoredAnalysis.overallScore;
             seen[jobId].is_deep_tailored = isDeepTailor;
+            seen[jobId].user_instructions = effectiveInstructions;
             seen[jobId].analysis = tailoredAnalysis;
             seen[jobId].baseline_analysis = baselineAnalysis;
             seen[jobId].tailor_report = tailorReport;
@@ -2614,6 +2945,8 @@ serve({
           cvFile: cvPath,
           coverFile: coverPath,
           cvContent,
+          coverContent,
+          user_instructions: effectiveInstructions,
           coverContent,
           language: detectedLang,
           languageName: langPack.name,
@@ -2849,6 +3182,15 @@ serve({
           const existing = seen[existingKey];
           existing.is_imported = true;
           existing.imported = true;
+          sanitizeJobMetadata(existing);
+          if (newJob.company && newJob.company !== "Hiring Company" && (existing.company === "Hiring Company" || !existing.company)) {
+            existing.company = newJob.company;
+          }
+          if (newJob.title && !newJob.title.startsWith("Job Application for") && (existing.title.startsWith("Job Application for") || !existing.title)) {
+            existing.title = newJob.title;
+            existing.role = newJob.title;
+          }
+          sanitizeJobMetadata(existing);
           if (!existing.profileId) {
             existing.profileId = currentProfile.id;
           }
@@ -2913,6 +3255,31 @@ serve({
         });
       }
       return new Response(JSON.stringify({ error: "File not found" }), { status: 404 });
+    }
+
+    // API: POST /api/document (save edited raw LaTeX document)
+    if (url.pathname === "/api/document" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { path: docPath, content } = body;
+        if (!docPath || typeof content !== "string") {
+          return new Response(JSON.stringify({ error: "Missing path or content" }), { status: 400 });
+        }
+        if (!isAllowedWorkspacePath(docPath)) {
+          return new Response(JSON.stringify({ error: "Path is outside allowed document folders" }), { status: 403 });
+        }
+        const fullPath = resolve(ROOT_DIR, docPath);
+        if (fullPath.toLowerCase().endsWith(".pdf")) {
+          return new Response(JSON.stringify({ error: "Cannot write directly to PDF file" }), { status: 400 });
+        }
+        mkdirSync(dirname(fullPath), { recursive: true });
+        writeFileSync(fullPath, content, "utf-8");
+        return new Response(JSON.stringify({ success: true, path: docPath }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message || "Failed to save document" }), { status: 500 });
+      }
     }
 
     if (url.pathname === "/api/pdf" && req.method === "GET") {
@@ -3096,6 +3463,13 @@ serve({
             cleanLatex = cleanLatex
               .replace(/\\input\{glyphtounicode\}/g, "\\ifx\\pdfgentounicode\\undefined\\else\\input{glyphtounicode}\\fi")
               .replace(/\\pdfgentounicode=1/g, "\\ifx\\pdfgentounicode\\undefined\\else\\pdfgentounicode=1\\fi");
+          }
+          // Tectonic font protection: replace problematic fontspec / proprietary font calls with universal helvetica
+          if (cleanLatex.includes("\\setmainfont") || cleanLatex.includes("fontspec")) {
+            cleanLatex = cleanLatex
+              .replace(/\\usepackage\{fontspec\}\s*\\setmainfont\{[^}]+\}/gi, "\\usepackage[scaled=0.92]{helvet}\\renewcommand{\\familydefault}{\\sfdefault}")
+              .replace(/\\setmainfont\{[^}]+\}/gi, "")
+              .replace(/\\usepackage\{fontspec\}/gi, "\\usepackage[scaled=0.92]{helvet}\\renewcommand{\\familydefault}{\\sfdefault}");
           }
           writeFileSync(texPath, cleanLatex, "utf-8");
 

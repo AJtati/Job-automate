@@ -205,14 +205,36 @@
             </div>
             <div class="feed-sort-wrapper">
               <select id="feedSortSelect" class="feed-sort-select" title="Sort job listings">
-                <option value="days" selected>📅 Newest (Days Wise)</option>
+                <option value="days" selected>📅 Newest (Days Wise · Top % First)</option>
+                <option value="top_fresh">🔥 Best Fresh Matches (Last 7d · Top %)</option>
+                <option value="score">🎯 Match % (Highest First · Newest Tied)</option>
                 <option value="sponsor_new_first">✨ Newly Licensed First (30d)</option>
                 <option value="sponsors_first">🛡️ Licensed Sponsors First</option>
                 <option value="sponsors_old_first">⏳ Established Sponsors First</option>
-                <option value="score">🎯 Match % (Score Wise)</option>
                 <option value="pipeline">📝 Application Pipeline</option>
               </select>
             </div>
+          </div>
+          <div class="feed-filter-bar" id="feedFilterBar">
+            <div class="filter-pill-group" id="filterWorkModes">
+              <button type="button" class="filter-chip active" data-mode="all" title="Show all work models">All Modes</button>
+              <button type="button" class="filter-chip" data-mode="remote" title="Toggle Remote roles">🌐 Remote</button>
+              <button type="button" class="filter-chip" data-mode="hybrid" title="Toggle Hybrid roles">🏢 Hybrid</button>
+              <button type="button" class="filter-chip" data-mode="onsite" title="Toggle On-site roles">📍 On-site</button>
+            </div>
+            <div class="filter-divider"></div>
+            <div class="filter-pill-group" id="filterQuickToggles">
+              <button type="button" class="filter-chip toggle-chip" id="chipHideSc" title="Toggle hiding roles that require active SC/DV Security Clearance">
+                🔒 Hide SC
+              </button>
+              <button type="button" class="filter-chip toggle-chip" id="chipLicensedOnly" title="Filter to Verified Licensed Sponsor employers only">
+                🛡️ Licensed
+              </button>
+              <button type="button" class="filter-chip toggle-chip" id="chipMinScore" title="Filter to roles with 70%+ match score">
+                🎯 ≥70% Match
+              </button>
+            </div>
+            <button type="button" class="filter-reset-btn" id="filterResetBtn" style="display: none;" title="Reset all multi-filters to default">✕ Reset</button>
           </div>
           <div class="feed-sync-status" id="feedSyncStatus">
             <span class="sync-dot"></span>
@@ -260,6 +282,10 @@
               <span>💡</span>
               <span id="studioAggregatorNoticeText">Aggregator notice</span>
             </div>
+            <div class="status-strip-right" id="studioScBanner" style="display: none; color: #fb923c; font-weight: 500;">
+              <span>🔒</span>
+              <span id="studioScText">UK Security Clearance (SC/DV) Required</span>
+            </div>
           </div>
 
           <div class="studio-actions-bar" id="studioActionsBar" style="display: none;">
@@ -280,6 +306,14 @@
                 </svg>
                 <span id="targetStackLabel">Deep AI Match</span>
                 <input type="checkbox" id="chkDeepTailor" style="display: none;">
+              </button>
+
+              <button type="button" class="btn-secondary btn-action" id="btnCustomInstructions" title="Instruct AI on custom adjustments (e.g. emphasize specific tools, reword summary, add achievements)">
+                <svg class="action-svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 20h9"/>
+                  <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                </svg>
+                <span id="customInstructionsLabel">AI Instructions</span>
               </button>
             </div>
 
@@ -415,6 +449,16 @@
               <input type="checkbox" id="formVisaRequired" checked />
               <span>Requires UK Skilled Worker Visa Sponsorship</span>
             </label>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="formExcludeSecurityClearance" />
+              <span>🔒 Exclude Security Clearance (SC/DV) Required Roles</span>
+            </label>
+            <div style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 2px; margin-left: 24px;">
+              Automatically hides vacancies requiring active UK Security Clearance (SC/DV) or UK 5-year defense vetting.
+            </div>
           </div>
 
           <div class="form-group checkbox-group">
@@ -594,6 +638,16 @@
               <input type="checkbox" id="locFormVisaRequired" checked />
               <span>Prioritize UK Skilled Worker Visa Sponsorship</span>
             </label>
+          </div>
+
+          <div class="form-group checkbox-group" style="margin-top: 8px;">
+            <label>
+              <input type="checkbox" id="locFormExcludeSc" />
+              <span>Exclude Security Clearance (SC/DV) Required Roles</span>
+            </label>
+            <div style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 2px; margin-left: 24px;">
+              Hides vacancies requiring active UK Security Clearance (SC/DV), government defense vetting, or 5-year UK residency requirements.
+            </div>
           </div>
 
           <div class="modal-footer" style="margin-top: 18px;">
@@ -1029,6 +1083,41 @@
           <span class="spinner" id="importJobSpinner" style="display: none; width: 12px; height: 12px; margin-right: 5px;"></span>
           <span id="importJobBtnText">✨ Import & Select</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Custom AI Instructions for Tailoring -->
+  <div class="modal-backdrop" id="customInstructionsModal" style="display: none;">
+    <div class="modal-dialog modal-md" style="max-width: 540px;">
+      <div class="modal-header">
+        <h3>✍️ Custom AI Instructions</h3>
+        <button class="modal-close-btn" id="btnCloseCustomInstructionsModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; line-height: 1.5;">
+          Guide the AI on how you want this resume and cover letter curated for <b><span id="instructionTargetCompany">this role</span></b>. Mention lines to change, skills to highlight, or topics to omit.
+        </p>
+        <div class="form-group">
+          <label style="font-size: 12px; font-weight: 600;">Custom Instructions (Optional)</label>
+          <textarea id="txtCustomInstructions" rows="4" style="width: 100%; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-tertiary); color: var(--text-primary); padding: 10px 12px; font-size: 13px; font-family: inherit; line-height: 1.45; resize: vertical;" placeholder="e.g. Focus summary on Kubernetes version upgrades and AWS CDK. Remove mentions of mobile and desktop app development. Emphasize incident response on-call reliability and willingness for Leeds hybrid."></textarea>
+        </div>
+        <div style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px;">
+          <span style="font-size: 11px; color: var(--text-tertiary); width: 100%; margin-bottom: 2px;">Quick suggestions:</span>
+          <button type="button" class="pill-chip" id="chipK8s">+ Emphasize Cloud & K8s</button>
+          <button type="button" class="pill-chip" id="chipCicd">+ Platform & CI/CD</button>
+          <button type="button" class="pill-chip" id="chipReliability">+ Reliability & On-call</button>
+          <button type="button" class="pill-chip" id="chipOmitMobile">+ Omit Mobile Apps</button>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid var(--border-subtle);">
+        <button type="button" class="btn-secondary" id="btnClearCustomInstructions" style="font-size: 12px;">Clear Instructions</button>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn-secondary" id="btnCancelCustomInstructionsModal">Cancel</button>
+          <button type="button" class="btn-primary" id="btnSaveAndTailorInstructions">
+            <span>✦ Tailor with Instructions</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>

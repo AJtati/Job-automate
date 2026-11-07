@@ -175,4 +175,62 @@ describe("AI Service available models and recommendations", () => {
     expect(reply).toContain("Offline Co-Pilot Insight (Fallback)");
     expect(reply).toContain("Acme Cloud");
   });
+
+  test("generateText extracts text from Anthropic multi-block responses containing thinking blocks", async () => {
+    const service = new AIService({
+      provider: "anthropic",
+      anthropicApiKey: "test-key",
+      anthropicModel: "claude-haiku-5-5"
+    });
+
+    // Mock global fetch to return multi-block content (thinking + text)
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => {
+      return new Response(JSON.stringify({
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Internal reasoning here", signature: "sig" },
+          { type: "text", text: "Alex Jordan has 5 years of production Kubernetes experience at Acme." }
+        ]
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as any;
+
+    try {
+      const result = await service.generateText("Hello", "System prompt");
+      expect(result).toBe("Alex Jordan has 5 years of production Kubernetes experience at Acme.");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("generateText extracts text from Gemini responses with thinking parts", async () => {
+    const service = new AIService({
+      provider: "gemini",
+      geminiApiKey: "test-gemini-key",
+      geminiModel: "gemini-2.5-flash"
+    });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({
+        candidates: [{
+          content: {
+            parts: [
+              { thought: true, text: "Internal thought trace" },
+              { text: "Focused answer for target role." }
+            ]
+          }
+        }]
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as any;
+
+    try {
+      const result = await service.generateText("Hello", "System prompt");
+      expect(result).toBe("Focused answer for target role.");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

@@ -13,6 +13,68 @@ let scenarioFeedFilters = {};
 let searchConfig = null;
 let profileJobsCache = {};
 
+// Multi-Selection Filter State
+let multiFilter = {
+  workModes: new Set(), // "remote", "hybrid", "onsite"
+  hideSc: false,
+  licensedOnly: false,
+  minScore70: false
+};
+
+function isHybridJob(j) {
+  if (!j) return false;
+  if (j.is_hybrid) return true;
+  if (j.is_remote) return false;
+  const tag = (j.commute_tag || "").toLowerCase();
+  const loc = (j.location || "").toLowerCase();
+  const title = (j.title || "").toLowerCase();
+  const summary = (j.summary || "").toLowerCase();
+  const jd = (j.full_jd || "").toLowerCase();
+  if (tag.includes("hybrid") || loc.includes("hybrid") || title.includes("hybrid")) return true;
+  return /\b(?:hybrid\s+work|hybrid\s+model|hybrid\s+working|flexible\s+hybrid|days?\s+(?:a|per)\s+week\s+(?:in|at)\s+(?:the\s+)?office|days?\s+(?:in|at)\s+the\s+office|hybrid\s+role|hybrid\s+basis|hybrid\s+contract|\d+\s+days?\s+(?:remote|office))\b/i.test(jd || summary);
+}
+
+function isScClearanceJob(j) {
+  if (!j) return false;
+  if (j.requires_sc !== undefined) return Boolean(j.requires_sc);
+  const title = (j.title || "").toLowerCase();
+  const text = ((j.full_jd || "") + " " + (j.summary || "")).toLowerCase();
+  return /\b(?:active\s+sc|must\s+hold\s+sc|sc\s+cleared|sc\s+clearance|security\s+cleared|dv\s+cleared|dv\s+clearance|security\s+check\s+clearance|mod\s+clearance|must\s+be\s+sc|hold\s+active\s+sc|obtain\s+sc\s+clearance|requires?\s+sc\s+clearance|eligib(?:le|ility)\s+for\s+sc|sc\s+status|bpss\s+and\s+sc)\b/i.test(title) ||
+         /\b(?:active\s+sc|must\s+hold\s+sc|sc\s+cleared|sc\s+clearance|security\s+cleared|dv\s+cleared|dv\s+clearance|security\s+check\s+clearance|mod\s+clearance|must\s+be\s+sc|hold\s+active\s+sc|obtain\s+sc\s+clearance|requires?\s+sc\s+clearance)\b/i.test(text);
+}
+
+function updateFilterBarUI() {
+  const filterWorkModes = document.getElementById("filterWorkModes");
+  const chipHideSc = document.getElementById("chipHideSc");
+  const chipLicensedOnly = document.getElementById("chipLicensedOnly");
+  const chipMinScore = document.getElementById("chipMinScore");
+  const filterResetBtn = document.getElementById("filterResetBtn");
+
+  // 1. Work modes
+  const modeButtons = filterWorkModes?.querySelectorAll(".filter-chip") || [];
+  modeButtons.forEach(btn => {
+    const mode = btn.dataset.mode;
+    if (mode === "all") {
+      btn.classList.toggle("active", multiFilter.workModes.size === 0);
+    } else {
+      btn.classList.toggle("active", multiFilter.workModes.has(mode));
+    }
+  });
+
+  // 2. Toggle chips
+  chipHideSc?.classList.toggle("active-warning", multiFilter.hideSc);
+  chipLicensedOnly?.classList.toggle("active-green", multiFilter.licensedOnly);
+  chipMinScore?.classList.toggle("active", multiFilter.minScore70);
+
+  // 3. Reset button
+  const defaultHideSc = Boolean(activeProfile?.excludeSecurityClearance);
+  const hasActiveFilters = multiFilter.workModes.size > 0 ||
+    multiFilter.hideSc !== defaultHideSc ||
+    multiFilter.licensedOnly ||
+    multiFilter.minScore70;
+  if (filterResetBtn) filterResetBtn.style.display = hasActiveFilters ? "inline-flex" : "none";
+}
+
 // Multi-Profile State
 let allProfiles = [];
 let activeProfile = null;
@@ -224,6 +286,61 @@ function setupEventListeners() {
     renderJobs();
   });
 
+  // Multi-Filter bar handlers
+  const filterWorkModes = document.getElementById("filterWorkModes");
+  const chipHideSc = document.getElementById("chipHideSc");
+  const chipLicensedOnly = document.getElementById("chipLicensedOnly");
+  const chipMinScore = document.getElementById("chipMinScore");
+  const filterResetBtn = document.getElementById("filterResetBtn");
+
+  filterWorkModes?.querySelectorAll(".filter-chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode;
+      if (mode === "all") {
+        multiFilter.workModes.clear();
+      } else {
+        if (multiFilter.workModes.has(mode)) {
+          multiFilter.workModes.delete(mode);
+        } else {
+          multiFilter.workModes.add(mode);
+        }
+      }
+      updateFilterBarUI();
+      renderJobs();
+    });
+  });
+
+  chipHideSc?.addEventListener("click", () => {
+    multiFilter.hideSc = !multiFilter.hideSc;
+    updateFilterBarUI();
+    renderJobs();
+    showToast(multiFilter.hideSc ? "🔒 Hiding Security Clearance required roles" : "Showing all roles (including SC required)");
+  });
+
+  chipLicensedOnly?.addEventListener("click", () => {
+    multiFilter.licensedOnly = !multiFilter.licensedOnly;
+    updateFilterBarUI();
+    renderJobs();
+    showToast(multiFilter.licensedOnly ? "🛡️ Filtering to Verified Licensed Sponsors" : "Showing all employers");
+  });
+
+  chipMinScore?.addEventListener("click", () => {
+    multiFilter.minScore70 = !multiFilter.minScore70;
+    updateFilterBarUI();
+    renderJobs();
+    showToast(multiFilter.minScore70 ? "🎯 Filtering to ≥70% ATS Match roles" : "Showing all match scores");
+  });
+
+  filterResetBtn?.addEventListener("click", () => {
+    multiFilter.workModes.clear();
+    multiFilter.hideSc = false;
+    multiFilter.licensedOnly = false;
+    multiFilter.minScore70 = false;
+    updateFilterBarUI();
+    renderJobs();
+    showToast("Filters reset to defaults");
+  });
+
   // Refresh
   let isRefreshingFeed = false;
   btnRefresh.addEventListener("click", async () => {
@@ -294,6 +411,79 @@ function setupEventListeners() {
   };
   btnCloseImportJobModal?.addEventListener("click", closeImportJobModal);
   btnCancelImportJobModal?.addEventListener("click", closeImportJobModal);
+
+  // Custom AI Instructions Modal
+  const customInstructionsModal = document.getElementById("customInstructionsModal");
+  const btnCloseCustomInstructionsModal = document.getElementById("btnCloseCustomInstructionsModal");
+  const btnCancelCustomInstructionsModal = document.getElementById("btnCancelCustomInstructionsModal");
+  const btnCustomInstructions = document.getElementById("btnCustomInstructions");
+  const txtCustomInstructions = document.getElementById("txtCustomInstructions");
+  const btnClearCustomInstructions = document.getElementById("btnClearCustomInstructions");
+  const btnSaveAndTailorInstructions = document.getElementById("btnSaveAndTailorInstructions");
+
+  window.openCustomInstructionsModal = () => {
+    if (!selectedJob) {
+      showToast("Select a job from the feed first.");
+      return;
+    }
+    const targetCo = document.getElementById("instructionTargetCompany");
+    if (targetCo) targetCo.textContent = `${selectedJob.title} at ${selectedJob.company}`;
+    if (txtCustomInstructions) {
+      txtCustomInstructions.value = selectedJob.user_instructions || "";
+    }
+    if (customInstructionsModal) customInstructionsModal.style.display = "flex";
+    setTimeout(() => txtCustomInstructions?.focus(), 50);
+  };
+
+  const closeCustomInstructionsModal = () => {
+    if (customInstructionsModal) customInstructionsModal.style.display = "none";
+  };
+
+  btnCustomInstructions?.addEventListener("click", window.openCustomInstructionsModal);
+  btnCloseCustomInstructionsModal?.addEventListener("click", closeCustomInstructionsModal);
+  btnCancelCustomInstructionsModal?.addEventListener("click", closeCustomInstructionsModal);
+
+  btnClearCustomInstructions?.addEventListener("click", () => {
+    if (txtCustomInstructions) txtCustomInstructions.value = "";
+    if (selectedJob) selectedJob.user_instructions = "";
+    showToast("Instructions cleared for this role.");
+    if (btnCustomInstructions) {
+      btnCustomInstructions.style.borderColor = "";
+      btnCustomInstructions.style.color = "";
+      const lbl = document.getElementById("customInstructionsLabel");
+      if (lbl) lbl.textContent = "AI Instructions";
+    }
+  });
+
+  const appendSuggestion = (text) => {
+    if (!txtCustomInstructions) return;
+    const current = txtCustomInstructions.value.trim();
+    if (!current) {
+      txtCustomInstructions.value = text;
+    } else {
+      txtCustomInstructions.value = current + (current.endsWith(".") ? " " : ". ") + text;
+    }
+    txtCustomInstructions.focus();
+  };
+
+  document.getElementById("chipK8s")?.addEventListener("click", () => appendSuggestion("Emphasize multi-cluster Kubernetes upgrades, AWS cloud platforms, and reusable Terraform blueprints."));
+  document.getElementById("chipCicd")?.addEventListener("click", () => appendSuggestion("Highlight Platform Engineering, automated CI/CD pipelines, and developer enablement."));
+  document.getElementById("chipReliability")?.addEventListener("click", () => appendSuggestion("Emphasize incident response, production on-call reliability, and observability telemetry."));
+  document.getElementById("chipOmitMobile")?.addEventListener("click", () => appendSuggestion("Remove mentions of mobile and desktop app development from the summary."));
+
+  btnSaveAndTailorInstructions?.addEventListener("click", () => {
+    if (!selectedJob) return;
+    const instructions = txtCustomInstructions ? txtCustomInstructions.value.trim() : "";
+    selectedJob.user_instructions = instructions;
+    closeCustomInstructionsModal();
+    if (btnCustomInstructions) {
+      btnCustomInstructions.style.borderColor = instructions ? "var(--apple-blue)" : "";
+      btnCustomInstructions.style.color = instructions ? "var(--apple-blue)" : "";
+      const lbl = document.getElementById("customInstructionsLabel");
+      if (lbl) lbl.textContent = instructions ? "AI Instructions (Active)" : "AI Instructions";
+    }
+    tailorCurrentJob(true, instructions);
+  });
 
   btnSubmitImportJob?.addEventListener("click", async () => {
     const urlToImport = importJobUrlInput?.value.trim();
@@ -393,7 +583,9 @@ function setupEventListeners() {
 
   // Studio tabs
   document.querySelectorAll(".tab-btn").forEach(tab => {
-    tab.addEventListener("click", () => {
+    tab.addEventListener("click", async () => {
+      if (typeof window.__saveLatexEditor_cv === "function") await window.__saveLatexEditor_cv();
+      if (typeof window.__saveLatexEditor_cover === "function") await window.__saveLatexEditor_cover();
       document.querySelectorAll(".tab-btn").forEach(t => t.classList.remove("active"));
       tab.classList.add("active");
       currentTab = tab.dataset.tab;
@@ -600,6 +792,7 @@ function setupEventListeners() {
   const locFormCountry = document.getElementById("locFormCountry");
   const locFormTargetLocations = document.getElementById("locFormTargetLocations");
   const locFormVisaRequired = document.getElementById("locFormVisaRequired");
+  const locFormExcludeSc = document.getElementById("locFormExcludeSc");
 
   if (btnCustomizeLocations) {
     btnCustomizeLocations.addEventListener("click", () => {
@@ -611,6 +804,7 @@ function setupEventListeners() {
       locRadiusDisplay.textContent = `${activeProfile.preferredRadiusMiles || 50} miles`;
       locFormTargetLocations.value = (activeProfile.targetLocations || []).join(", ");
       locFormVisaRequired.checked = !!activeProfile.visaSponsorshipRequired;
+      if (locFormExcludeSc) locFormExcludeSc.checked = Boolean(activeProfile.excludeSecurityClearance);
       locationPrefsModal.style.display = "flex";
     });
   }
@@ -639,7 +833,8 @@ function setupEventListeners() {
       country: locFormCountry ? locFormCountry.value.trim() : activeProfile.country,
       preferredRadiusMiles: parseInt(locFormRadiusSlider.value) || 50,
       targetLocations: targets.length > 0 ? targets : ["Remote"],
-      visaSponsorshipRequired: locFormVisaRequired.checked
+      visaSponsorshipRequired: locFormVisaRequired.checked,
+      excludeSecurityClearance: locFormExcludeSc ? locFormExcludeSc.checked : Boolean(activeProfile.excludeSecurityClearance)
     };
 
     try {
@@ -651,6 +846,7 @@ function setupEventListeners() {
       const data = await res.json();
       if (data.success) {
         activeProfile = data.profile;
+        multiFilter.hideSc = Boolean(activeProfile.excludeSecurityClearance);
         updateProfileUI();
         closeLocPrefs();
         showToast("📍 Location priorities & commute radius updated!");
@@ -724,6 +920,7 @@ async function fetchProfiles() {
     allProfiles = data.profiles || [];
     const activeId = data.activeProfileId;
     activeProfile = allProfiles.find(p => p.id === activeId) || allProfiles[0];
+    multiFilter.hideSc = Boolean(activeProfile?.excludeSecurityClearance);
 
     updateProfileUI();
     renderProfileDropdownList();
@@ -881,6 +1078,7 @@ async function switchActiveProfile(profileId) {
   // 1. Instant optimistic UI switch (0ms latency)
   if (targetProfile) {
     activeProfile = targetProfile;
+    multiFilter.hideSc = Boolean(activeProfile.excludeSecurityClearance);
     updateProfileUI();
     renderProfileDropdownList();
     if (targetProfile.schedule) {
@@ -931,6 +1129,7 @@ async function switchActiveProfile(profileId) {
     const data = await res.json();
     if (data.success) {
       activeProfile = data.activeProfile;
+      multiFilter.hideSc = Boolean(activeProfile.excludeSecurityClearance);
       updateProfileUI();
       renderProfileDropdownList();
       showToast(`Switched active profile to ${activeProfile.name}`);
@@ -1282,6 +1481,9 @@ function openProfileModal(profileToEdit) {
     document.getElementById("formRadius").value = profileToEdit.preferredRadiusMiles || 70;
     document.getElementById("formMinSalary").value = (profileToEdit.minSalary !== undefined && profileToEdit.minSalary !== null) ? profileToEdit.minSalary : 0;
     document.getElementById("formVisaRequired").checked = profileToEdit.visaSponsorshipRequired;
+    if (document.getElementById("formExcludeSecurityClearance")) {
+      document.getElementById("formExcludeSecurityClearance").checked = Boolean(profileToEdit.excludeSecurityClearance);
+    }
     document.getElementById("formEnableDeepTailor").checked = Boolean(profileToEdit.enableDeepTailor);
     document.getElementById("formTargetRoles").value = (profileToEdit.targetRoles || []).join(", ");
     document.getElementById("formTargetLocations").value = (profileToEdit.targetLocations || []).join(", ");
@@ -1304,6 +1506,7 @@ function openProfileModal(profileToEdit) {
     document.getElementById("formRadius").value = "70";
     document.getElementById("formMinSalary").value = "0";
     document.getElementById("formVisaRequired").checked = true;
+    if (document.getElementById("formExcludeSecurityClearance")) document.getElementById("formExcludeSecurityClearance").checked = false;
     document.getElementById("formEnableDeepTailor").checked = false;
     if (document.getElementById("formHeaderShowLocation")) document.getElementById("formHeaderShowLocation").checked = true;
     if (document.getElementById("formHeaderShowPhone")) document.getElementById("formHeaderShowPhone").checked = true;
@@ -1387,6 +1590,7 @@ async function handleSaveProfileForm(e) {
     preferredRadiusMiles,
     minSalary,
     visaSponsorshipRequired,
+    excludeSecurityClearance: Boolean(document.getElementById("formExcludeSecurityClearance")?.checked),
     enableDeepTailor: Boolean(document.getElementById("formEnableDeepTailor")?.checked),
     targetRoles: targetRoles.length > 0 ? targetRoles : [headline],
     targetLocations: targetLocations.length > 0 ? targetLocations : ["Remote", location],
@@ -2144,7 +2348,7 @@ async function fetchJobs(silent = false) {
     const profileParam = activeProfile?.id ? `?profileId=${encodeURIComponent(activeProfile.id)}` : "";
     const res = await fetch(`/api/jobs${profileParam}`);
     const data = await res.json();
-    allJobs = data.jobs || [];
+    allJobs = (data.jobs || []).map(j => { normalizeJobDisplay(j); return j; });
     if (activeProfile?.id) {
       profileJobsCache[activeProfile.id] = allJobs;
     }
@@ -2205,10 +2409,12 @@ function renderLocationNavFilters() {
 
   let rankNum = 3;
   targets.forEach((targetCity, idx) => {
+    const isHybridTarget = targetCity.toLowerCase() === "hybrid";
     const filterKey = `target_loc_${targetCity.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    const icon = isHybridTarget ? "🏢" : "🎯";
     itemsHtml += `
       <li class="nav-item ${currentFilter === filterKey ? 'active' : ''}" data-filter="${filterKey}" data-target-city="${escapeHtml(targetCity)}">
-        <span class="nav-item-left">🎯 Priority ${rankNum}: ${escapeHtml(targetCity)}</span>
+        <span class="nav-item-left">${icon} Priority ${rankNum}: ${escapeHtml(targetCity)}</span>
         <span class="nav-badge" id="count_loc_${idx}">0</span>
       </li>
     `;
@@ -2298,7 +2504,11 @@ function updateBadgeCounts() {
   targets.forEach((targetCity, idx) => {
     const el = document.getElementById(`count_loc_${idx}`);
     if (el) {
-      const c = unappliedJobs.filter(j => j.location.toLowerCase().includes(targetCity.toLowerCase())).length;
+      const tc = targetCity.toLowerCase();
+      const c = unappliedJobs.filter(j => {
+        if (tc === "hybrid") return isHybridJob(j);
+        return (j.location || "").toLowerCase().includes(tc);
+      }).length;
       el.textContent = c;
     }
   });
@@ -2337,15 +2547,20 @@ function compareJobsByNewest(a, b) {
     return dayB.localeCompare(dayA);
   }
 
-  // Same day: latest posted/discovered timestamp first
+  // Same calendar day: rank highest match percentage first!
+  const scoreDiff = (b.fit_score || 0) - (a.fit_score || 0);
+  if (scoreDiff !== 0) {
+    return scoreDiff;
+  }
+
+  // Same day and same percentage: latest posted/discovered timestamp first
   const tsA = getJobTimestamp(a);
   const tsB = getJobTimestamp(b);
   if (tsB !== tsA && !isNaN(tsA) && !isNaN(tsB)) {
     return tsB - tsA;
   }
 
-  // Final tiebreaker on same day and same time: fit score
-  return (b.fit_score || 0) - (a.fit_score || 0);
+  return (a.seen_order ?? 0) - (b.seen_order ?? 0);
 }
 
 function isImportedJob(j) {
@@ -2400,6 +2615,37 @@ function filterJobsList() {
     if (scenarioFeedFilters.sponsorshipMode === "licensed" && !j.sponsor_verified) return false;
     if (scenarioFeedFilters.sponsorshipMode === "explicit" && !(j.sponsor_verified && j.sponsorship_status === "offered")) return false;
 
+    // Multi-Filter: SC Clearance Exclusion (Profile setting or Quick Filter Toggle)
+    const requiresSc = isScClearanceJob(j);
+    j.requires_sc = requiresSc;
+    const shouldHideSc = multiFilter.hideSc;
+    if (shouldHideSc && requiresSc) {
+      return false;
+    }
+
+    // Multi-Filter: Work Mode (Remote / Hybrid / On-site)
+    if (multiFilter.workModes.size > 0) {
+      const isRem = Boolean(j.is_remote);
+      const isHyb = isHybridJob(j);
+      const isOnsite = !isRem && !isHyb;
+
+      let modeMatch = false;
+      if (multiFilter.workModes.has("remote") && isRem) modeMatch = true;
+      if (multiFilter.workModes.has("hybrid") && isHyb) modeMatch = true;
+      if (multiFilter.workModes.has("onsite") && isOnsite) modeMatch = true;
+      if (!modeMatch) return false;
+    }
+
+    // Multi-Filter: Licensed Sponsor Only
+    if (multiFilter.licensedOnly && !j.sponsor_verified) {
+      return false;
+    }
+
+    // Multi-Filter: Min 70% Match Score
+    if (multiFilter.minScore70 && (j.fit_score || 0) < 70) {
+      return false;
+    }
+
     // Ignored filter isolation
     const isIgnored = j.status === "ignored" || Boolean(j.ignored);
     if (currentFilter === "ignored") {
@@ -2424,7 +2670,8 @@ function filterJobsList() {
       const activeNav = document.querySelector(`.nav-item[data-filter="${currentFilter}"]`);
       const targetCity = activeNav?.dataset.targetCity?.toLowerCase();
       if (targetCity) {
-        return j.location.toLowerCase().includes(targetCity);
+        if (targetCity === "hybrid") return isHybridJob(j);
+        return (j.location || "").toLowerCase().includes(targetCity);
       }
     }
     if (currentFilter === "uk_hybrid_sponsored") return !j.is_remote && j.sponsor_verified && !j.distance_tag?.includes("Cross Border");
@@ -2473,10 +2720,29 @@ function filterJobsList() {
 
       return compareJobsByNewest(a, b);
     } else if (currentSortMode === "days") {
-      // Days wise: newest date first, with latest time on the same day first, then discovery order
+      // Days wise: newest date first, with highest percentage on the same day first, then latest time
       return compareJobsByNewest(a, b);
     } else if (currentSortMode === "score") {
       // Percentage score wise: highest fit_score first, then newest date and same-day time
+      const scoreDiff = (b.fit_score || 0) - (a.fit_score || 0);
+      if (scoreDiff !== 0) return scoreDiff;
+      // Tie breaker for equal score: newest date first!
+      const dateA = a.posted_date || a.first_seen || "2026-01-01";
+      const dateB = b.posted_date || b.first_seen || "2026-01-01";
+      if (dateB !== dateA) return dateB.localeCompare(dateA);
+      const tsA = getJobTimestamp(a);
+      const tsB = getJobTimestamp(b);
+      if (tsB !== tsA && !isNaN(tsA) && !isNaN(tsB)) return tsB - tsA;
+      return (a.seen_order ?? 0) - (b.seen_order ?? 0);
+    } else if (currentSortMode === "top_fresh") {
+      // Best fresh matches: Last 7 days first (sorted by score descending), then older
+      const now = Date.now();
+      const ms7d = 7 * 24 * 60 * 60 * 1000;
+      const tsA = getJobTimestamp(a);
+      const tsB = getJobTimestamp(b);
+      const isFreshA = (now - tsA) <= ms7d ? 1 : 0;
+      const isFreshB = (now - tsB) <= ms7d ? 1 : 0;
+      if (isFreshB !== isFreshA) return isFreshB - isFreshA;
       const scoreDiff = (b.fit_score || 0) - (a.fit_score || 0);
       if (scoreDiff !== 0) return scoreDiff;
       return compareJobsByNewest(a, b);
@@ -2491,7 +2757,56 @@ function filterJobsList() {
   });
 }
 
+function normalizeJobDisplay(job) {
+  if (!job) return;
+  if (job.title && (/^(?:Job Application for|Apply for)\s+/i.test(job.title) || /\s+at\s+/i.test(job.title))) {
+    let clean = job.title.replace(/^(?:Job Application for|Apply for)\s+/i, "");
+    if ((!job.company || job.company === "Hiring Company" || job.company === "Company") && /\s+at\s+/i.test(clean)) {
+      const parts = clean.split(/\s+at\s+/i);
+      clean = parts[0].trim();
+      job.company = parts.slice(1).join(" at ").trim();
+    } else if (job.company && clean.toLowerCase().includes(` at ${job.company.toLowerCase()}`)) {
+      clean = clean.replace(new RegExp(`\\s+at\\s+${job.company}`, "i"), "").trim();
+    }
+    job.title = clean;
+  }
+  if ((!job.company || job.company === "Hiring Company" || job.company === "Company") && job.url) {
+    try {
+      const u = new URL(job.url);
+      const host = u.hostname.toLowerCase();
+      const path = u.pathname;
+      if (host.includes("greenhouse.io")) {
+        const forParam = u.searchParams.get("for") || u.searchParams.get("b");
+        if (forParam) {
+          job.company = forParam.replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        } else {
+          const match = path.match(/^\/(?:embed\/job_board\/|v1\/boards\/)?([^/]+)/);
+          if (match && match[1] && !["jobs", "careers", "posting", "postings", "search", "embed", "v1"].includes(match[1].toLowerCase())) {
+            job.company = match[1].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+          }
+        }
+      } else if (host.includes("lever.co") || host.includes("ashbyhq.com") || host.includes("smartrecruiters.com") || host.includes("rippling.com") || host.includes("workable.com")) {
+        const match = path.match(/^\/(?:jobs\/|careers\/|ats\/)?([^/]+)/);
+        if (match && match[1] && !["jobs", "careers", "posting", "postings", "search", "j", "apply"].includes(match[1].toLowerCase())) {
+          job.company = match[1].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        }
+      } else {
+        const workdayMatch = host.match(/^([a-z0-9_-]+)\.(?:[a-z0-9_-]+\.)?myworkdayjobs\.com/i);
+        if (workdayMatch && workdayMatch[1] && !["jobs", "careers", "apply", "wd1", "wd2", "wd3", "wd4", "wd5"].includes(workdayMatch[1].toLowerCase())) {
+          job.company = workdayMatch[1].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        } else {
+          const submatch = host.match(/^([a-z0-9_-]+)\.(?:workable|bamboohr|pinpointhq|breezy\.hr|jobs\.personio|teamtailor)\./i);
+          if (submatch && submatch[1] && !["jobs", "careers", "apply", "app"].includes(submatch[1].toLowerCase())) {
+            job.company = submatch[1].replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+          }
+        }
+      }
+    } catch {}
+  }
+}
+
 function renderJobs() {
+  updateFilterBarUI();
   const filtered = filterJobsList();
   feedCount.textContent = `${filtered.length} roles`;
 
@@ -2521,7 +2836,11 @@ function renderJobs() {
   if (!titleText && currentFilter.startsWith("target_loc_")) {
     const activeNav = document.querySelector(`.nav-item[data-filter="${currentFilter}"]`);
     const targetCity = activeNav?.dataset.targetCity || "Target Location";
-    titleText = `Priority: ${targetCity}`;
+    if (targetCity.toLowerCase() === "hybrid") {
+      titleText = "Priority: Hybrid Opportunities";
+    } else {
+      titleText = `Priority: ${targetCity}`;
+    }
   }
   feedTitle.textContent = titleText || "All Opportunities";
 
@@ -2537,6 +2856,7 @@ function renderJobs() {
   }
 
   filtered.forEach((job, index) => {
+    normalizeJobDisplay(job);
     const card = document.createElement("div");
     card.dataset.jobId = job.id;
     card.className = `job-card ${selectedJob && selectedJob.id === job.id ? 'active' : ''}`;
@@ -2587,6 +2907,12 @@ function renderJobs() {
         ${relativeDateBadge}
         ${portalTag}
         <span class="meta-pill">${escapeHtml(job.commute_tag)}</span>
+        ${(isHybridJob(job) && !job.is_remote)
+          ? '<span class="meta-pill" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.35); font-weight: 500;">🏢 Hybrid</span>'
+          : ''}
+        ${isScClearanceJob(job)
+          ? '<span class="meta-pill" style="color: #fb923c; border-color: rgba(251, 146, 60, 0.4); font-weight: 600;" title="Requires active UK Security Clearance (SC/DV)">🔒 SC Required</span>'
+          : ''}
         ${job.is_new_sponsor
           ? `<span class="meta-pill pill-new-sponsor" title="Approved sponsor on ${escapeHtml(job.new_sponsor_formatted || '')}: ${escapeHtml(job.sponsorship_employer || job.company)}">✨ New Sponsor (${escapeHtml(job.new_sponsor_formatted ? job.new_sponsor_formatted.replace(/ \d{4}$/, '') : 'Recent')})</span>`
           : (job.sponsorship_status === "offered" && job.sponsor_verified
@@ -2647,7 +2973,10 @@ function formatRelativeDate(dateStr, timeStr) {
 }
 
 function selectJob(job) {
+  normalizeJobDisplay(job);
   selectedJob = job;
+  window.__saveLatexEditor_cv = null;
+  window.__saveLatexEditor_cover = null;
 
   // Clear stale tailored cache if it belonged to another job
   if (activeTailoredData && activeTailoredData.jobId && activeTailoredData.jobId !== job.id) {
@@ -2777,11 +3106,17 @@ function selectJob(job) {
     }
   }
 
+  const isScRole = isScClearanceJob(job);
+  const studioScBanner = document.getElementById("studioScBanner");
+  if (studioScBanner) {
+    studioScBanner.style.display = isScRole ? "inline-flex" : "none";
+  }
+
   if (statusStripDivider) {
-    statusStripDivider.style.display = (hasSponsor && hasAggregator) ? "block" : "none";
+    statusStripDivider.style.display = (hasSponsor && (hasAggregator || isScRole)) ? "block" : "none";
   }
   if (studioStatusStrip) {
-    studioStatusStrip.style.display = (hasSponsor || hasAggregator) ? "flex" : "none";
+    studioStatusStrip.style.display = (hasSponsor || hasAggregator || isScRole) ? "flex" : "none";
   }
 
   // Actions Bar
@@ -2793,6 +3128,21 @@ function selectJob(job) {
     const isDeep = Boolean(job.is_deep_tailored !== undefined ? job.is_deep_tailored : activeProfile?.enableDeepTailor);
     syncDeepTailorBtnState(isDeep);
     updateTailorBtnLabel();
+  }
+
+  const btnCustomInstructions = document.getElementById("btnCustomInstructions");
+  const customInstructionsLabel = document.getElementById("customInstructionsLabel");
+  if (btnCustomInstructions && customInstructionsLabel) {
+    const hasInstructions = Boolean(job.user_instructions && job.user_instructions.trim());
+    if (hasInstructions) {
+      customInstructionsLabel.textContent = "AI Instructions (Active)";
+      btnCustomInstructions.style.borderColor = "var(--apple-blue)";
+      btnCustomInstructions.style.color = "var(--apple-blue)";
+    } else {
+      customInstructionsLabel.textContent = "AI Instructions";
+      btnCustomInstructions.style.borderColor = "";
+      btnCustomInstructions.style.color = "";
+    }
   }
 
   const appliedSvgCheck = document.getElementById("appliedSvgCheck");
@@ -3003,6 +3353,149 @@ let currentCoverViewMode = "visual";
 let currentDocLang = "native"; // "native" (original language) or "english"
 let currentRenderJobId = null;
 
+function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
+  let lastSavedCode = initialCode;
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const docLabel = type === "cover" ? "Cover Letter" : "Curated CV";
+
+  container.innerHTML = `
+    <div class="latex-editor-container">
+      <div class="latex-editor-toolbar">
+        <div class="latex-editor-info">
+          <span class="latex-editor-badge">${docLabel} LaTeX</span>
+          <span class="latex-editor-filename">${escapeHtml(docPath)}</span>
+          <span class="latex-editor-status" id="latexStatus_${type}">Ready to edit</span>
+        </div>
+        <div class="latex-editor-actions">
+          <button type="button" class="btn btn-secondary btn-action" id="btnRevertLatex_${type}" style="font-size: 11.5px; padding: 4px 10px;" title="Discard unsaved edits and restore saved version">Revert</button>
+          <button type="button" class="btn btn-primary btn-action" id="btnSaveLatex_${type}" style="font-size: 11.5px; padding: 4px 12px;" title="Save changes to disk and update visual preview (Cmd+S / Ctrl+S)">💾 Save & Apply</button>
+        </div>
+      </div>
+      <textarea id="latexTextarea_${type}" class="latex-code-textarea" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">${escapeHtml(initialCode)}</textarea>
+      <div class="latex-editor-footer">
+        <span>Shortcuts: <b>Cmd+S</b> / <b>Ctrl+S</b> to save &bull; <b>Tab</b> inserts 2 spaces</span>
+        <span id="latexCharCount_${type}">${initialCode.length.toLocaleString()} characters</span>
+      </div>
+    </div>
+  `;
+
+  const textarea = document.getElementById(`latexTextarea_${type}`);
+  const statusEl = document.getElementById(`latexStatus_${type}`);
+  const charCountEl = document.getElementById(`latexCharCount_${type}`);
+  const btnSave = document.getElementById(`btnSaveLatex_${type}`);
+  const btnRevert = document.getElementById(`btnRevertLatex_${type}`);
+
+  function updateState() {
+    if (!textarea) return;
+    const isDirty = textarea.value !== lastSavedCode;
+    if (charCountEl) {
+      charCountEl.textContent = `${textarea.value.length.toLocaleString()} characters`;
+    }
+    if (btnRevert) {
+      btnRevert.disabled = !isDirty;
+      btnRevert.style.opacity = isDirty ? "1" : "0.5";
+      btnRevert.style.cursor = isDirty ? "pointer" : "default";
+    }
+    if (statusEl) {
+      if (isDirty) {
+        statusEl.innerHTML = `<span style="color: #f59e0b; font-weight: 600;">● Unsaved changes</span>`;
+      } else if (statusEl.textContent !== "✓ Saved to disk" && statusEl.textContent !== "Saving...") {
+        statusEl.textContent = "Ready to edit";
+        statusEl.style.color = "var(--text-tertiary)";
+      }
+    }
+  }
+
+  updateState();
+
+  async function doSave() {
+    if (!textarea) return false;
+    const newContent = textarea.value;
+    if (statusEl) {
+      statusEl.textContent = "Saving...";
+      statusEl.style.color = "var(--text-secondary)";
+    }
+    try {
+      const res = await fetch("/api/document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: docPath, content: newContent })
+      });
+      const data = await res.json();
+      if (data.success) {
+        lastSavedCode = newContent;
+        if (statusEl) {
+          statusEl.textContent = "✓ Saved to disk";
+          statusEl.style.color = "#10b981";
+        }
+        if (typeof onSaved === "function") {
+          onSaved(newContent);
+        }
+        showToast("LaTeX saved successfully!");
+        setTimeout(() => {
+          if (textarea && textarea.value === lastSavedCode && statusEl) {
+            statusEl.textContent = "Ready to edit";
+            statusEl.style.color = "var(--text-tertiary)";
+          }
+        }, 2200);
+        updateState();
+        return true;
+      } else {
+        if (statusEl) {
+          statusEl.textContent = "⚠️ Save failed";
+          statusEl.style.color = "#ef4444";
+        }
+        showToast(`Save failed: ${data.error || "Unknown error"}`);
+        return false;
+      }
+    } catch (err) {
+      if (statusEl) {
+        statusEl.textContent = "⚠️ Save error";
+        statusEl.style.color = "#ef4444";
+      }
+      showToast(`Save error: ${err.message || err}`);
+      return false;
+    }
+  }
+
+  window[`__saveLatexEditor_${type}`] = async () => {
+    if (textarea && textarea.value !== lastSavedCode) {
+      await doSave();
+    }
+  };
+
+  textarea.addEventListener("input", updateState);
+
+  textarea.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      doSave();
+      return;
+    }
+
+    if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const val = textarea.value;
+      textarea.value = val.substring(0, start) + "  " + val.substring(end);
+      textarea.selectionStart = textarea.selectionEnd = start + 2;
+      updateState();
+    }
+  });
+
+  btnSave?.addEventListener("click", () => doSave());
+
+  btnRevert?.addEventListener("click", () => {
+    if (!textarea || textarea.value === lastSavedCode) return;
+    textarea.value = lastSavedCode;
+    updateState();
+    showToast("Restored last saved LaTeX code");
+  });
+}
+
 async function renderCVTab() {
   const targetJob = selectedJob;
   if (!targetJob) return;
@@ -3057,7 +3550,7 @@ async function renderCVTab() {
 
   let texCode = "";
   try {
-    const res = await fetch(`/api/document?path=${encodeURIComponent(cvPath)}`);
+    const res = await fetch(`/api/document?path=${encodeURIComponent(cvPath)}&_t=${Date.now()}`, { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       texCode = data.content || "";
@@ -3108,6 +3601,7 @@ async function renderCVTab() {
         <button class="btn-primary btn-action" id="btnDownloadCVPdf">Download PDF</button>
         <button class="btn-secondary btn-action" id="btnOpenPreviewCV" title="Open PDF with system viewer">Open</button>
         <button class="btn-secondary btn-action" id="btnRevealCV" title="Show PDF in Finder">Finder</button>
+        <button class="btn-secondary btn-action" id="btnInstructCV" title="Guide AI with custom instructions (e.g. emphasize tools, change summary)">AI Instructions ✎</button>
         <button class="btn-secondary btn-action" id="btnToggleCVMode">${currentCVViewMode === "visual" ? "Raw LaTeX" : "Visual View"}</button>
         <button class="btn-secondary btn-action" id="btnCopyCV">Copy LaTeX</button>
         <button class="btn-secondary btn-action" id="btnOpenOverleaf">Overleaf ↗</button>
@@ -3116,6 +3610,7 @@ async function renderCVTab() {
     <div id="cvContainer" style="max-width: 820px; margin: 0 auto;"></div>
   `;
 
+  document.getElementById("btnInstructCV")?.addEventListener("click", openCustomInstructionsModal);
   document.getElementById("btnCvLangNative")?.addEventListener("click", () => {
     currentDocLang = "native";
     renderCVTab();
@@ -3130,19 +3625,27 @@ async function renderCVTab() {
   document.getElementById("btnRevealCV")?.addEventListener("click", () => revealInFinder("cv"));
 
   document.getElementById("btnCopyCV")?.addEventListener("click", () => {
-    navigator.clipboard.writeText(texCode);
+    const editor = document.getElementById("latexTextarea_cv");
+    const textToCopy = (currentCVViewMode === "code" && editor) ? editor.value : texCode;
+    navigator.clipboard.writeText(textToCopy);
     showToast("LaTeX CV code copied to clipboard!");
   });
 
-  document.getElementById("btnToggleCVMode")?.addEventListener("click", () => {
+  document.getElementById("btnToggleCVMode")?.addEventListener("click", async () => {
+    if (currentCVViewMode === "code") {
+      const saver = window.__saveLatexEditor_cv;
+      if (typeof saver === "function") {
+        await saver();
+      }
+    }
     currentCVViewMode = currentCVViewMode === "visual" ? "code" : "visual";
     renderCVTab();
   });
 
   if (currentCVViewMode === "code") {
-    document.getElementById("cvContainer").innerHTML = `
-      <div class="doc-latex-box" style="max-height: 700px; font-size: 12px;">${escapeHtml(texCode)}</div>
-    `;
+    setupLatexEditor("cvContainer", "cv", cvPath, texCode, (saved) => {
+      texCode = saved;
+    });
     return;
   }
 
@@ -3156,9 +3659,23 @@ async function renderCVTab() {
         /\\usepackage\[(?:ngerman|german)\]\{babel\}/i.test(texCode) ||
         /\\section\{Profil\}/i.test(texCode)
       );
+  // Candidate Header info
+  const nameToRender = parsed.name || activeProfile?.name || "Candidate";
   const latexRoleMatch = texCode.match(/\\textbf\{\\large\s*([^}]+)\}/i) || texCode.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
-  const rawHeadline = latexRoleMatch ? latexRoleMatch[1].replace(/\\&/g, "&").trim() : (selectedJob.title || activeProfile?.headline);
+  const rawHeadline = parsed.role || (latexRoleMatch ? latexRoleMatch[1].replace(/\\&/g, "&").trim() : (selectedJob.title || activeProfile?.headline));
   const headlineRole = cleanCandidateHeadline(rawHeadline, activeProfile?.headline);
+
+  let contactHtml = parsed.contactHtml;
+  if (!contactHtml) {
+    const contactParts = [];
+    if (activeProfile?.location) contactParts.push(escapeHtml(activeProfile.location));
+    if (activeProfile?.phone) contactParts.push(escapeHtml(activeProfile.phone));
+    if (activeProfile?.email) contactParts.push(escapeHtml(activeProfile.email));
+    if (activeProfile?.linkedin) contactParts.push(`<a href="${escapeHtml(activeProfile.linkedin)}" target="_blank">LinkedIn</a>`);
+    if (activeProfile?.github) contactParts.push(`<a href="${escapeHtml(activeProfile.github)}" target="_blank">GitHub</a>`);
+    contactHtml = contactParts.join(" &nbsp;|&nbsp; ");
+  }
+
   const expToRender = (parsed.experience && parsed.experience.length > 0)
     ? parsed.experience
     : (activeProfile?.experience || []).map(exp => ({
@@ -3208,38 +3725,48 @@ async function renderCVTab() {
     skillsTextToRender = parts.join("\n");
   }
 
+  const eduToRender = (parsed.education && parsed.education.length > 0)
+    ? parsed.education
+    : (activeProfile?.education || []).map(rawEdu => {
+        const cleanEdu = cleanEducationItemClient(rawEdu);
+        return {
+          institution: cleanEdu.institution || "University",
+          location: cleanEdu.details || "",
+          degree: cleanEdu.degree || "Degree",
+          dates: cleanEdu.dates || ""
+        };
+      });
+
   document.getElementById("cvContainer").innerHTML = `
-    <div class="doc-preview-container">
-      <div class="doc-header">
-        <h1>${escapeHtml(activeProfile?.name || "Candidate")}</h1>
-        <h3>${escapeHtml(headlineRole)}</h3>
-        <div class="doc-contact">
-          ${escapeHtml(activeProfile?.location || "")} · ${escapeHtml(activeProfile?.phone || "")} · ${escapeHtml(activeProfile?.email || "")}
-          ${activeProfile?.linkedin ? ` · <a href="${escapeHtml(activeProfile.linkedin)}" target="_blank" style="color: var(--apple-blue);">LinkedIn</a>` : ''}
-          ${activeProfile?.github ? ` · <a href="${escapeHtml(activeProfile.github)}" target="_blank" style="color: var(--apple-blue);">GitHub</a>` : ''}
+    <div class="doc-preview-container ats-resume-sheet">
+      <div class="ats-header">
+        <h1 class="ats-name">${escapeHtml(nameToRender)}</h1>
+        ${headlineRole ? `<div class="ats-role">${escapeHtml(headlineRole)}</div>` : ''}
+        <div class="ats-contact">
+          ${contactHtml}
         </div>
       </div>
 
       ${summaryToRender ? `
-      <div class="doc-section">
-        <div class="doc-section-title">${isGermanDoc ? 'Profil' : 'Professional Summary'}</div>
-        <p style="font-size: 12px; color: #1f2937; line-height: 1.55;">${escapeHtml(formatSummaryClient(summaryToRender))}</p>
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Profil' : 'Summary'}</div>
+        <div class="ats-summary">${escapeHtml(formatSummaryClient(summaryToRender))}</div>
       </div>` : ''}
 
       ${expToRender.length > 0 ? `
-      <div class="doc-section">
-        <div class="doc-section-title">${isGermanDoc ? 'Berufserfahrung' : 'Work Experience'}</div>
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Berufserfahrung' : 'Work Experience'}</div>
         ${expToRender.map(exp => `
-          <div style="margin-top: 10px;">
-            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12.5px; color: #111827;">
-              <span>${escapeHtml(exp.company)}</span>
-              <span>${escapeHtml(exp.dates)}</span>
+          <div class="ats-entry">
+            <div class="ats-subheading-row1">
+              <span class="ats-company">${escapeHtml(exp.company)}</span>
+              <span class="ats-location">${escapeHtml(exp.location)}</span>
             </div>
-            <div style="display: flex; justify-content: space-between; font-style: italic; font-size: 11.5px; color: #4b5563; margin-bottom: 5px;">
-              <span>${escapeHtml(exp.title)}</span>
-              <span>${escapeHtml(exp.location)}</span>
+            <div class="ats-subheading-row2">
+              <span class="ats-title">${escapeHtml(exp.title)}</span>
+              <span class="ats-dates">${escapeHtml(exp.dates)}</span>
             </div>
-            <ul class="doc-bullet-list">
+            <ul class="ats-bullet-list">
               ${exp.items.map(bullet => `<li>${escapeHtml(bullet)}</li>`).join("")}
             </ul>
           </div>
@@ -3247,79 +3774,333 @@ async function renderCVTab() {
       </div>` : ''}
 
       ${skillsTextToRender ? `
-      <div class="doc-section">
-        <div class="doc-section-title">${isGermanDoc ? 'Kenntnisse und Fähigkeiten' : 'Technical Skills'}</div>
-        <div style="font-size: 12px; color: #1f2937; line-height: 1.6;">
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Kenntnisse und Fähigkeiten' : 'Technical Skills'}</div>
+        <div class="ats-skills-block">
           ${(parsed.skillsCategories && parsed.skillsCategories.length > 0)
             ? parsed.skillsCategories.map(c => `
-                <div style="margin-bottom: 4px;">
-                  ${c.category ? `<span style="font-weight: 700; color: #111827;">${escapeHtml(c.category)}:</span>` : ''}
-                  <span style="color: #374151;"> ${escapeHtml(c.items)}</span>
+                <div class="ats-skills-line">
+                  ${c.category ? `<span class="ats-skill-cat">${escapeHtml(c.category)}:</span>` : ''}
+                  <span class="ats-skill-items"> ${escapeHtml(c.items)}</span>
                 </div>
               `).join("")
-            : `<div style="white-space: pre-line;">${escapeHtml(skillsTextToRender)}</div>`}
+            : `<div class="ats-skills-line" style="white-space: pre-line;">${escapeHtml(skillsTextToRender)}</div>`}
         </div>
       </div>` : ''}
 
       ${projectsToRender.length > 0 ? `
-      <div class="doc-section">
-        <div class="doc-section-title">${isGermanDoc ? 'Projekte' : 'Technical Projects'}</div>
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Projekte' : 'Technical Projects'}</div>
         ${projectsToRender.map(proj => `
-          <div style="margin-top: 10px;">
-            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12.5px; color: #111827;">
-              <span>${escapeHtml(proj.name)} ${proj.tools ? `<span style="font-weight: 400; font-style: italic; color: #4b5563;">| ${escapeHtml(proj.tools)}</span>` : ''}</span>
-              <span>${escapeHtml(proj.category || "")}</span>
+          <div class="ats-entry">
+            <div class="ats-subheading-row1">
+              <span class="ats-company">${escapeHtml(proj.name)} ${proj.tools ? `<span style="font-weight: 400; font-style: italic;">| ${escapeHtml(proj.tools)}</span>` : ''}</span>
+              <span class="ats-location">${escapeHtml(proj.category || "")}</span>
             </div>
-            <ul class="doc-bullet-list">
+            <ul class="ats-bullet-list">
               ${proj.items.map(b => `<li>${escapeHtml(b)}</li>`).join("")}
             </ul>
           </div>
         `).join("")}
       </div>` : ''}
 
-      ${(activeProfile?.education || []).length > 0 ? `
-      <div class="doc-section">
-        <div class="doc-section-title">${isGermanDoc ? 'Ausbildung' : 'Education'}</div>
-        ${activeProfile.education.map(rawEdu => {
-          const cleanEdu = cleanEducationItemClient(rawEdu);
-          return `
-            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12.5px; color: #111827; margin-top: 6px;">
-              <span>${escapeHtml(cleanEdu.institution || "University")}${cleanEdu.details ? ` · <span style="font-weight: 400; color: #6b7280;">${escapeHtml(cleanEdu.details)}</span>` : ""}</span>
-              <span>${escapeHtml(cleanEdu.dates || "")}</span>
+      ${eduToRender.length > 0 ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${parsed.educationTitle || (isGermanDoc ? 'Ausbildung' : 'Education')}</div>
+        ${eduToRender.map(edu => `
+          <div class="ats-entry">
+            <div class="ats-subheading-row1">
+              <span class="ats-company">${escapeHtml(edu.institution || "University")}</span>
+              <span class="ats-location">${escapeHtml(edu.location || "")}</span>
             </div>
-            <div style="font-style: italic; font-size: 11.5px; color: #4b5563;">${escapeHtml(cleanEdu.degree || "Degree")}</div>
-          `;
-        }).join("")}
+            <div class="ats-subheading-row2">
+              <span class="ats-title">${escapeHtml(edu.degree || "Degree")}</span>
+              <span class="ats-dates">${escapeHtml(edu.dates || "")}</span>
+            </div>
+          </div>
+        `).join("")}
       </div>` : ''}
 
-      ${(activeProfile?.certifications || []).length > 0 ? `
-      <div class="doc-section">
-        <div class="doc-section-title">${isGermanDoc ? 'Zertifizierungen' : 'Certifications'}</div>
-        <p style="font-size: 12px; color: #1f2937;">
+      ${((!parsed.education || parsed.education.length === 0) && (activeProfile?.certifications || []).length > 0) ? `
+      <div class="ats-section">
+        <div class="ats-section-title">${isGermanDoc ? 'Zertifizierungen' : 'Certifications'}</div>
+        <div class="ats-skills-line" style="margin-top: 4px;">
           ${activeProfile.certifications.map(c => `${escapeHtml(c.name)} (${escapeHtml(c.issuer)}${c.year ? ` - ${escapeHtml(c.year)}` : ''})`).join(" · ")}
-        </p>
+        </div>
       </div>` : ''}
     </div>
   `;
 }
 
+function convertLatexCoverInline(str) {
+  if (!str) return "";
+  let s = str;
+  s = s.replace(/\\href\{([^}]+)\}\{([^}]+)\}/g, '<a href="$1" target="_blank">$2</a>');
+  s = s.replace(/\\textbf\{([^}]*)\}/g, '<strong>$1</strong>');
+  s = s.replace(/\\(?:textit|emph)\{([^}]*)\}/g, '<em>$1</em>');
+  s = s.replace(/\\underline\{([^}]*)\}/g, '<u>$1</u>');
+  s = s.replace(/\\&/g, "&")
+       .replace(/\\%/g, "%")
+       .replace(/\\#/g, "#")
+       .replace(/\\\$/g, "$")
+       .replace(/\\_/g, "_");
+  s = s.replace(/\\quad\s*(?:\$\s*\\cdot\s*\$|·|\$·\$)\s*\\quad/g, " &nbsp;·&nbsp; ");
+  s = s.replace(/(?:\\quad\s*)?\$\\cdot\$(?:\s*\\quad)?/g, " &nbsp;·&nbsp; ");
+  s = s.replace(/\\quad/g, " ");
+  s = s.replace(/\$\|\$/g, " &nbsp;|&nbsp; ");
+  s = s.replace(/--/g, "–");
+  s = s.replace(/\\(?:color(?:\[[^\]]*\])?\{[^}]*\}|fontsize\{[^}]*\}\{[^}]*\}|selectfont|raggedright|raggedbottom)/g, "");
+  s = s.replace(/\\(?:vspace|hspace)\*?\{[^}]*\}/g, "");
+  s = s.replace(/[{}]/g, "");
+  return s;
+}
+
+function parseLatexCoverLetter(texCode) {
+  const result = {
+    name: "",
+    headline: "",
+    contactHtml: "",
+    isCentered: false,
+    hasDivider: false,
+    date: "",
+    recipientLines: [],
+    subject: "",
+    salutation: "",
+    paragraphsHtml: "",
+    closing: "Sincerely,",
+    signer: "",
+    signerTitle: ""
+  };
+
+  if (!texCode) return result;
+
+  // 1. Check if centered header or has divider
+  if (/\\begin\{center\}/i.test(texCode)) {
+    result.isCentered = true;
+  }
+  if (/\\hrule/i.test(texCode)) {
+    result.hasDivider = true;
+  }
+
+  // 2. Extract Candidate Name (case-preserving \Huge / \Large)
+  const nameMatch = texCode.match(/\\textbf\{\\Huge\s*(?:\\scshape\s*)?([^}]+)\}/) ||
+                    texCode.match(/\\namesection\{[^{}]*\}\{\\Huge\{?([^}]+)\}?\}/) ||
+                    texCode.match(/\\textbf\{\\Large\s*(?:\\scshape\s*)?([^}]+)\}/) ||
+                    texCode.match(/\\Large\s*\{?\\textbf\{([^}]+)\}\}/) ||
+                    texCode.match(/\\textbf\{([^}\n]+)\}\s*\\\\\s*(?:\[[^\]]*\])?\s*\{?\\large/);
+  if (nameMatch) {
+    result.name = convertLatexCoverInline(nameMatch[1]).replace(/<[^>]+>/g, "").trim();
+  } else {
+    result.name = activeProfile?.name || "Candidate";
+  }
+
+  // 3. Extract Headline (Case sensitive \large, not \Large, distinct from Candidate Name)
+  const headlineMatch = texCode.match(/\{\\large\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*\\textbf\{([^}]+)\}\}/) ||
+                        texCode.match(/\{\\large\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*([^\n\\{}]+)\}/) ||
+                        texCode.match(/\\textbf\{\\large\s+(?!Application for)([^}]+)\}/);
+  if (headlineMatch) {
+    result.headline = convertLatexCoverInline(headlineMatch[1]).replace(/<[^>]+>/g, "").trim();
+  } else {
+    result.headline = activeProfile?.headline || "";
+  }
+  if (result.headline === result.name) {
+    result.headline = activeProfile?.headline || "";
+  }
+
+  // 4. Extract Contact Info (Look before \hrule, skipping date lines)
+  const beforeHrule = texCode.split(/\\hrule/)[0] || texCode;
+  const smallMatches = [...beforeHrule.matchAll(/\{\\small\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*([\s\S]*?)\}/g)];
+  for (const sm of smallMatches) {
+    const raw = sm[1].trim();
+    if (/^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(raw) || raw === "\\today") continue;
+    result.contactHtml = convertLatexCoverInline(raw).trim();
+    break;
+  }
+
+  if (!result.contactHtml) {
+    const centerBlock = texCode.match(/\\begin\{center\}([\s\S]*?)\\end\{center\}/);
+    if (centerBlock) {
+      const smallContact = centerBlock[1].match(/\\small\s*([\s\S]*?)$/);
+      if (smallContact) {
+        result.contactHtml = convertLatexCoverInline(smallContact[1]).trim();
+      }
+    } else {
+      const contactMatch = texCode.match(/\\namesection\{[^{}]*\}\{[^{}]*\}\{([\s\S]*?)\}/);
+      if (contactMatch) {
+        result.contactHtml = convertLatexCoverInline(contactMatch[1]).trim();
+      }
+    }
+  }
+
+  if (!result.contactHtml && activeProfile) {
+    const parts = [];
+    if (activeProfile.location) parts.push(escapeHtml(activeProfile.location));
+    if (activeProfile.phone) parts.push(escapeHtml(activeProfile.phone));
+    if (activeProfile.email) parts.push(escapeHtml(activeProfile.email));
+    result.contactHtml = parts.join(" &nbsp;·&nbsp; ");
+  }
+
+  // 5. Extract Date
+  const dateMatch = texCode.match(/\{\\small\s*(?:\\color\[[^\]]*\]\{[^}]*\})?\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})\}/i) ||
+                    texCode.match(/(\d{1,2}\s+[A-Za-z]+\s+\d{4})/i) ||
+                    texCode.match(/\\currentdate\{([^}]+)\}/i);
+  if (dateMatch) {
+    result.date = dateMatch[1].trim();
+    if (result.date === "\\today") {
+      result.date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+    }
+  } else {
+    result.date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  }
+
+  // 6. Extract Recipient Block
+  const recipientMatch = texCode.match(/\\textbf\{Hiring Team\}([\s\S]*?)(?=\\textbf\{\\large Application|Dear|\n\s*\n\s*Dear)/i);
+  if (recipientMatch) {
+    const lines = ["Hiring Team", ...recipientMatch[1].split(/\n|\\\\/).map(l => convertLatexCoverInline(l).replace(/<[^>]+>/g, "").trim()).filter(Boolean)];
+    result.recipientLines = lines;
+  } else if (selectedJob) {
+    result.recipientLines = ["Hiring Team", selectedJob.company || "", selectedJob.location || ""].filter(Boolean);
+  }
+
+  // 7. Extract Subject Line
+  const subjectMatch = texCode.match(/\\textbf\{\\large\s+Application for\s+([^}]+)\}/i) ||
+                       texCode.match(/\\textbf\{Application for\s+([^}]+)\}/i) ||
+                       texCode.match(/Application for\s+([^\n\\]+)/i);
+  if (subjectMatch) {
+    result.subject = "Application for " + convertLatexCoverInline(subjectMatch[1]).replace(/<[^>]+>/g, "").trim();
+  } else if (selectedJob) {
+    const cleanRole = cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
+    result.subject = "Application for " + cleanRole;
+  }
+
+  // 8. Extract Salutation
+  const salPattern = /(?:\\textbf\{)?(Dear\s+[^,\n]+|To\s+the\s+[^,\n]+|Sehr geehrte[^,\n]+|Estimad[^,\n]+|Ch[eè]re[^,\n]+|Geachte[^,\n]+)\}?,?/i;
+  const salMatch = texCode.match(salPattern) || texCode.match(/\\lettercontent\{(Dear\s+[^}]+|Sehr geehrte[^}]+|Estimad[^}]+)\}/i);
+  if (salMatch) {
+    let sal = salMatch[1].trim();
+    if (!sal.endsWith(",")) sal += ",";
+    result.salutation = convertLatexCoverInline(sal);
+  } else {
+    result.salutation = "Dear Hiring Team,";
+  }
+
+  // 9. Extract Body & Paragraphs
+  const closePattern = /(?:Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet|\\closing\{)/i;
+  let rawBody = "";
+
+  if (/\\lettercontent\{/i.test(texCode)) {
+    const contentMatches = [...texCode.matchAll(/\\lettercontent\{([\s\S]*?)\}/gi)];
+    const pList = [];
+    for (const cm of contentMatches) {
+      const text = cm[1].trim();
+      if (/^(?:Dear|Sehr geehrte|Estimad|To the)/i.test(text)) continue;
+      pList.push(text);
+    }
+    const itemizeMatch = texCode.match(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/i);
+    if (itemizeMatch && pList.length >= 2) {
+      const bulletMatches = [...itemizeMatch[1].matchAll(/\\item\s*([\s\S]*?)(?=\\item|\s*$)/gi)];
+      const bullets = bulletMatches.map(bm => convertLatexCoverInline(bm[1]).trim()).filter(Boolean);
+      if (bullets.length) {
+        const ulHtml = "<ul>" + bullets.map(b => "<li>" + b + "</li>").join("") + "</ul>";
+        pList.splice(2, 0, ulHtml);
+      }
+    }
+    rawBody = pList.join("\n\n");
+  } else {
+    const salIdx = texCode.search(salPattern);
+    if (salIdx !== -1) {
+      const matchedSalStr = (texCode.match(salPattern) || [""])[0];
+      const afterSal = texCode.slice(salIdx + matchedSalStr.length);
+      const closeIdx = afterSal.search(closePattern);
+      if (closeIdx !== -1) {
+        rawBody = afterSal.slice(0, closeIdx).trim();
+      } else {
+        rawBody = afterSal.replace(/\\end\{document\}[\s\S]*$/, "").trim();
+      }
+    } else {
+      const docMatch = texCode.match(/\\begin\{document\}([\s\S]*?)(?:\\end\{document\}|$)/i);
+      rawBody = docMatch ? docMatch[1] : texCode;
+      const closeIdx = rawBody.search(closePattern);
+      if (closeIdx !== -1) rawBody = rawBody.slice(0, closeIdx).trim();
+    }
+  }
+
+  if (rawBody) {
+    const rawBlocks = rawBody
+      .replace(/%.*$/gm, "")
+      .replace(/\\par\b/gi, "\n\n")
+      .split(/\n\s*\n/)
+      .map(b => b.trim())
+      .filter(b => {
+        if (!b) return false;
+        if (/^\\begin\{document\}|^\\end\{document\}/i.test(b)) return false;
+        if (/^\\(?:vspace|hspace|setlength|rule|fontsize|pagestyle|thispagestyle)/i.test(b)) return false;
+        if (/^\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]$/i.test(b)) return false;
+        return true;
+      });
+
+    const renderedBlocks = [];
+    for (const block of rawBlocks) {
+      if (block.startsWith("<ul") && block.endsWith("</ul>")) {
+        renderedBlocks.push(block);
+        continue;
+      }
+      if (/\\begin\{itemize\}/i.test(block)) {
+        const items = [...block.matchAll(/\\item\s*([\s\S]*?)(?=\\item|\\end\{itemize\}|\s*$)/gi)]
+          .map(im => convertLatexCoverInline(im[1]).trim())
+          .filter(Boolean);
+        if (items.length) {
+          renderedBlocks.push("<ul>" + items.map(it => "<li>" + it + "</li>").join("") + "</ul>");
+        }
+        continue;
+      }
+      const inlineClean = convertLatexCoverInline(block)
+        .replace(/\\\\(?:\s*\[[^\]]*\])?/g, "<br>")
+        .replace(/\n/g, " ")
+        .trim();
+      if (inlineClean) {
+        renderedBlocks.push("<p>" + inlineClean + "</p>");
+      }
+    }
+    result.paragraphsHtml = renderedBlocks.join("\n");
+  }
+
+  // 10. Extract Closing & Signer
+  const closingMatch = texCode.match(/(Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet)(?:,)?/i) ||
+                       texCode.match(/\\closing\{([^}]+)\}/i);
+  if (closingMatch) {
+    let cl = closingMatch[1].trim();
+    if (!cl.endsWith(",")) cl += ",";
+    result.closing = cl;
+  }
+
+  const signerMatch = texCode.match(/(?:Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet),?\s*(?:\\\\\[[^\]]*\]|\\\\|\s*\\vspace\{[^}]*\})*\s*\\textbf\{([^}]+)\}/i) ||
+                      texCode.match(/\\signature\{([^}]+)\}/i) ||
+                      texCode.match(/\\closing\{[^}]*\}\s*(?:\\vspace\{[^}]*\}|\s*)*\\textbf\{([^}]+)\}/i);
+  if (signerMatch) {
+    result.signer = convertLatexCoverInline(signerMatch[1]).replace(/<[^>]+>/g, "").trim();
+  } else {
+    result.signer = result.name || activeProfile?.name || "Candidate";
+  }
+
+  // 11. Extract Signer Title if present
+  const signerTitleMatch = texCode.match(/\\textbf\{[^}]+\}\s*\\\\\s*(?:\[[^\]]*\])?\s*([^\n\\{}]+)(?=\s*\\end\{document\}|\s*$)/i);
+  if (signerTitleMatch) {
+    const rawTitle = signerTitleMatch[1].trim();
+    if (rawTitle && !/\\end\{document\}/i.test(rawTitle)) {
+      result.signerTitle = convertLatexCoverInline(rawTitle).replace(/<[^>]+>/g, "").trim();
+    }
+  }
+
+  return result;
+}
+
 function extractCoverParagraphs(texCode) {
-  const body = (texCode.match(/(?:Dear\s+(?:Hiring Manager|Hiring Team)|Sehr geehrte Damen und Herren|Sehr geehrte[rs]|Estimad[oa]|Chère|Geachte)[\s\S]*?(?=\\end\{document\})/i) || [""])[0];
-  if (!body) return [];
-  return body
-    .replace(/%.*$/gm, "")
-    .replace(/\\par\b/g, "\n\n")
-    .replace(/\\\\(?:\s*\[[^\]]*\])?/g, "\n\n")
-    .replace(/\\(?:vspace|hspace|setlength|rule|fontsize)\*?(?:\[[^\]]*\])?\{[^}]*\}(?:\{[^}]*\})?/g, "")
-    .replace(/\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]/gi, "")
-    .replace(/\\(?:textbf|textit|emph|Large|large|small)\s*\{([^{}]*)\}/g, "$1")
-    .replace(/\\href\{[^}]*\}\{([^}]*)\}/g, "$1")
-    .replace(/\\([&%$#_{}])/g, "$1")
-    .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^{}]*\})?/g, "")
-    .replace(/[{}]/g, "")
-    .split(/\n\s*\n/)
-    .map(paragraph => paragraph.replace(/\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex|px)\s*\]/gi, "").replace(/\s+/g, " ").trim())
-    .filter(paragraph => paragraph.length > 0 && !/^\d+(?:pt|mm|cm|in|em|ex)$/i.test(paragraph) && !/^\[\s*\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex)\s*\]$/i.test(paragraph));
+  const parsed = parseLatexCoverLetter(texCode);
+  if (!parsed.paragraphsHtml) return [];
+  const tempDiv = document.createElement("div");
+  tempDiv.innerHTML = parsed.paragraphsHtml;
+  return [...tempDiv.querySelectorAll("p, li")].map(el => el.textContent.trim()).filter(Boolean);
 }
 
 async function renderCoverTab() {
@@ -3367,7 +4148,7 @@ async function renderCoverTab() {
 
   let texCode = "";
   try {
-    const res = await fetch(`/api/document?path=${encodeURIComponent(coverPath)}`);
+    const res = await fetch(`/api/document?path=${encodeURIComponent(coverPath)}&_t=${Date.now()}`, { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       texCode = data.content || "";
@@ -3412,6 +4193,7 @@ async function renderCoverTab() {
         <button class="btn-primary btn-action" id="btnDownloadCoverPdf">Download PDF</button>
         <button class="btn-secondary btn-action" id="btnOpenPreviewCover" title="Open PDF with system viewer">Open</button>
         <button class="btn-secondary btn-action" id="btnRevealCover" title="Show PDF in Finder">Finder</button>
+        <button class="btn-secondary btn-action" id="btnInstructCover" title="Guide AI with custom instructions for this cover letter">AI Instructions ✎</button>
         <button class="btn-secondary btn-action" id="btnToggleCoverMode">${currentCoverViewMode === "visual" ? "Raw LaTeX" : "Visual View"}</button>
         <button class="btn-secondary btn-action" id="btnCopyCoverText" title="Copy clean plain text to clipboard">Copy Text</button>
         <button class="btn-secondary btn-action" id="btnCopyCover">Copy LaTeX</button>
@@ -3420,6 +4202,7 @@ async function renderCoverTab() {
     <div id="coverContainer" style="max-width: 820px; margin: 0 auto;"></div>
   `;
 
+  document.getElementById("btnInstructCover")?.addEventListener("click", openCustomInstructionsModal);
   document.getElementById("btnCoverLangNative")?.addEventListener("click", () => {
     currentDocLang = "native";
     renderCoverTab();
@@ -3435,66 +4218,81 @@ async function renderCoverTab() {
   const coverParagraphs = extractCoverParagraphs(texCode);
 
   document.getElementById("btnCopyCoverText")?.addEventListener("click", () => {
-    const textToCopy = coverParagraphs.length ? coverParagraphs.join("\n\n") : texCode;
+    const editor = document.getElementById("latexTextarea_cover");
+    const activeTex = (currentCoverViewMode === "code" && editor) ? editor.value : texCode;
+    const paras = extractCoverParagraphs(activeTex);
+    const textToCopy = paras.length ? paras.join("\n\n") : activeTex;
     navigator.clipboard.writeText(textToCopy);
     showToast("Plain text cover letter copied!");
   });
 
   document.getElementById("btnCopyCover")?.addEventListener("click", () => {
-    navigator.clipboard.writeText(texCode);
+    const editor = document.getElementById("latexTextarea_cover");
+    const textToCopy = (currentCoverViewMode === "code" && editor) ? editor.value : texCode;
+    navigator.clipboard.writeText(textToCopy);
     showToast("Cover Letter code copied!");
   });
 
-  document.getElementById("btnToggleCoverMode")?.addEventListener("click", () => {
+  document.getElementById("btnToggleCoverMode")?.addEventListener("click", async () => {
+    if (currentCoverViewMode === "code") {
+      const saver = window.__saveLatexEditor_cover;
+      if (typeof saver === "function") {
+        await saver();
+      }
+    }
     currentCoverViewMode = currentCoverViewMode === "visual" ? "code" : "visual";
     renderCoverTab();
   });
 
   if (currentCoverViewMode === "code") {
-    document.getElementById("coverContainer").innerHTML = `
-      <div class="doc-latex-box" style="max-height: 700px; font-size: 12px;">${escapeHtml(texCode)}</div>
-    `;
+    setupLatexEditor("coverContainer", "cover", coverPath, texCode, (saved) => {
+      texCode = saved;
+    });
     return;
   }
 
-  // Visual View
-  const todayStr = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-  const cleanRole = cleanCandidateHeadline(selectedJob.title, activeProfile?.headline);
+  // Visual View (Pixel-Perfect LaTeX CSS Twin)
+  const parsedCover = parseLatexCoverLetter(texCode);
 
   document.getElementById("coverContainer").innerHTML = `
-    <div class="doc-preview-container" style="padding: 45px 55px; line-height: 1.7; font-size: 13.5px; color: #1f2937;">
-      <div class="doc-header" style="text-align: left; border-bottom: 2px solid #111827; padding-bottom: 12px; margin-bottom: 24px;">
-        <h1 style="font-size: 20px;">${escapeHtml(activeProfile?.name || "Candidate")}</h1>
-        <h3 style="font-size: 13.5px; color: #4b5563;">${escapeHtml(activeProfile?.headline || "")}</h3>
-        <div class="doc-contact" style="font-size: 11.5px; color: #6b7280; margin-top: 4px;">
-          ${escapeHtml(activeProfile?.location || "")} · ${escapeHtml(activeProfile?.phone || "")} · ${escapeHtml(activeProfile?.email || "")}
+    <div class="doc-preview-container ats-cover-sheet">
+      <div class="ats-cover-header ${parsedCover.isCentered ? "centered" : ""}">
+        <div class="ats-cover-name">${escapeHtml(parsedCover.name)}</div>
+        ${parsedCover.headline ? `<div class="ats-cover-headline">${escapeHtml(parsedCover.headline)}</div>` : ""}
+        ${parsedCover.contactHtml ? `<div class="ats-cover-contact">${parsedCover.contactHtml}</div>` : ""}
+        ${parsedCover.hasDivider ? `<div class="ats-cover-divider"></div>` : ""}
+      </div>
+
+      ${parsedCover.date ? `<div class="ats-cover-date">${escapeHtml(parsedCover.date)}</div>` : ""}
+
+      ${parsedCover.recipientLines && parsedCover.recipientLines.length ? `
+        <div class="ats-cover-recipient">
+          ${parsedCover.recipientLines.map(l => escapeHtml(l)).join("<br>")}
         </div>
+      ` : ""}
+
+      ${parsedCover.subject ? `
+        <div class="ats-cover-subject">
+          ${escapeHtml(parsedCover.subject)}
+        </div>
+      ` : ""}
+
+      ${parsedCover.salutation ? `
+        <div class="ats-cover-salutation">
+          ${escapeHtml(parsedCover.salutation)}
+        </div>
+      ` : ""}
+
+      <div class="ats-cover-body">
+        ${parsedCover.paragraphsHtml || `<p>The generated cover letter could not be previewed. Switch to Raw LaTeX to review the source.</p>`}
       </div>
 
-      <div style="margin-bottom: 18px; color: #4b5563;">${todayStr}</div>
-
-      <div style="margin-bottom: 20px;">
-        <b>Hiring Team</b><br>
-        ${escapeHtml(selectedJob.company)}<br>
-        ${escapeHtml(selectedJob.location)}
+      <div class="ats-cover-signoff">
+        ${escapeHtml(parsedCover.closing)}
+        <div class="ats-cover-signature-gap"></div>
+        <div class="ats-cover-signer">${escapeHtml(parsedCover.signer)}</div>
+        ${parsedCover.signerTitle ? `<div class="ats-cover-signer-title">${escapeHtml(parsedCover.signerTitle)}</div>` : ""}
       </div>
-
-      <div style="margin-bottom: 16px; font-weight: 700; font-size: 14px; color: #111827;">
-        Application for ${escapeHtml(cleanRole)}
-      </div>
-
-      ${coverParagraphs.length
-        ? coverParagraphs.map((paragraph, index) => {
-            let pClean = escapeHtml(paragraph).replace(/\n/g, "<br>");
-            const signoffMatch = paragraph.match(/^(Sincerely|Yours sincerely|Kind regards|Best regards|Mit freundlichen Grüßen|Atentamente|Cordialement|Met vriendelijke groet),?\s*(?:\[[^\]]*\])?\s*(.*)$/i);
-            if (signoffMatch) {
-              const signWord = escapeHtml(signoffMatch[1]);
-              const signName = escapeHtml(signoffMatch[2].replace(/\[[^\]]*\]/g, "").trim() || activeProfile?.name || "");
-              pClean = `${signWord},${signName ? `<br><br><strong>${signName}</strong>` : ""}`;
-            }
-            return `<p style="margin-bottom:${index === coverParagraphs.length - 1 ? "24px" : "14px"};">${pClean}</p>`;
-          }).join("")
-        : `<p style="margin-bottom:24px;">The generated cover letter could not be previewed. Switch to Raw LaTeX to review the source.</p>`}
     </div>
   `;
 }
@@ -4463,11 +5261,12 @@ function renderTailoringProgressCard(isDeepTailor) {
   }, 4800));
 }
 
-async function tailorCurrentJob() {
+async function tailorCurrentJob(force = true, customInstructions = null) {
   if (!selectedJob || isTailoringActive) return;
 
   const chkDeep = document.getElementById("chkDeepTailor");
   const isDeepTailor = chkDeep ? chkDeep.checked : Boolean(activeProfile?.enableDeepTailor);
+  const instructionsToSend = customInstructions !== null ? customInstructions : (selectedJob.user_instructions || "");
 
   isTailoringActive = true;
 
@@ -4508,8 +5307,9 @@ async function tailorCurrentJob() {
         location: selectedJob.location,
         fullJd: selectedJob.full_jd || selectedJob.summary || "",
         keySkills: selectedJob.key_skills || [],
-        force: true,
-        deepTailor: isDeepTailor
+        force: Boolean(force),
+        deepTailor: isDeepTailor,
+        userInstructions: instructionsToSend
       })
     });
 
@@ -4526,6 +5326,9 @@ async function tailorCurrentJob() {
       selectedJob.tailored_score = data.tailored_score;
       selectedJob.is_deep_tailored = data.is_deep_tailored ?? isDeepTailor;
       selectedJob.tailor_report = data.tailorReport;
+      if (data.user_instructions !== undefined) {
+        selectedJob.user_instructions = data.user_instructions;
+      }
       if (data.analysis) {
         selectedJob.analysis = data.analysis;
       }
@@ -4593,6 +5396,11 @@ async function tailorCurrentJob() {
 
 async function downloadPDF(type) {
   if (!selectedJob) return;
+
+  const activeEditorSaver = window[`__saveLatexEditor_${type}`];
+  if (typeof activeEditorSaver === "function") {
+    await activeEditorSaver();
+  }
 
   const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
@@ -4677,6 +5485,14 @@ async function downloadPDF(type) {
 
 async function openInPreview(type) {
   if (!selectedJob) return;
+
+  const activeEditorSaver = window[`__saveLatexEditor_${type}`];
+  if (typeof activeEditorSaver === "function") {
+    await activeEditorSaver();
+    await downloadPDF(type);
+    return;
+  }
+
   const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
   if (type === "cover") {
@@ -5671,7 +6487,7 @@ function cleanCandidateHeadline(role, fallback = "Professional Candidate") {
 }
 
 function parseLatexCV(latex) {
-  const result = { summary: "", experience: [], skillsHtml: "", projects: [], language: "en" };
+  const result = { summary: "", experience: [], skillsHtml: "", projects: [], education: [], language: "en" };
   if (!latex) return result;
 
   try {
@@ -5686,6 +6502,34 @@ function parseLatexCV(latex) {
       result.language = "it";
     } else if (/\\usepackage\[dutch\]\{babel\}/i.test(latex) || /\\section\{Profiel/i.test(latex)) {
       result.language = "nl";
+    }
+
+    // Header extraction (Candidate name, role, contact)
+    const nameMatch = latex.match(/\\textbf\{\\Huge\s*(?:\\scshape\s*)?([^}]+)\}/i) ||
+                      latex.match(/\\Huge\s*\{?\\scshape\s*([^\\}\n]+)\}?/i) ||
+                      latex.match(/\\textbf\{\\huge\s*([^}]+)\}/i);
+    if (nameMatch) {
+      result.name = nameMatch[1].replace(/\\&/g, "&").trim();
+    }
+
+    const roleMatch = latex.match(/\\textbf\{\\large\s*([^}]+)\}/i) ||
+                      latex.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
+    if (roleMatch) {
+      result.role = roleMatch[1].replace(/\\&/g, "&").replace(/--/g, "–").trim();
+    }
+
+    const centerMatch = latex.match(/\\begin\{center\}([\s\S]*?)\\end\{center\}/i);
+    if (centerMatch) {
+      const smallMatch = centerMatch[1].match(/\\small\s*([\s\S]*?)$/i);
+      if (smallMatch) {
+        let rawContact = smallMatch[1].trim();
+        rawContact = rawContact.replace(/\\href\{([^}]+)\}\{([^}]+)\}/g, '<a href="$1" target="_blank">$2</a>');
+        rawContact = rawContact.replace(/\$\|\$/g, " &nbsp;|&nbsp; ").replace(/\\quad\s*\$\\cdot\$\s*\\quad/g, " &nbsp;|&nbsp; ");
+        rawContact = rawContact.replace(/\\&/g, "&").replace(/\\_/g, "_");
+        rawContact = rawContact.replace(/\\vspace\{[^}]*\}/g, "").replace(/\\\\/g, " ");
+        rawContact = rawContact.replace(/[{}]/g, "").trim();
+        if (rawContact) result.contactHtml = rawContact;
+      }
     }
 
     // 1. Summary: support English, German, Spanish, French, Italian, Dutch
@@ -5804,6 +6648,27 @@ function parseLatexCV(latex) {
       }
       result.skillsCategories = parsedCategories;
       result.skillsHtml = parsedCategories.map(c => c.category ? `${c.category}: ${c.items}` : c.items).join("\n");
+    }
+
+    // 5. Education & Certifications
+    const eduSection = latex.match(/\\section\{(?:(?:Education(?:\s*(?:&|and)\s*Certifications?)?)|Ausbildung|Formación|Formation|Formazione|Opleiding)\}[\s\S]*?\\resumeSubHeadingListStart([\s\S]*?)\\resumeSubHeadingListEnd/i);
+    if (eduSection) {
+      const eduBlocks = eduSection[1].split(/\\resumeSubheading/g).filter(b => b.trim().length > 0);
+      eduBlocks.forEach(block => {
+        let institution = "", location = "", degree = "", dates = "";
+        const m = block.match(/\{([^}]*)\}\{([^}]*)\}\s*\{([^}]*)\}\{([^}]*)\}/);
+        if (m) {
+          institution = m[1].replace(/\\&/g, "&").trim();
+          location = m[2].replace(/\\&/g, "&").trim();
+          degree = m[3].replace(/\\&/g, "&").trim();
+          dates = m[4].replace(/\\&/g, "&").replace(/--/g, "–").trim();
+        }
+        if (institution) result.education.push({ institution, location, degree, dates });
+      });
+      const eduTitleMatch = latex.match(/\\section\{((?:Education(?:\s*(?:&|and)\s*Certifications?)?)|Ausbildung|Formación|Formation|Formazione|Opleiding)\}/i);
+      if (eduTitleMatch) {
+        result.educationTitle = eduTitleMatch[1].replace(/\\&/g, "&");
+      }
     }
   } catch (err) {
     console.error("LaTeX parse error:", err);
