@@ -1833,8 +1833,8 @@ html[data-platform="windows"] .titlebar input {
 
 .latex-code-textarea {
   width: 100%;
-  min-height: 540px;
-  height: 600px;
+  min-height: 360px;
+  height: 420px;
   background: #07090e;
   color: #f1f5f9;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;

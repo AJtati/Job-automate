@@ -3420,23 +3420,39 @@ function extractSubheadingArgs(text) {
 
 function extractResumeItems(blockText) {
   if (!blockText) return [];
-  const pieces = blockText.split(/\\resumeItem\s*\{/).slice(1);
-  return pieces.map(piece => {
-    let depth = 1;
-    let endIdx = piece.length;
-    for (let i = 0; i < piece.length; i++) {
-      if (piece[i] === "{") depth++;
-      else if (piece[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          endIdx = i;
-          break;
+  const items = [];
+  if (/\\resumeItem\s*\{/i.test(blockText)) {
+    const pieces = blockText.split(/\\resumeItem\s*\{/).slice(1);
+    for (const piece of pieces) {
+      let depth = 1;
+      let endIdx = piece.length;
+      for (let i = 0; i < piece.length; i++) {
+        if (piece[i] === "{") depth++;
+        else if (piece[i] === "}") {
+          depth--;
+          if (depth === 0) {
+            endIdx = i;
+            break;
+          }
         }
       }
+      const rawItem = piece.substring(0, endIdx);
+      const cleaned = cleanLatexText(rawItem);
+      if (cleaned) items.push(cleaned);
     }
-    const rawItem = piece.substring(0, endIdx);
-    return cleanLatexText(rawItem);
-  }).filter(Boolean);
+  }
+
+  // Fallback for standard \item bullets if \resumeItem was not used
+  if (items.length === 0 && /\\item\b/i.test(blockText)) {
+    const pieces = blockText.split(/\\item\s+/i).slice(1);
+    for (const piece of pieces) {
+      const line = piece.split(/\\resumeItem|\\resumeSubheading|\\end\{itemize\}|\\end\{document\}/)[0];
+      const cleaned = cleanLatexText(line);
+      if (cleaned) items.push(cleaned);
+    }
+  }
+
+  return items;
 }
 
 function parseLatexCV(latex) {
@@ -3449,7 +3465,11 @@ function parseLatexCV(latex) {
     education: [],
     educationTitle: "",
     language: "en",
-    hasParsedSummarySection: false
+    hasParsedSummarySection: false,
+    hasParsedExperienceSection: false,
+    hasParsedSkillsSection: false,
+    hasParsedProjectsSection: false,
+    hasParsedEducationSection: false
   };
   if (!latex) return result;
 
@@ -3491,7 +3511,7 @@ function parseLatexCV(latex) {
     }
 
     // 1. Summary
-    const summaryPattern = /\\section\{(?:(?:Professional\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario)\}/i;
+    const summaryPattern = /\\section\{(?:(?:Professional\s+|Executive\s+)?Summary|Profil|Profil\s+Professionnel|Profilo\s+Professionale|Perfil(?:\s+Profesional)?|Profiel|Sommario|About(?:\s+Me)?|Profile)\}/i;
     if (summaryPattern.test(latex)) {
       result.hasParsedSummarySection = true;
       const rawSummaryContent = extractSectionContent(latex, summaryPattern);
@@ -3511,65 +3531,80 @@ function parseLatexCV(latex) {
     }
 
     // 2. Experience
-    const expPattern = /\\section\{(?:Professional\s+Experience|Work\s+Experience|Berufserfahrung|Experiencia\s+Laboral|Expérience\s+Professionnelle|Esperienza\s+Lavorativa|Werkervaring)\}/i;
-    const expContent = extractSectionContent(latex, expPattern);
-    if (expContent) {
-      const blocks = expContent.split(/\\resumeSubheading/).slice(1);
-      for (const block of blocks) {
-        const [rawCo, rawLoc, rawTitle, rawDates] = extractSubheadingArgs(block);
-        const company = cleanLatexText(rawCo);
-        const location = cleanLatexText(rawLoc);
-        const title = cleanLatexText(rawTitle);
-        const dates = cleanLatexText(rawDates);
-        const items = extractResumeItems(block);
-        if (company || title) {
-          result.experience.push({ company, location, title, dates, items });
+    const expPattern = /\\section\{(?:(?:Professional\s+|Work\s+|Relevant\s+)?Experience|Berufserfahrung|Experiencia\s+Laboral|Expérience\s+Professionnelle|Esperienza\s+Lavorativa|Werkervaring|Work\s+History|Employment(?:\s+History)?)\}/i;
+    if (expPattern.test(latex)) {
+      result.hasParsedExperienceSection = true;
+      const expContent = extractSectionContent(latex, expPattern);
+      if (expContent) {
+        const blocks = expContent.split(/\\resumeSubheading/).slice(1);
+        for (const block of blocks) {
+          const [rawCo, rawLoc, rawTitle, rawDates] = extractSubheadingArgs(block);
+          const company = cleanLatexText(rawCo);
+          const location = cleanLatexText(rawLoc);
+          const title = cleanLatexText(rawTitle);
+          const dates = cleanLatexText(rawDates);
+          const items = extractResumeItems(block);
+          if (company || title) {
+            result.experience.push({ company, location, title, dates, items });
+          }
         }
       }
     }
 
     // 3. Technical Projects
     const projPattern = /\\section\{(?:(?:Technical\s+)?Projects|Projekte|Proyectos|Projets|Progetti|Projecten)\}/i;
-    const projContent = extractSectionContent(latex, projPattern);
-    if (projContent) {
-      const blocks = projContent.split(/\\resumeProjectHeading/).slice(1);
-      for (const block of blocks) {
-        const [rawHeading, rawCat] = extractSubheadingArgs(block);
-        let name = "";
-        let tools = "";
-        const m = (rawHeading || "").match(/\\textbf\{([^}]*)\}\s*\$?\|\$?\s*\\emph\{([^}]*)\}/i);
-        if (m) {
-          name = cleanLatexText(m[1]);
-          tools = cleanLatexText(m[2]);
-        } else {
-          name = cleanLatexText(rawHeading);
-        }
-        const category = cleanLatexText(rawCat);
-        const items = extractResumeItems(block);
-        if (name) {
-          result.projects.push({ name, tools, category, items });
+    if (projPattern.test(latex)) {
+      result.hasParsedProjectsSection = true;
+      const projContent = extractSectionContent(latex, projPattern);
+      if (projContent) {
+        const blocks = projContent.split(/\\resumeProjectHeading/).slice(1);
+        for (const block of blocks) {
+          const [rawHeading, rawCat] = extractSubheadingArgs(block);
+          let name = "";
+          let tools = "";
+          const m = (rawHeading || "").match(/\\textbf\{([^}]*)\}\s*\$?\|\$?\s*\\emph\{([^}]*)\}/i);
+          if (m) {
+            name = cleanLatexText(m[1]);
+            tools = cleanLatexText(m[2]);
+          } else {
+            name = cleanLatexText(rawHeading);
+          }
+          const category = cleanLatexText(rawCat);
+          const items = extractResumeItems(block);
+          if (name) {
+            result.projects.push({ name, tools, category, items });
+          }
         }
       }
     }
 
     // 4. Skills
-    const skillsPattern = /\\section\{(?:Technical\s+Skills|Skills|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}/i;
-    const skillsContent = extractSectionContent(latex, skillsPattern);
-    if (skillsContent) {
-      const lines = skillsContent.split(/\\\\|\n/).map(l => l.trim()).filter(Boolean);
-      for (const line of lines) {
-        if (/^\\begin\{itemize\}|^\\end\{itemize\}|^\\small|^\[/i.test(line)) continue;
-        const cleanLine = line.replace(/^\\item\s*/, "").replace(/^\{\\item\s*/, "");
-        const m = cleanLine.match(/^(?:\\textbf\{([^}]+)\}|([^:{]+))\s*(?:\{:\s*|:\s*|\s*)\s*([\s\S]*)/);
-        if (m) {
-          const cat = cleanLatexText(m[1] || m[2] || "");
-          const itemsStr = cleanLatexText((m[3] || "").replace(/^\{:\s*/, "").replace(/^\s*:\s*/, "").replace(/\}\s*$/, ""));
-          if (cat || itemsStr) {
-            result.skillsCategories.push({ category: cat, items: itemsStr });
+    const skillsPattern = /\\section\{(?:Technical\s+Skills|Skills|Core\s+Competencies|Kenntnisse(?:\s+und\s+Fähigkeiten)?|Habilidades\s+Técnicas|Compétences\s+Techniques|Competenze\s+Tecniche|Technische\s+Vaardigheden)\}/i;
+    if (skillsPattern.test(latex)) {
+      result.hasParsedSkillsSection = true;
+      const skillsContent = extractSectionContent(latex, skillsPattern);
+      if (skillsContent) {
+        const lines = skillsContent.split(/\\\\|\n/).map(l => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          if (/^\\begin\{itemize\}|^\\end\{itemize\}|^\\small|^\[/i.test(line)) continue;
+          const cleanLine = line.replace(/^\\item\s*/, "").replace(/^\{\\item\s*/, "");
+          if (!cleanLine || cleanLine === "}" || cleanLine === "}}") continue;
+          const m = cleanLine.match(/^(?:\\textbf\{([^}]+)\}|([^:{]+))\s*(?:\{:\s*|:\s*|\s*)\s*([\s\S]*)/);
+          if (m) {
+            const cat = cleanLatexText(m[1] || m[2] || "");
+            const itemsStr = cleanLatexText((m[3] || "").replace(/^\{:\s*/, "").replace(/^\s*:\s*/, "").replace(/\}\s*$/, ""));
+            if (cat || itemsStr) {
+              result.skillsCategories.push({ category: cat, items: itemsStr });
+            }
+          } else {
+            const textOnly = cleanLatexText(cleanLine);
+            if (textOnly) {
+              result.skillsCategories.push({ category: "", items: textOnly });
+            }
           }
         }
+        result.skillsHtml = result.skillsCategories.map(c => c.category ? `${c.category}: ${c.items}` : c.items).join("\n");
       }
-      result.skillsHtml = result.skillsCategories.map(c => c.category ? `${c.category}: ${c.items}` : c.items).join("\n");
     }
 
     // 5. Education
@@ -3578,17 +3613,20 @@ function parseLatexCV(latex) {
     if (eduTitleMatch) {
       result.educationTitle = cleanLatexText(eduTitleMatch[0].replace(/\\section\{|\}/g, ""));
     }
-    const eduContent = extractSectionContent(latex, eduPattern);
-    if (eduContent) {
-      const blocks = eduContent.split(/\\resumeSubheading/).slice(1);
-      for (const block of blocks) {
-        const [rawInst, rawLoc, rawDeg, rawDates] = extractSubheadingArgs(block);
-        const institution = cleanLatexText(rawInst);
-        const location = cleanLatexText(rawLoc);
-        const degree = cleanLatexText(rawDeg);
-        const dates = cleanLatexText(rawDates);
-        if (institution || degree) {
-          result.education.push({ institution, location, degree, dates });
+    if (eduPattern.test(latex)) {
+      result.hasParsedEducationSection = true;
+      const eduContent = extractSectionContent(latex, eduPattern);
+      if (eduContent) {
+        const blocks = eduContent.split(/\\resumeSubheading/).slice(1);
+        for (const block of blocks) {
+          const [rawInst, rawLoc, rawDeg, rawDates] = extractSubheadingArgs(block);
+          const institution = cleanLatexText(rawInst);
+          const location = cleanLatexText(rawLoc);
+          const degree = cleanLatexText(rawDeg);
+          const dates = cleanLatexText(rawDates);
+          if (institution || degree) {
+            result.education.push({ institution, location, degree, dates });
+          }
         }
       }
     }
@@ -3627,22 +3665,22 @@ function renderVisualCVHtml(texCode) {
 
   const expToRender = (parsed.experience && parsed.experience.length > 0)
     ? parsed.experience
-    : (activeProfile?.experience || []).map(exp => ({
+    : (parsed.hasParsedExperienceSection ? [] : (activeProfile?.experience || []).map(exp => ({
         company: exp.company,
         title: exp.role,
         location: exp.location,
         dates: `${exp.startDate} – ${exp.endDate}`,
         items: (exp.bullets || []).map(cleanLatexText)
-      }));
+      })));
 
   const projectsToRender = (parsed.projects && parsed.projects.length > 0)
     ? parsed.projects
-    : ((activeProfile?.projects || []).map(p => ({
+    : (parsed.hasParsedProjectsSection ? [] : ((activeProfile?.projects || []).map(p => ({
         name: p.name,
         tools: p.tools,
         category: p.category,
         items: (p.bullets || []).map(cleanLatexText)
-      })));
+      }))));
 
   let summaryToRender = parsed.summary;
   if (!summaryToRender && !parsed.hasParsedSummarySection) {
@@ -3660,7 +3698,7 @@ function renderVisualCVHtml(texCode) {
   }
 
   let skillsTextToRender = parsed.skillsHtml;
-  if (!skillsTextToRender && (!parsed.skillsCategories || parsed.skillsCategories.length === 0) && activeProfile?.skills) {
+  if (!skillsTextToRender && (!parsed.skillsCategories || parsed.skillsCategories.length === 0) && !parsed.hasParsedSkillsSection && activeProfile?.skills) {
     const s = activeProfile.skills;
     const parts = [];
     for (const [cat, items] of Object.entries(s)) {
@@ -3674,7 +3712,7 @@ function renderVisualCVHtml(texCode) {
 
   const eduToRender = (parsed.education && parsed.education.length > 0)
     ? parsed.education
-    : (activeProfile?.education || []).map(rawEdu => {
+    : (parsed.hasParsedEducationSection ? [] : (activeProfile?.education || []).map(rawEdu => {
         const cleanEdu = cleanEducationItemClient(rawEdu);
         return {
           institution: cleanEdu.institution || "University",
@@ -3682,7 +3720,7 @@ function renderVisualCVHtml(texCode) {
           degree: cleanEdu.degree || "Degree",
           dates: cleanEdu.dates || ""
         };
-      });
+      }));
 
   return `
     <div class="doc-preview-container ats-resume-sheet">
@@ -4184,10 +4222,12 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
 
   updateState();
 
-  async function doSave() {
+  let autoSaveDebounce = null;
+
+  async function doSave(silent = false) {
     if (!textarea) return false;
     const newContent = textarea.value;
-    if (statusEl) {
+    if (statusEl && !silent) {
       statusEl.textContent = "Saving...";
       statusEl.style.color = "var(--text-secondary)";
     }
@@ -4201,14 +4241,16 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
       if (data.success) {
         lastSavedCode = newContent;
         if (statusEl) {
-          statusEl.textContent = "✓ Saved to disk";
+          statusEl.textContent = silent ? "✓ Auto-saved" : "✓ Saved to disk";
           statusEl.style.color = "#10b981";
         }
         if (typeof onSaved === "function") {
           onSaved(newContent);
         }
         updateLivePreview();
-        showToast("LaTeX saved successfully!");
+        if (!silent) {
+          showToast("LaTeX saved successfully!");
+        }
         setTimeout(() => {
           if (textarea && textarea.value === lastSavedCode && statusEl) {
             statusEl.textContent = "Ready to edit";
@@ -4222,7 +4264,9 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
           statusEl.textContent = "⚠️ Save failed";
           statusEl.style.color = "#ef4444";
         }
-        showToast(`Save failed: ${data.error || "Unknown error"}`);
+        if (!silent) {
+          showToast(`Save failed: ${data.error || "Unknown error"}`);
+        }
         return false;
       }
     } catch (err) {
@@ -4230,21 +4274,32 @@ function setupLatexEditor(containerId, type, docPath, initialCode, onSaved) {
         statusEl.textContent = "⚠️ Save error";
         statusEl.style.color = "#ef4444";
       }
-      showToast(`Save error: ${err.message || err}`);
+      if (!silent) {
+        showToast(`Save error: ${err.message || err}`);
+      }
       return false;
     }
   }
 
   window[`__saveLatexEditor_${type}`] = async () => {
+    clearTimeout(autoSaveDebounce);
     if (textarea && textarea.value !== lastSavedCode) {
-      await doSave();
+      await doSave(false);
     }
   };
 
   textarea.addEventListener("input", () => {
     updateState();
     clearTimeout(livePreviewDebounce);
-    livePreviewDebounce = setTimeout(updateLivePreview, 120);
+    livePreviewDebounce = setTimeout(updateLivePreview, 100);
+
+    // Debounced automatic persistence so switching tabs or modes preserves edits
+    clearTimeout(autoSaveDebounce);
+    autoSaveDebounce = setTimeout(() => {
+      if (textarea && textarea.value !== lastSavedCode) {
+        doSave(true);
+      }
+    }, 600);
   });
 
   textarea.addEventListener("keydown", (e) => {
@@ -5685,11 +5740,6 @@ async function tailorCurrentJob(force = true, customInstructions = null) {
 async function downloadPDF(type) {
   if (!selectedJob) return;
 
-  const activeEditorSaver = window[`__saveLatexEditor_${type}`];
-  if (typeof activeEditorSaver === "function") {
-    await activeEditorSaver();
-  }
-
   const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
   if (type === "cover") {
@@ -5702,6 +5752,28 @@ async function downloadPDF(type) {
       : (selectedJob.cv_file || "");
   }
 
+  // Check if live editor textarea exists and has user edits
+  const editorEl = document.getElementById(`latexTextarea_${type}`);
+  let codeToCompile = (editorEl && typeof editorEl.value === "string" && editorEl.value.trim().length > 50)
+    ? editorEl.value
+    : "";
+
+  const activeEditorSaver = window[`__saveLatexEditor_${type}`];
+  if (typeof activeEditorSaver === "function") {
+    await activeEditorSaver();
+  }
+
+  // If live editor had edits, persist to disk directly
+  if (codeToCompile && docPath) {
+    try {
+      await fetch("/api/document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: docPath, content: codeToCompile })
+      });
+    } catch {}
+  }
+
   if (!docPath) {
     showToast("Please tailor the application first to generate LaTeX.");
     return;
@@ -5710,11 +5782,15 @@ async function downloadPDF(type) {
   showToast("Preparing document export...");
 
   try {
-    const docRes = await fetch(`/api/document?path=${encodeURIComponent(docPath)}`);
-    const docData = await docRes.json();
-    if (!docData.content) {
-      showToast("Could not read LaTeX source file");
-      return;
+    // If we do not have code from the live editor, fetch fresh from disk with cache-busting
+    if (!codeToCompile) {
+      const docRes = await fetch(`/api/document?path=${encodeURIComponent(docPath)}&_t=${Date.now()}`, { cache: "no-store" });
+      const docData = await docRes.json();
+      if (!docData.content) {
+        showToast("Could not read LaTeX source file");
+        return;
+      }
+      codeToCompile = docData.content;
     }
 
     const candidateSlug = (activeProfile?.name || "candidate").replace(/[^a-zA-Z0-9]/g, "_");
@@ -5724,7 +5800,7 @@ async function downloadPDF(type) {
     const compileRes = await fetch("/api/compile", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ latexCode: docData.content, filename, kind: type })
+      body: JSON.stringify({ latexCode: codeToCompile, filename, kind: type })
     });
 
     const result = await compileRes.json();

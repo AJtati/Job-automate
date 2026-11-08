@@ -752,9 +752,12 @@ async function runCliAsync(cmd: string[], timeoutMs: number = 15000): Promise<{ 
   }
 }
 
-function cleanHtmlDescription(html: string): string {
+export function cleanHtmlDescription(html: string): string {
   if (!html) return "";
   return html
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n\n")
     .replace(/<\/div>/gi, "\n")
@@ -1146,8 +1149,35 @@ async function fetchJobDescription(job: { id?: string; url?: string; portal?: st
           }
         }
 
+        // Interstitial redirection detection (WhatJobs, Appcast, tracking redirects)
+        const redirectMatch = html.match(/window\.location\.replace\(\s*["']([^"']+)["']\s*\)/i) ||
+                              html.match(/<meta[^>]*http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"']+)["']/i);
+        if (redirectMatch && redirectMatch[1]) {
+          const targetRedirectUrl = redirectMatch[1];
+          try {
+            const redirectResp = await fetch(targetRedirectUrl, {
+              headers: {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+              },
+              redirect: "follow",
+              signal: AbortSignal.timeout(10000)
+            });
+            if (redirectResp.ok) {
+              const redirectHtml = await redirectResp.text();
+              const redirectClean = cleanHtmlDescription(redirectHtml);
+              if (redirectClean && redirectClean.length > 200 && !/window\.location|WhatJobs Jobs Search|__CF\$cv\$params/i.test(redirectClean)) {
+                return redirectClean;
+              }
+            }
+          } catch {}
+          return null;
+        }
+
         const cleanText = cleanHtmlDescription(html);
-        if (cleanText && cleanText.length > 300) {
+        const isRedirectOrChallenge = /window\.location|__CF\$cv\$params|If you are not automatically redirected|click here/i.test(cleanText) ||
+                                     /WhatJobs Jobs Search/i.test(cleanText);
+        if (cleanText && cleanText.length > 300 && !isRedirectOrChallenge) {
           return cleanText;
         }
       }
