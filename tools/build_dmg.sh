@@ -160,6 +160,8 @@ done
 mkdir -p "$APP_BUNDLE/Contents/Resources/data"
 cp "$REPO_DIR/data/profiles.template.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
 cp "$REPO_DIR/data/sponsor_register.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
+cp "$REPO_DIR/data/new_sponsors.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
+cp "$REPO_DIR/data/taxonomy_knowledge.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
 
 # Bundle lightweight tools needed by the app at runtime
 mkdir -p "$APP_BUNDLE/Contents/Resources/tools"

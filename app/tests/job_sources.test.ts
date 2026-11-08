@@ -379,4 +379,37 @@ describe("job source normalization", () => {
     const restoredIgnored = filterFor("ignored");
     expect(restoredIgnored.some(j => j.id === "job2")).toBe(false);
   });
+
+  test("cleanHtmlDescription cleanly removes style, script, noscript and interstitial redirect code", async () => {
+    const { cleanHtmlDescription } = await import("../server");
+    const htmlWithScripts = `
+      <html>
+        <head>
+          <style>
+            html { margin: 0; padding: 0; }
+            body { font-family: Arial; }
+          </style>
+          <script>
+            window.location.replace("https://click.appcast.io/t/123");
+            window.__CF$cv$params = { r: '123' };
+          </script>
+          <noscript>Please enable JavaScript to continue</noscript>
+        </head>
+        <body>
+          <h1>DevOps Engineer</h1>
+          <p>We are seeking a DevOps Engineer with Kubernetes and Terraform experience.</p>
+        </body>
+      </html>
+    `;
+
+    const cleaned = cleanHtmlDescription(htmlWithScripts);
+    expect(cleaned).toContain("DevOps Engineer");
+    expect(cleaned).toContain("Kubernetes and Terraform");
+    expect(cleaned).not.toContain("margin : 0");
+    expect(cleaned).not.toContain("margin: 0");
+    expect(cleaned).not.toContain("window.location.replace");
+    expect(cleaned).not.toContain("click.appcast.io");
+    expect(cleaned).not.toContain("__CF$cv$params");
+    expect(cleaned).not.toContain("Please enable JavaScript");
+  });
 });
