@@ -10,8 +10,8 @@
  * Product Management, and custom enterprise domains).
  */
 
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { join, dirname, resolve } from "path";
 
 export interface ClassifiedSkill {
   category: string;
@@ -47,41 +47,161 @@ export const TECH_CATEGORY_LABELS: Record<string, string> = {
   tools: "Tools & Automation",
 };
 
-const KNOWLEDGE_PATH = join(process.cwd(), "data", "taxonomy_knowledge.json");
+/**
+ * Resolves the persistent writable directory for taxonomy data.
+ * Prioritizes explicit environment overrides (AI_JOB_SEARCH_ROOT),
+ * then platform standard application data directories, falling back to process.cwd().
+ */
+export function resolveTaxonomyDataDir(): string {
+  const custom = process.env.AI_JOB_SEARCH_ROOT || process.env.AI_JOB_SEARCH_DATA_ROOT;
+  if (custom && custom.trim().length > 0) {
+    return resolve(custom.trim());
+  }
+  if (process.platform === "darwin" && process.env.HOME) {
+    const macSupport = join(process.env.HOME, "Library", "Application Support", "AI Job Search Studio");
+    if (existsSync(macSupport)) return macSupport;
+  } else if (process.platform === "win32" && process.env.APPDATA) {
+    const winSupport = join(process.env.APPDATA, "AI Job Search Studio");
+    if (existsSync(winSupport)) return winSupport;
+  }
+  return process.cwd();
+}
+
+/**
+ * Resolves the absolute path to taxonomy_knowledge.json.
+ */
+export function resolveTaxonomyKnowledgePath(customPath?: string): string {
+  if (customPath && customPath.trim().length > 0) {
+    return resolve(customPath.trim());
+  }
+  return join(resolveTaxonomyDataDir(), "data", "taxonomy_knowledge.json");
+}
 
 /**
  * Local Taxonomy Knowledge Store
  * Persists learned skills, categories, and domain associations locally to disk.
+ * Supports non-breaking baseline synchronization on app upgrades.
  */
-class TaxonomyStore {
+export class TaxonomyStore {
+  private filePath: string;
   private knowledge: TaxonomyKnowledge;
 
-  constructor() {
+  constructor(customPath?: string) {
+    this.filePath = resolveTaxonomyKnowledgePath(customPath);
+    this.knowledge = this.load();
+  }
+
+  public getFilePath(): string {
+    return this.filePath;
+  }
+
+  public reload(customPath?: string): void {
+    if (customPath) {
+      this.filePath = resolveTaxonomyKnowledgePath(customPath);
+    }
     this.knowledge = this.load();
   }
 
   private load(): TaxonomyKnowledge {
-    if (existsSync(KNOWLEDGE_PATH)) {
+    const targetPath = this.filePath;
+    const candidateSeedPaths: string[] = [];
+
+    if (process.env.AI_JOB_SEARCH_APP_ROOT) {
+      candidateSeedPaths.push(join(process.env.AI_JOB_SEARCH_APP_ROOT, "data", "taxonomy_knowledge.json"));
+    }
+    candidateSeedPaths.push(join(process.cwd(), "data", "taxonomy_knowledge.json"));
+
+    // 1. Existing local writable file
+    if (existsSync(targetPath)) {
       try {
-        const raw = readFileSync(KNOWLEDGE_PATH, "utf-8");
-        return JSON.parse(raw);
+        const raw = readFileSync(targetPath, "utf-8");
+        const parsed: TaxonomyKnowledge = JSON.parse(raw);
+
+        // Safe baseline sync: merge any new baseline domain definitions if updated upstream
+        let merged = false;
+        for (const seedPath of candidateSeedPaths) {
+          if (resolve(seedPath) !== resolve(targetPath) && existsSync(seedPath)) {
+            try {
+              const seedRaw = readFileSync(seedPath, "utf-8");
+              const seedParsed: TaxonomyKnowledge = JSON.parse(seedRaw);
+              if (seedParsed && seedParsed.domains) {
+                if (!parsed.domains) parsed.domains = {};
+                for (const [domKey, domVal] of Object.entries(seedParsed.domains)) {
+                  if (!parsed.domains[domKey]) {
+                    parsed.domains[domKey] = domVal;
+                    merged = true;
+                  }
+                }
+              }
+            } catch {}
+            break;
+          }
+        }
+
+        if (!parsed.domains) parsed.domains = {};
+        if (!parsed.learnedSkills) parsed.learnedSkills = {};
+        if (!parsed.learnedAliases) parsed.learnedAliases = {};
+
+        if (merged) {
+          try {
+            this.saveToPath(targetPath, parsed);
+          } catch {}
+        }
+
+        return parsed;
       } catch (err) {
-        console.error("Failed to read taxonomy knowledge, using default:", err);
+        console.error("Failed to read taxonomy knowledge from target path, attempting fallback:", err);
       }
     }
-    return {
+
+    // 2. Target does not exist yet: seed from baseline template
+    for (const seedPath of candidateSeedPaths) {
+      if (existsSync(seedPath)) {
+        try {
+          const raw = readFileSync(seedPath, "utf-8");
+          const seedData: TaxonomyKnowledge = JSON.parse(raw);
+          if (!seedData.domains) seedData.domains = {};
+          if (!seedData.learnedSkills) seedData.learnedSkills = {};
+          if (!seedData.learnedAliases) seedData.learnedAliases = {};
+
+          try {
+            this.saveToPath(targetPath, seedData);
+          } catch (err) {
+            console.warn("Could not seed taxonomy knowledge to target path:", err);
+          }
+          return seedData;
+        } catch (err) {
+          console.error(`Failed to read seed taxonomy from ${seedPath}:`, err);
+        }
+      }
+    }
+
+    // 3. Fallback blank structure
+    const fallback: TaxonomyKnowledge = {
       version: 1,
       updatedAt: new Date().toISOString(),
       domains: {},
       learnedSkills: {},
       learnedAliases: {}
     };
+    try {
+      this.saveToPath(targetPath, fallback);
+    } catch {}
+    return fallback;
+  }
+
+  private saveToPath(destPath: string, data: TaxonomyKnowledge): void {
+    const dir = dirname(destPath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    data.updatedAt = new Date().toISOString();
+    writeFileSync(destPath, JSON.stringify(data, null, 2), "utf-8");
   }
 
   public save(): void {
     try {
-      this.knowledge.updatedAt = new Date().toISOString();
-      writeFileSync(KNOWLEDGE_PATH, JSON.stringify(this.knowledge, null, 2), "utf-8");
+      this.saveToPath(this.filePath, this.knowledge);
     } catch (err) {
       console.error("Failed to save taxonomy knowledge:", err);
     }
@@ -97,6 +217,10 @@ class TaxonomyStore {
 
   public getLearnedSkill(skillLower: string): { category: string; domain?: string } | undefined {
     return this.knowledge.learnedSkills[skillLower];
+  }
+
+  public getAllLearnedSkills(): Record<string, { category: string; domain?: string }> {
+    return this.knowledge.learnedSkills;
   }
 
   public recordLearnedSkill(skill: string, category: string, domain?: string): void {

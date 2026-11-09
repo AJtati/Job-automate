@@ -489,15 +489,15 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
   test("candidate header customization respects individual header preferences and mobility notes", () => {
     const baseCandidate: CandidateProfile = {
       id: "candidate-a",
-      name: "Ajith Surya Thati",
+      name: "Alex Jordan",
       headline: "Senior DevOps Engineer",
-      email: "ajithsurya.t@gmail.com",
-      phone: "+44 7469 475250",
-      location: "Hartlepool",
-      postcode: "TS25",
-      linkedin: "https://linkedin.com/in/ajithsurya",
-      github: "https://github.com/AJtati",
-      portfolio: "https://ajtati.github.io/resumeproject/",
+      email: "alex.jordan@example.com",
+      phone: "+44 7123 456789",
+      location: "Manchester",
+      postcode: "M1",
+      linkedin: "https://linkedin.com/in/alexjordan",
+      github: "https://github.com/alexjordan",
+      portfolio: "https://alexjordan.dev",
       visaSponsorshipRequired: true,
       targetRoles: ["DevOps Engineer"],
       targetLocations: ["Remote", "Leeds"],
@@ -511,11 +511,12 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
 
     // 1. Default without preferences includes all standard fields
     const defaultHdr = header(baseCandidate, "Senior DevOps Engineer");
-    expect(defaultHdr).toContain("Hartlepool");
-    expect(defaultHdr).toContain("+44 7469 475250");
-    expect(defaultHdr).toContain("ajithsurya.t@gmail.com");
+    expect(defaultHdr).toContain("Manchester");
+    expect(defaultHdr).toContain("+44 7123 456789");
+    expect(defaultHdr).toContain("alex.jordan@example.com");
     expect(defaultHdr).toContain("LinkedIn");
-    expect(defaultHdr).toContain("GitHub");
+    expect(defaultHdr).toContain("\\href{https://github.com/alexjordan}{GitHub}");
+    expect(defaultHdr).toContain("\\href{https://alexjordan.dev}{Portfolio}");
 
     // 2. Candidate opting to hide phone and append relocation mobility note
     const customCandidate: CandidateProfile = {
@@ -526,17 +527,31 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
         showEmail: true,
         showLinkedin: true,
         showGithub: false,
+        showPortfolio: true,
         relocationNote: "Open to Relocation / Hybrid: Leeds, Manchester"
       }
     };
     const customHdr = header(customCandidate, "Senior DevOps Engineer");
-    expect(customHdr).toContain("Hartlepool (Open to Relocation / Hybrid: Leeds, Manchester)");
-    expect(customHdr).not.toContain("+44 7469 475250");
-    expect(customHdr).toContain("ajithsurya.t@gmail.com");
+    expect(customHdr).toContain("Manchester (Open to Relocation / Hybrid: Leeds, Manchester)");
+    expect(customHdr).not.toContain("+44 7123 456789");
+    expect(customHdr).toContain("alex.jordan@example.com");
     expect(customHdr).toContain("LinkedIn");
     expect(customHdr).not.toContain("GitHub");
+    expect(customHdr).toContain("Portfolio");
 
-    // 3. Different candidate opting for customLocationText and hiding location entirely
+    // 3. Candidate opting to hide portfolio while showing GitHub
+    const githubOnlyCandidate: CandidateProfile = {
+      ...baseCandidate,
+      headerPreferences: {
+        showGithub: true,
+        showPortfolio: false
+      }
+    };
+    const githubOnlyHdr = header(githubOnlyCandidate, "Platform Engineer");
+    expect(githubOnlyHdr).toContain("GitHub");
+    expect(githubOnlyHdr).not.toContain("Portfolio");
+
+    // 4. Different candidate opting for customLocationText and hiding location entirely
     const privacyCandidate: CandidateProfile = {
       ...baseCandidate,
       headerPreferences: {
@@ -548,8 +563,8 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
       }
     };
     const privacyHdr = header(privacyCandidate, "Platform Engineer");
-    expect(privacyHdr).not.toContain("Hartlepool");
-    expect(privacyHdr).toContain("+44 7469 475250");
+    expect(privacyHdr).not.toContain("Manchester");
+    expect(privacyHdr).toContain("+44 7123 456789");
     expect(privacyHdr).not.toContain("LinkedIn");
   });
 

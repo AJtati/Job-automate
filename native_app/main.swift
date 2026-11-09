@@ -158,6 +158,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                 }
             }
 
+            // Ensure taxonomy_knowledge.json is seeded from workspace if available and destination is missing
+            let destTaxonomy = dataRoot.appendingPathComponent("data/taxonomy_knowledge.json")
+            if !fileManager.fileExists(atPath: destTaxonomy.path) {
+                let seed = URL(fileURLWithPath: appRoot).appendingPathComponent("data/taxonomy_knowledge.json")
+                if fileManager.fileExists(atPath: seed.path) {
+                    try? fileManager.createDirectory(at: dataRoot.appendingPathComponent("data"), withIntermediateDirectories: true)
+                    try? fileManager.copyItem(at: seed, to: destTaxonomy)
+                }
+            }
+
             let trackerSource = URL(fileURLWithPath: appRoot).appendingPathComponent("job_search_tracker.csv")
             let trackerDestination = dataRoot.appendingPathComponent("job_search_tracker.csv")
             if fileManager.fileExists(atPath: trackerSource.path) && !fileManager.fileExists(atPath: trackerDestination.path) {

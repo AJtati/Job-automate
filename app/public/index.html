@@ -203,7 +203,10 @@
               <span class="feed-title" id="feedTitle">All Opportunities</span>
               <span class="feed-count-pill" id="feedCount">0 roles</span>
             </div>
-            <div class="feed-sort-wrapper">
+            <div class="feed-sort-wrapper" style="display: flex; align-items: center; gap: 8px;">
+              <button type="button" class="btn-primary" id="btnAddManualJob" style="font-size: 11.5px; padding: 4px 10px; display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; cursor: pointer; border: none; font-weight: 600; white-space: nowrap;">
+                ➕ Add Job
+              </button>
               <select id="feedSortSelect" class="feed-sort-select" title="Sort job listings">
                 <option value="days" selected>📅 Newest (Days Wise · Top % First)</option>
                 <option value="top_fresh">🔥 Best Fresh Matches (Last 7d · Top %)</option>
@@ -256,8 +259,11 @@
                 <span class="meta-pill pill-imported" id="studioImportedBadge" style="display: none; margin-left: 8px;">🔗 Imported via Link</span>
                 <div class="studio-ats-badge" id="studioAtsBadge" style="display: none;">🎯 <span id="studioAtsScore">95%</span> Match</div>
               </div>
-              <div class="studio-company-line">
+              <div class="studio-company-line" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                 <span class="studio-company-name" id="studioCompanyName">—</span>
+                <button type="button" class="btn-micro-edit" id="btnEditJobMetadata" title="Edit Company Name, Title or Details" style="display: none; font-size: 11px; padding: 2px 8px; cursor: pointer; align-items: center; gap: 4px;">
+                  ✏️ Edit Details
+                </button>
                 <span class="studio-location" id="studioLocation">—</span>
               </div>
             </div>
@@ -431,8 +437,12 @@
               <input type="url" id="formLinkedin" placeholder="https://linkedin.com/in/..." />
             </div>
             <div class="form-group">
-              <label>GitHub or Portfolio URL</label>
-              <input type="url" id="formGithub" placeholder="https://github.com/... or portfolio link" />
+              <label>GitHub Profile URL</label>
+              <input type="url" id="formGithub" placeholder="https://github.com/..." />
+            </div>
+            <div class="form-group">
+              <label>Portfolio / Personal Website URL</label>
+              <input type="url" id="formPortfolio" placeholder="https://..." />
             </div>
             <div class="form-group">
               <label>Preferred Max Radius (Miles)</label>
@@ -497,6 +507,10 @@
               <label class="checkbox-inline" style="font-size: 12px; display: flex; align-items: center; gap: 6px; cursor: pointer;">
                 <input type="checkbox" id="formHeaderShowGithub" checked />
                 <span>💻 GitHub</span>
+              </label>
+              <label class="checkbox-inline" style="font-size: 12px; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="formHeaderShowPortfolio" checked />
+                <span>🌐 Portfolio</span>
               </label>
             </div>
             <div class="form-group" style="margin-bottom: 0;">
@@ -1082,6 +1096,57 @@
         <button type="button" class="btn-primary" id="btnSubmitImportJob">
           <span class="spinner" id="importJobSpinner" style="display: none; width: 12px; height: 12px; margin-right: 5px;"></span>
           <span id="importJobBtnText">✨ Import & Select</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Custom Job / Edit Job Posting -->
+  <div class="modal-backdrop" id="jobModal" style="display: none;">
+    <div class="modal-dialog modal-md" style="max-width: 580px;">
+      <div class="modal-header">
+        <h3 id="jobModalHeaderTitle">➕ Add Job Posting</h3>
+        <button class="modal-close-btn" id="btnCloseJobModal">✕</button>
+      </div>
+      <div class="modal-body" style="padding: 18px 24px;">
+        <p style="font-size: 12.5px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.45;">
+          Add or edit a job opportunity. No fields are mandatory, and you can edit this role as many times as you like.
+        </p>
+        <input type="hidden" id="jobModalId" value="" />
+        <div class="form-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label style="font-size: 12px; font-weight: 600;">Company Name</label>
+            <input type="text" id="jobModalCompany" placeholder="e.g. Acme Corp" style="width: 100%; font-size: 13px;" />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label style="font-size: 12px; font-weight: 600;">Job Title / Role</label>
+            <input type="text" id="jobModalTitleInput" placeholder="e.g. Senior DevOps Engineer" style="width: 100%; font-size: 13px;" />
+          </div>
+        </div>
+        <div class="form-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label style="font-size: 12px; font-weight: 600;">Location</label>
+            <input type="text" id="jobModalLocation" placeholder="e.g. London / Remote" style="width: 100%; font-size: 13px;" />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label style="font-size: 12px; font-weight: 600;">Salary / Compensation</label>
+            <input type="text" id="jobModalSalary" placeholder="e.g. £70,000 - £85,000" style="width: 100%; font-size: 13px;" />
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label style="font-size: 12px; font-weight: 600;">Job Posting URL</label>
+          <input type="url" id="jobModalUrl" placeholder="https://careers.example.com/jobs/..." style="width: 100%; font-size: 13px;" />
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label style="font-size: 12px; font-weight: 600;">Job Description (JD)</label>
+          <textarea id="jobModalDescription" rows="6" placeholder="Paste the job description, key requirements, responsibilities, tech stack..." style="width: 100%; font-size: 12.5px; line-height: 1.45; resize: vertical; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-tertiary); color: var(--text-primary); padding: 10px 12px; font-family: inherit;"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border-subtle);">
+        <button type="button" class="btn-secondary" id="btnCancelJobModal">Cancel</button>
+        <button type="button" class="btn-primary" id="btnSaveJobModal">
+          <span id="saveJobSpinner" style="display: none; width: 12px; height: 12px; margin-right: 5px;" class="spinner"></span>
+          <span id="saveJobBtnText">💾 Save Opportunity</span>
         </button>
       </div>
     </div>
