@@ -31,6 +31,49 @@ describe("uploaded resume persistence", () => {
     expect(stored.activeProfileId).toBe("jordan");
   });
 
+  test("seeds an empty data directory from the installed app profile template", () => {
+    const appRoot = mkdtempSync(join(tmpdir(), "profile-app-seed-test-"));
+    const dataRoot = mkdtempSync(join(tmpdir(), "profile-data-seed-test-"));
+    roots.push(appRoot, dataRoot);
+    mkdirSync(join(appRoot, "data"), { recursive: true });
+    const seededProfile: CandidateProfile = {
+      id: "seeded-candidate",
+      name: "Seeded Candidate",
+      headline: "Platform Engineer",
+      email: "candidate@example.com",
+      phone: "",
+      location: "",
+      postcode: "",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: [],
+      targetLocations: [],
+      preferredRadiusMiles: 30,
+      minSalary: 0,
+      skills: { cloud: [], devops: [], languages: [], tools: [] },
+      experience: [],
+      education: [],
+      certifications: []
+    };
+    writeFileSync(join(appRoot, "data", "profiles.json"), JSON.stringify({
+      activeProfileId: seededProfile.id,
+      profiles: [seededProfile]
+    }), "utf-8");
+
+    const previousAppRoot = process.env.AI_JOB_SEARCH_APP_ROOT;
+    process.env.AI_JOB_SEARCH_APP_ROOT = appRoot;
+    try {
+      const manager = new ProfilesManager(dataRoot);
+      expect(manager.getActiveProfile().id).toBe("seeded-candidate");
+      const saved = JSON.parse(readFileSync(join(dataRoot, "data", "profiles.json"), "utf-8"));
+      expect(saved.profiles[0].name).toBe("Seeded Candidate");
+    } finally {
+      if (previousAppRoot === undefined) delete process.env.AI_JOB_SEARCH_APP_ROOT;
+      else process.env.AI_JOB_SEARCH_APP_ROOT = previousAppRoot;
+    }
+  });
+
   test("preserves an unreadable profile file and exposes a recovery warning", () => {
     const root = mkdtempSync(join(tmpdir(), "profile-recovery-test-"));
     try {

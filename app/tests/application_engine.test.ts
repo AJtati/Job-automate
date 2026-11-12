@@ -35,6 +35,38 @@ describe("application evidence scoring", () => {
     expect(distant.gates.location.verdict).toBe("FLAG");
   });
 
+  test("keeps deterministic summaries grounded in recorded facts", () => {
+    const summaryProfile: CandidateProfile = {
+      ...profile,
+      id: "candidate-example",
+      name: "Candidate Example",
+      headline: "DevOps Engineer",
+      email: "candidate@example.com",
+      location: "",
+      summary: "",
+      skills: { cloud: [], devops: [], languages: ["Go"], tools: [] },
+      experience: [],
+      projects: [],
+      education: [],
+      certifications: []
+    };
+    const job = { company: "Example", role: "DevOps Engineer", fullJd: "" };
+    const analysis = analyzeApplication(summaryProfile, job);
+    const german = buildGroundedSummary(summaryProfile, job, analysis, "de");
+    const englishFromGermanSource = buildGroundedSummary({
+      ...summaryProfile,
+      summary: "DevOps Engineer mit Erfahrung in der Unterstützung von Produktionsteams und der Pflege interner Plattformen. Verantwortet technische Abläufe in produktiven Umgebungen und dokumentiert Betriebsprozesse."
+    }, job, analysis, "en");
+
+    expect(german).toContain("Go");
+    expect(englishFromGermanSource).toContain("Go");
+    for (const summary of [german, englishFromGermanSource]) {
+      expect(summary).not.toMatch(/\bAWS\b|\bAzure\b|\bPython\b|Microsoft DevOps/i);
+      expect(summary).not.toContain("United Kingdom");
+      expect(summary).not.toContain("Deutschland");
+    }
+  });
+
   test("does not match short aliases inside unrelated words or add generic summary claims", () => {
     const job = { company: "Orbit", role: "Platform Engineer", location: "London", fullJd: "Maintain reliable AWS infrastructure with Terraform." };
     const analysis = analyzeApplication(profile, job);

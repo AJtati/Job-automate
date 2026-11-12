@@ -5652,10 +5652,19 @@ function syncDeepTailorBtnState(isActive) {
 
 let isTailoringActive = false;
 let tailoringStepTimers = [];
+let tailoringStartedAt = 0;
 
 function clearTailoringStepTimers() {
   tailoringStepTimers.forEach(t => clearTimeout(t));
   tailoringStepTimers = [];
+}
+
+function getTailoringProgressStep() {
+  const elapsedMs = tailoringStartedAt ? Date.now() - tailoringStartedAt : 0;
+  if (elapsedMs < 1200) return 1;
+  if (elapsedMs < 2800) return 2;
+  if (elapsedMs < 4800) return 3;
+  return 4;
 }
 
 function renderTailoringProgressCard(isDeepTailor) {
@@ -5663,6 +5672,9 @@ function renderTailoringProgressCard(isDeepTailor) {
   const isDeep = isDeepTailor !== undefined
     ? isDeepTailor
     : Boolean(document.getElementById("chkDeepTailor")?.checked || activeProfile?.enableDeepTailor);
+  const currentStep = getTailoringProgressStep();
+  const stepClass = step => step < currentStep ? "completed" : (step === currentStep ? "active" : "");
+  const stepMarker = step => step < currentStep ? "✓" : String(step);
 
   studioContent.innerHTML = `
     <div class="tailoring-loader-card">
@@ -5673,45 +5685,45 @@ function renderTailoringProgressCard(isDeepTailor) {
         <div class="apple-progress-bar-fill"></div>
       </div>
       <div class="tailoring-steps-list">
-        <div class="tailoring-step-item active" id="tailorStep1">
-          <span class="tailoring-step-bullet">1</span>
+        <div class="tailoring-step-item ${stepClass(1)}" id="tailorStep1">
+          <span class="tailoring-step-bullet">${stepMarker(1)}</span>
           <span>Analyzing job description & ATS requirements</span>
         </div>
-        <div class="tailoring-step-item" id="tailorStep2">
-          <span class="tailoring-step-bullet">2</span>
+        <div class="tailoring-step-item ${stepClass(2)}" id="tailorStep2">
+          <span class="tailoring-step-bullet">${stepMarker(2)}</span>
           <span>Calibrating engineering experience & keywords</span>
         </div>
-        <div class="tailoring-step-item" id="tailorStep3">
-          <span class="tailoring-step-bullet">3</span>
+        <div class="tailoring-step-item ${stepClass(3)}" id="tailorStep3">
+          <span class="tailoring-step-bullet">${stepMarker(3)}</span>
           <span>Drafting active-voice humanized LaTeX resume</span>
         </div>
-        <div class="tailoring-step-item" id="tailorStep4">
-          <span class="tailoring-step-bullet">4</span>
+        <div class="tailoring-step-item ${stepClass(4)}" id="tailorStep4">
+          <span class="tailoring-step-bullet">${stepMarker(4)}</span>
           <span>Auditing ATS compliance & verified typography</span>
         </div>
       </div>
     </div>
   `;
 
+  const updateProgressCard = () => {
+    const step = getTailoringProgressStep();
+    for (let index = 1; index <= 4; index++) {
+      const item = document.getElementById(`tailorStep${index}`);
+      if (!item) continue;
+      item.className = `tailoring-step-item ${index < step ? "completed" : (index === step ? "active" : "")}`;
+      const bullet = item.querySelector(".tailoring-step-bullet");
+      if (bullet) bullet.textContent = index < step ? "✓" : String(index);
+    }
+  };
+
   clearTailoringStepTimers();
-  tailoringStepTimers.push(setTimeout(() => {
-    const s1 = document.getElementById("tailorStep1");
-    const s2 = document.getElementById("tailorStep2");
-    if (s1) { s1.className = "tailoring-step-item completed"; const b = s1.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
-    if (s2) { s2.className = "tailoring-step-item active"; }
-  }, 1200));
-  tailoringStepTimers.push(setTimeout(() => {
-    const s2 = document.getElementById("tailorStep2");
-    const s3 = document.getElementById("tailorStep3");
-    if (s2) { s2.className = "tailoring-step-item completed"; const b = s2.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
-    if (s3) { s3.className = "tailoring-step-item active"; }
-  }, 2800));
-  tailoringStepTimers.push(setTimeout(() => {
-    const s3 = document.getElementById("tailorStep3");
-    const s4 = document.getElementById("tailorStep4");
-    if (s3) { s3.className = "tailoring-step-item completed"; const b = s3.querySelector(".tailoring-step-bullet"); if (b) b.textContent = "✓"; }
-    if (s4) { s4.className = "tailoring-step-item active"; }
-  }, 4800));
+  const elapsedMs = tailoringStartedAt ? Date.now() - tailoringStartedAt : 0;
+  [1200, 2800, 4800].forEach(threshold => {
+    const remainingMs = threshold - elapsedMs;
+    if (remainingMs > 0) {
+      tailoringStepTimers.push(setTimeout(updateProgressCard, remainingMs));
+    }
+  });
 }
 
 async function tailorCurrentJob(force = true, customInstructions = null) {
@@ -5722,6 +5734,8 @@ async function tailorCurrentJob(force = true, customInstructions = null) {
   const instructionsToSend = customInstructions !== null ? customInstructions : (selectedJob.user_instructions || "");
 
   isTailoringActive = true;
+  tailoringStartedAt = Date.now();
+  clearTailoringStepTimers();
 
   const btnTailorText = document.getElementById("btnTailorText");
   const tailorSpinner = document.getElementById("tailorSpinner");
@@ -5842,6 +5856,7 @@ async function tailorCurrentJob(force = true, customInstructions = null) {
   } finally {
     clearTailoringStepTimers();
     isTailoringActive = false;
+    tailoringStartedAt = 0;
     btnTailor.disabled = false;
     updateTailorBtnLabel();
   }
@@ -5937,7 +5952,15 @@ async function downloadPDF(type) {
         body: JSON.stringify({ path: result.repoPath })
       }).catch(() => {});
 
-      showToast(`ATS PDF compiled and opened: ${result.filename}`);
+      if (result.atsValidation?.status === "warning") {
+        showToast(`PDF compiled with ATS warning: ${result.atsValidation.warnings.join(" ")}`);
+      } else if (result.atsValidation?.status === "unavailable") {
+        showToast("PDF compiled; ATS text verification was unavailable.");
+      } else if (result.atsValidation?.status === "passed") {
+        showToast(`PDF text extraction checks passed: ${result.filename}`);
+      } else {
+        showToast(`PDF compiled and opened: ${result.filename}`);
+      }
     } else {
       console.error("Compilation error:", result);
       showToast(`PDF compilation failed: ${result.error || "Check LaTeX syntax"}`);

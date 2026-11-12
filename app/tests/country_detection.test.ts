@@ -59,7 +59,7 @@ describe("International Multi-Country Detection", () => {
     expect(resCountry.isUk).toBe(true);
 
     // UK postcode detection
-    const resPostcode1 = detectCandidateCountry("Hartlepool", [], "TS25 1AB");
+    const resPostcode1 = detectCandidateCountry("Leeds", [], "LS1 1AA");
     expect(resPostcode1.countryName).toBe("United Kingdom");
     expect(resPostcode1.isUk).toBe(true);
 

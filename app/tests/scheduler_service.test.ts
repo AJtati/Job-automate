@@ -179,13 +179,13 @@ describe("SchedulerService execution & profile isolation", () => {
     const profilesManager = new ProfilesManager(root);
     const profile1 = profilesManager.getActiveProfile();
 
-    // Create a 2nd profile (e.g. Manju DevOps track)
+    // Create a 2nd profile (e.g. Taylor DevOps track)
     const profile2 = profilesManager.saveProfile({
-      id: "jordan-devops",
-      name: "Manju S",
+      id: "taylor-devops",
+      name: "Taylor Example",
       headline: "DevOps Engineer",
-      email: "jordan.patel@example.com",
-      phone: "+447000000000",
+      email: "taylor@example.com",
+      phone: "+447700900123",
       location: "Reading, United Kingdom",
       postcode: "RG1",
       linkedin: "",

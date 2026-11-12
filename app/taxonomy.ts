@@ -425,7 +425,8 @@ export function formatTechnologyName(raw: string): string {
   };
 
   const lower = t.toLowerCase();
-  if (exactMap[lower]) return exactMap[lower];
+  const normalizedLower = lower.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  if (exactMap[lower] || exactMap[normalizedLower]) return exactMap[lower] || exactMap[normalizedLower];
 
   if (/[A-Z]/.test(t) && !/^[A-Z\s]+$/.test(t)) {
     return t;
@@ -760,12 +761,12 @@ export function sanitizeAndCategorizeSkills(
 }
 
 /**
- * Aligns candidate skills for the target job posting across ANY domain.
- * Prioritizes targeted stacks and classifies employer gap keywords into their proper ATS categories.
+ * Aligns candidate skills for any target domain.
+ * Adds job keywords only when candidate evidence supports them, then classifies them into ATS categories.
  */
 export function alignSkillsForJob(
   skills: Record<string, string[]>,
-  jdText: string,
+  _jdText: string,
   gapKeywords: string[] = [],
   domainContext: string = "devops"
 ): {
@@ -777,48 +778,9 @@ export function alignSkillsForJob(
   const addedSkills: string[] = [];
   const bridgedGaps: string[] = [];
 
-  const jdLower = (jdText || "").toLowerCase();
   const existingCategories = Object.keys(result);
 
-  // 1. Tech & Cloud Alignment (for DevOps / Cloud profiles)
-  const isAzure = /\b(?:azure|aks|azure\s*devops|arm|bicep|entra)\b/i.test(jdLower);
-  const isAws = /\b(?:aws|eks|lambda|cloudformation|ecs|fargate)\b/i.test(jdLower);
-  const isGcp = /\b(?:gcp|google\s*cloud|gke|cloud\s*run|bigquery)\b/i.test(jdLower);
-  const isDevOpsProfile = Boolean(result.cloud || result.containers || result.iac || result.cicd);
-
-  if (isDevOpsProfile) {
-    if (isAzure) {
-      if (!result.cloud) result.cloud = [];
-      const cloudWithoutAzure = result.cloud.filter(c => !/\bazure\b/i.test(c));
-      result.cloud = ["Azure", ...cloudWithoutAzure];
-
-      if (!result.containers) result.containers = [];
-      const contWithoutAks = result.containers.filter(c => !/\b(?:aks|kubernetes\s*\(aks\))\b/i.test(c));
-      result.containers = ["Kubernetes (AKS)", ...contWithoutAks];
-
-      if (!result.cicd) result.cicd = [];
-      const cicdWithoutAdo = result.cicd.filter(c => !/\bazure\s*devops\b/i.test(c));
-      result.cicd = ["Azure DevOps", ...cicdWithoutAdo];
-    } else if (isAws) {
-      if (!result.cloud) result.cloud = [];
-      const cloudWithoutAws = result.cloud.filter(c => !/\baws\b/i.test(c));
-      result.cloud = ["AWS", ...cloudWithoutAws];
-
-      if (!result.containers) result.containers = [];
-      const contWithoutEks = result.containers.filter(c => !/\b(?:eks|kubernetes\s*\(eks\))\b/i.test(c));
-      result.containers = ["Kubernetes (EKS)", ...contWithoutEks];
-    } else if (isGcp) {
-      if (!result.cloud) result.cloud = [];
-      const cloudWithoutGcp = result.cloud.filter(c => !/\bgcp\b/i.test(c));
-      result.cloud = ["GCP", ...cloudWithoutGcp];
-
-      if (!result.containers) result.containers = [];
-      const contWithoutGke = result.containers.filter(c => !/\b(?:gke|kubernetes\s*\(gke\))\b/i.test(c));
-      result.containers = ["Kubernetes (GKE)", ...contWithoutGke];
-    }
-  }
-
-  // 2. Classify and distribute employer gap keywords into their proper categories
+  // Classify and distribute job-specific keywords into the appropriate categories
   const behavioralTerms = new Set([
     "communication", "collaboration", "leadership", "mentoring", "ownership",
     "problem solving", "teamwork", "adaptability", "flexibility", "stakeholder management"
@@ -829,7 +791,6 @@ export function alignSkillsForJob(
     if (!rawGap || rawGap.length < 2) continue;
     const lowerGap = rawGap.toLowerCase();
     if (behavioralTerms.has(lowerGap)) continue;
-
     const { category, formatted } = classifySkill(rawGap, domainContext, existingCategories);
     const targetCat = category;
 
@@ -840,7 +801,7 @@ export function alignSkillsForJob(
     const allExisting = Object.values(result).flatMap(v => Array.isArray(v) ? v : []).map(x => String(x).toLowerCase());
     const formattedLower = formatted.toLowerCase();
 
-    if (!allExisting.some(ex => ex === formattedLower || ex.includes(formattedLower) || formattedLower.includes(ex))) {
+    if (!allExisting.some(ex => ex === formattedLower)) {
       result[targetCat] = [formatted, ...result[targetCat]];
       addedSkills.push(formatted);
       bridgedGaps.push(rawGap);

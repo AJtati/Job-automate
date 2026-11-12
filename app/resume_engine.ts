@@ -1,6 +1,6 @@
 import type { ApplicationAnalysis, JobInput } from "./application_engine";
 import { buildGroundedSummary, applyUserInstructionsToSummary, applyUserInstructionsToCoverLetter, rankExperienceForJob } from "./application_engine";
-import type { CandidateProfile } from "./profiles_manager";
+import type { CandidateProfile, WorkExperience } from "./profiles_manager";
 import { sanitizeAndCategorizeSkills } from "./taxonomy";
 
 const TOKENS = {
@@ -318,34 +318,6 @@ export function createLocalizedBackbone(lang: SupportedLanguage = "en"): string 
 \usepackage[${pack.babel}]{babel}
 \usepackage{tabularx}
 \usepackage{needspace}
-\usepackage{iftex}
-\ifXeTeX
-  \usepackage{fontspec}
-  \IfFontExistsTF{Arial}{
-    \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
-    \setmainfont{Arial}
-  }{
-    \IfFontExistsTF{Liberation Sans}{
-      \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
-      \setmainfont{Liberation Sans}
-    }{}
-  }
-\else\ifLuaTeX
-  \usepackage{fontspec}
-  \IfFontExistsTF{Arial}{
-    \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
-    \setmainfont{Arial}
-  }{
-    \IfFontExistsTF{Liberation Sans}{
-      \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
-      \setmainfont{Liberation Sans}
-    }{}
-  }
-\else
-  \usepackage[T1]{fontenc}
-  \usepackage{helvet}
-  \renewcommand{\familydefault}{\sfdefault}
-\fi\fi
 \ifx\pdfgentounicode\undefined\else
   \input{glyphtounicode}
   \pdfgentounicode=1
@@ -447,105 +419,32 @@ export function header(profile: CandidateProfile, role: string): string {
   return `\\begin{center}\n\\textbf{\\Huge \\scshape ${escapeLatex(profile.name)}} \\\\ \\vspace{3pt}\n\\textbf{\\large ${escapeLatex(role)}} \\\\ \\vspace{3pt}\n\\small ${links.join(" $|$ ")}\n\\end{center}`;
 }
 
-function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis, lang: SupportedLanguage = "en", customRole?: string): string {
-  const roleTitle = customRole || getDisplayRole(profile, job, analysis);
-  const locParts = (profile.location || "").split(",").map(p => p.trim()).filter(Boolean);
-  const city = locParts[0] || (profile.location ? profile.location.trim() : "Metropolitan Area");
-  const country = locParts.length > 1 ? locParts[locParts.length - 1] : "";
-  const displayLoc = country ? `${city}, ${country}` : city;
-  const pack = LANGUAGE_PACKS[lang] || LANGUAGE_PACKS.en;
-  
-  // Extract all skills from profile
-  const allSkills = Object.values(profile.skills || {}).flatMap(v => Array.isArray(v) ? v : []).filter(Boolean);
-  const matched = (analysis?.matchedKeywords && analysis.matchedKeywords.length > 0)
-    ? analysis.matchedKeywords
-    : allSkills;
-
-  const s1 = matched[0] || allSkills[0] || "core platform services";
-  const s2 = matched[1] || allSkills[1] || "workflow automations";
-  const s3 = matched[2] || allSkills[2] || "automated CI/CD pipelines";
-  const s4 = matched[3] || allSkills[3] || "production environments";
-  const s5 = matched[4] || allSkills[4] || "relational databases";
-
-  // Role 1: Current / Senior position
-  const r1Company = "Enterprise Solutions";
-  const r1Location = displayLoc;
-  const r1Dates = `2021 -- ${pack.presentLabel}`;
-  let r1Bullets: string[] = [];
-  let r2Bullets: string[] = [];
-
-  if (lang === "de") {
-    r1Bullets = [
-      `Entwicklung und Bereitstellung skalierbarer technischer Lösungen und automatisierter Workflows mit ${s1} und ${s2}.`,
-      `Implementierung von Backend-Services und API-Schnittstellen mit ${s3} zur Anbindung verteilter Systeme.`,
-      `Konfiguration automatisierter Test- und Release-Pipelines in ${s4} zur Gewährleistung hoher Verfügbarkeit.`,
-      `Optimierung von Datenbankabfragen und Datenmodellen in ${s5} zur Performancesteigerung.`
-    ];
-    r2Bullets = [
-      `Entwicklung modularer Softwarekomponenten und Schnittstellen nach technischen Spezifikationen.`,
-      `Aufbau automatisierter Test-Suiten zur Sicherung der Codequalität über alle Entwicklungsumgebungen hinweg.`,
-      `Zusammenarbeit mit Fachbereichen und Kunden zur fristgerechten Umsetzung technischer Anforderungen.`
-    ];
-  } else if (lang === "es") {
-    r1Bullets = [
-      `Diseño e implementación de soluciones técnicas escalables y flujos automatizados con ${s1} y ${s2}.`,
-      `Desarrollo de servicios backend e integraciones de API utilizando ${s3} para conectar arquitecturas distribuidas.`,
-      `Configuración de canalizaciones de despliegue y pruebas automatizadas en ${s4} para asegurar alta disponibilidad.`,
-      `Optimización de consultas y modelos de datos en ${s5}, mejorando el rendimiento global del sistema.`
-    ];
-    r2Bullets = [
-      `Desarrollo de módulos de software e integraciones de servicios siguiendo las especificaciones del proyecto.`,
-      `Implementación de pruebas automatizadas para garantizar la calidad del código en entornos de integración continua.`,
-      `Colaboración con equipos multifuncionales y clientes para resolver incidencias técnicas y cumplir entregas de sprint.`
-    ];
-  } else {
-    r1Bullets = [
-      `Architected and delivered scalable technical solutions and automated workflows with ${s1} and ${s2}.`,
-      `Engineered backend components and API integrations using ${s3} to connect distributed services with external partners.`,
-      `Configured automated testing, deployment pipelines, and release gates across ${s4} to maintain zero-downtime availability.`,
-      `Optimized query performance, schema models, and data access layers in ${s5}, reducing processing overhead.`
-    ];
-    r2Bullets = [
-      `Developed modular software components and service integrations according to business specifications.`,
-      `Built automated test suites and validation scripts to enforce code quality across deployment environments.`,
-      `Collaborated directly with client teams and delivery leads to resolve technical defects and deliver sprint deliverables.`
-    ];
-  }
-
-  // Role 2: Previous position (2018 -- 2021)
-  const r2Company = "Technology Consulting Partners";
-  const r2Role = lang === "de" ? "Software-Entwickler / Technischer Berater" : (lang === "es" ? "Desarrollador de Software / Consultor Técnico" : "Software Developer / Technical Consultant");
-  const r2Location = displayLoc;
-  const r2Dates = "2018 -- 2021";
-
-  const formatSubheading = (company: string, loc: string, role: string, dates: string, bullets: string[]) => {
-    const items = bullets.map(b => `  \\resumeItem{${escapeLatex(b)}}`).join("\n");
-    return `\\resumeSubheading{${escapeLatex(company)}}{${escapeLatex(loc)}}{${escapeLatex(role)}}{${escapeLatex(dates)}}\n\\resumeItemListStart\n${items}\n\\resumeItemListEnd`;
-  };
-
-  return [
-    formatSubheading(r1Company, r1Location, roleTitle, r1Dates, r1Bullets),
-    formatSubheading(r2Company, r2Location, r2Role, r2Dates, r2Bullets)
-  ].join("\n\n");
+export function formatDateRange(startDate?: string, endDate?: string): string {
+  return [startDate?.trim(), endDate?.trim()].filter(Boolean).join(" - ");
 }
 
-function experience(profile: CandidateProfile, analysis: ApplicationAnalysis, job?: JobInput, lang: SupportedLanguage = "en", customRole?: string): string {
-  const pack = LANGUAGE_PACKS[lang] || LANGUAGE_PACKS.en;
-  const validExp = (profile.experience || []).filter(item => (item.bullets || []).some(b => b && b.trim().length > 0));
-  if (validExp.length > 0) {
-    return rankExperienceForJob(validExp, analysis).map(item => {
-      const validBullets = (item.bullets || []).filter(b => b && b.trim().length > 0);
-      const bullets = validBullets.map(bullet => `  \\resumeItem{${escapeLatex(bullet)}}`).join("\n");
-      const bulletBlock = validBullets.length > 0 ? `\n\\resumeItemListStart\n${bullets}\n\\resumeItemListEnd` : "";
-      const company = item.company?.trim() || "Enterprise Solutions";
-      const location = item.location?.trim() || (profile.location ? profile.location.split(",")[0].trim() : "");
-      const datesRaw = `${item.startDate} -- ${item.endDate}`;
-      const dates = datesRaw.replace(/\bpresent\b/gi, pack.presentLabel);
-      return `\\resumeSubheading{${escapeLatex(company)}}{${escapeLatex(location)}}{${escapeLatex(item.role || profile.headline || "Senior Professional")}}{${escapeLatex(dates)}}${bulletBlock}`;
-    }).join("\n");
-  }
+export function hasWorkExperienceEvidence(item: Partial<WorkExperience>): boolean {
+  return Boolean(
+    item.company?.trim() || item.role?.trim() || item.startDate?.trim() || item.endDate?.trim() ||
+    (item.bullets || []).some(bullet => bullet && bullet.trim())
+  );
+}
 
-  return synthesizeTailoredExperienceLatex(profile, job, analysis, lang, customRole);
+function experience(profile: CandidateProfile, analysis: ApplicationAnalysis, lang: SupportedLanguage = "en"): string {
+  const pack = LANGUAGE_PACKS[lang] || LANGUAGE_PACKS.en;
+  const validExp = (profile.experience || []).filter(hasWorkExperienceEvidence);
+  if (!validExp.length) return "";
+
+  return rankExperienceForJob(validExp, analysis).map(item => {
+    const validBullets = (item.bullets || []).filter(b => b && b.trim().length > 0);
+    const bullets = validBullets.map(bullet => `  \\resumeItem{${escapeLatex(bullet)}}`).join("\n");
+    const bulletBlock = validBullets.length > 0 ? `\n\\resumeItemListStart\n${bullets}\n\\resumeItemListEnd` : "";
+    const company = item.company?.trim() || "";
+    const location = item.location?.trim() || "";
+    const role = item.role?.trim() || "";
+    const dates = formatDateRange(item.startDate, item.endDate).replace(/\bpresent\b/gi, pack.presentLabel);
+    return `\\resumeSubheading{${escapeLatex(company)}}{${escapeLatex(location)}}{${escapeLatex(role)}}{${escapeLatex(dates)}}${bulletBlock}`;
+  }).join("\n");
 }
 
 function projects(profile: CandidateProfile): string {
@@ -759,7 +658,7 @@ export function cleanEducationItem(item: {
   institution = institution.replace(/[:,\-\s]+$/, "").trim();
   degree = degree.replace(/[:,\-\s]+$/, "").trim();
 
-  const dates = [startDate, endDate].filter(Boolean).join(" -- ");
+  const dates = formatDateRange(startDate, endDate);
 
   return {
     degree: degree || "Bachelor's Degree",
@@ -806,6 +705,55 @@ export function formatSummary(summaryText: string): string {
 
 export function createLatexBackbone(): string {
   return DEFAULT_LATEX_BACKBONE;
+}
+
+const LEGACY_SANS_FONT_BLOCK = String.raw`\usepackage{iftex}
+\ifXeTeX
+  \usepackage{fontspec}
+  \IfFontExistsTF{Arial}{
+    \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+    \setmainfont{Arial}
+  }{
+    \IfFontExistsTF{Liberation Sans}{
+      \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+      \setmainfont{Liberation Sans}
+    }{}
+  }
+\else\ifLuaTeX
+  \usepackage{fontspec}
+  \IfFontExistsTF{Arial}{
+    \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+    \setmainfont{Arial}
+  }{
+    \IfFontExistsTF{Liberation Sans}{
+      \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+      \setmainfont{Liberation Sans}
+    }{}
+  }
+\else
+  \usepackage[T1]{fontenc}
+  \usepackage{helvet}
+  \renewcommand{\familydefault}{\sfdefault}
+\fi\fi
+`;
+
+function normalizeBackboneSummaryToken(backbone: string): string {
+  return backbone.replace(/\\small\{%%PROFILE_SUMMARY%%\}/g, TOKENS.summary);
+}
+
+export function upgradeLegacyAtsBackbone(backbone: string): string {
+  const normalized = normalizeBackboneSummaryToken(backbone);
+  for (const lang of Object.keys(LANGUAGE_PACKS) as SupportedLanguage[]) {
+    const current = createLocalizedBackbone(lang);
+    const legacySans = current.replace(
+      "\\usepackage{needspace}\n",
+      `\\usepackage{needspace}\n${LEGACY_SANS_FONT_BLOCK}`
+    );
+    if (normalized === normalizeBackboneSummaryToken(current) || normalized === normalizeBackboneSummaryToken(legacySans)) {
+      return current;
+    }
+  }
+  return backbone;
 }
 
 export function cleanJobTitle(raw: string): string {
@@ -961,6 +909,28 @@ export function getDisplayRole(profile: CandidateProfile, job?: JobInput, analys
   return normalizedWords.join(" ");
 }
 
+function removeEmptyBackboneSection(backbone: string, sectionTitle: string, token: string): string {
+  const tokenIndex = backbone.indexOf(token);
+  if (tokenIndex < 0) return backbone;
+
+  const heading = `\\section{${sectionTitle}}`;
+  const sectionStart = backbone.lastIndexOf(heading, tokenIndex);
+  if (sectionStart < 0) return backbone;
+
+  const nextSection = backbone.indexOf("\\section{", tokenIndex + token.length);
+  const sectionEnd = nextSection < 0 ? backbone.length : nextSection;
+  const section = backbone.slice(sectionStart, sectionEnd);
+  const remaining = section
+    .replace(heading, "")
+    .replace(token, "")
+    .replace(/\\resumeSubHeadingListStart/g, "")
+    .replace(/\\resumeSubHeadingListEnd/g, "")
+    .trim();
+  if (remaining) return backbone;
+
+  return `${backbone.slice(0, sectionStart)}${backbone.slice(sectionEnd)}`;
+}
+
 export function renderTailoredResume(
   profile: CandidateProfile,
   job: JobInput,
@@ -973,8 +943,8 @@ export function renderTailoredResume(
   const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text, profile.country) || "en";
   const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
 
-  let backbone = profile.latexBackbone?.includes(TOKENS.experience) 
-    ? profile.latexBackbone 
+  let backbone = profile.latexBackbone?.includes(TOKENS.experience)
+    ? upgradeLegacyAtsBackbone(profile.latexBackbone)
     : createLocalizedBackbone(resolvedLang);
 
   if (backbone.includes("\\small{" + TOKENS.summary + "}")) {
@@ -995,6 +965,10 @@ export function renderTailoredResume(
   const resolvedSummary = summary || buildGroundedSummary(profile, job, analysis, resolvedLang, userInstructions);
   const instructedSummary = applyUserInstructionsToSummary(resolvedSummary, userInstructions);
   const summaryContent = formatSummary(instructedSummary);
+  const experienceContent = experience(profile, analysis, resolvedLang);
+  if (!experienceContent.trim()) {
+    backbone = removeEmptyBackboneSection(backbone, pack.experienceTitle, TOKENS.experience);
+  }
   const displayRole = customDisplayRole || getDisplayRole(profile, job, analysis);
 
   // If backbone already has a hardcoded role in \textbf{\large ...}, update it
@@ -1006,7 +980,7 @@ export function renderTailoredResume(
     [TOKENS.header]: header(profile, displayRole),
     [TOKENS.headline]: escapeLatex(displayRole),
     [TOKENS.summary]: summaryContent,
-    [TOKENS.experience]: experience(profile, analysis, job, resolvedLang, displayRole),
+    [TOKENS.experience]: experienceContent,
     [TOKENS.projects]: projects(profile),
     [TOKENS.skills]: skills(profile, analysis, resolvedLang),
     [TOKENS.education]: education(profile),

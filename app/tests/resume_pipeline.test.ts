@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { analyzeApplication } from "../application_engine";
 import { parseResumeDeterministically } from "../resume_parser";
-import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole, header } from "../resume_engine";
+import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole, header, upgradeLegacyAtsBackbone } from "../resume_engine";
 import type { CandidateProfile } from "../profiles_manager";
+import { validateATSResumeText } from "../resume_pdf_validation";
 import { AIService } from "../ai_service";
 
-const latex = String.raw`\textbf{\Huge Jordan Patel} \\
+const latex = String.raw`\textbf{\Huge Alex Example} \\
 Platform Engineer \\
-jordan@example.com | +44 7700 900123
+alex@example.com | +44 7700 900123
 \section{Summary}
 Platform engineer working on reliable cloud systems.
 \section{Work Experience}
@@ -27,7 +28,7 @@ Example University
 
 describe("resume backbone pipeline", () => {
   test("structures conventional plain-text work history", () => {
-    const plain = `Jordan Patel\nPlatform Engineer\njordan@example.com\n\nProfessional Experience\nNorthstar Ltd\nPlatform Engineer | January 2021 - Present\n- Built Kubernetes services on AWS with Terraform.\n- Cut deployment recovery time from 30 minutes to 8 minutes.\n\nEducation\nBSc Computer Science\nExample University\n2017 - 2020`;
+    const plain = `Alex Example\nPlatform Engineer\nalex@example.com\n\nProfessional Experience\nNorthstar Ltd\nPlatform Engineer | January 2021 - Present\n- Built Kubernetes services on AWS with Terraform.\n- Cut deployment recovery time from 30 minutes to 8 minutes.\n\nEducation\nBSc Computer Science\nExample University\n2017 - 2020`;
     const result = parseResumeDeterministically(plain);
     expect(result.profile.experience?.[0].company).toBe("Northstar Ltd");
     expect(result.profile.experience?.[0].role).toBe("Platform Engineer");
@@ -36,8 +37,8 @@ describe("resume backbone pipeline", () => {
 
   test("extracts source facts without sample-profile fabrication", () => {
     const result = parseResumeDeterministically(latex);
-    expect(result.profile.name).toBe("Jordan Patel");
-    expect(result.profile.email).toBe("jordan@example.com");
+    expect(result.profile.name).toBe("Alex Example");
+    expect(result.profile.email).toBe("alex@example.com");
     expect(result.profile.experience?.[0].company).toBe("Northstar");
     expect(result.profile.experience?.[0].bullets[0]).toContain("Kubernetes");
     expect(JSON.stringify(result.profile)).not.toContain("Cloud Systems Ltd");
@@ -54,19 +55,91 @@ describe("resume backbone pipeline", () => {
 
   test("renders ATS-readable LaTeX from the persistent backbone", () => {
     const parsed = parseResumeDeterministically(latex).profile as CandidateProfile;
-    const profile: CandidateProfile = { id:"jordan", name:parsed.name!, headline:parsed.headline!, email:parsed.email!, phone:parsed.phone||"", location:"London", postcode:"", linkedin:"", github:"", visaSponsorshipRequired:false, targetRoles:["Platform Engineer"], targetLocations:["London"], preferredRadiusMiles:30, minSalary:0, skills:parsed.skills!, experience:parsed.experience!, education:parsed.education||[], certifications:[], latexBackbone:createLatexBackbone() };
+    const profile: CandidateProfile = { id:"alex", name:parsed.name!, headline:parsed.headline!, email:parsed.email!, phone:parsed.phone||"", location:"London", postcode:"", linkedin:"", github:"", visaSponsorshipRequired:false, targetRoles:["Platform Engineer"], targetLocations:["London"], preferredRadiusMiles:30, minSalary:0, skills:parsed.skills!, experience:parsed.experience!, education:parsed.education||[], certifications:[], latexBackbone:createLatexBackbone() };
     const job = { company:"Orbit", role:"Platform Engineer", location:"London", fullJd:"AWS, Kubernetes and Terraform are required for this platform role." };
     const analysis = analyzeApplication(profile, job);
     const output = renderTailoredResume(profile, job, analysis);
     expect(output).toContain("\\pdfgentounicode=1");
     expect(output).toContain("Northstar");
     expect(output).toContain("Cut deployment recovery time");
+    expect(output).toContain("2021 - Present");
+    expect(output).not.toContain("2021 -- Present");
     expect(output).not.toContain("%%WORK_EXPERIENCE%%");
+  });
+
+  test("migrates the generated sans-serif backbone back to the original LaTeX serif default", () => {
+    const current = createLatexBackbone();
+    const oldSansFontBlock = String.raw`\usepackage{iftex}
+\ifXeTeX
+  \usepackage{fontspec}
+  \IfFontExistsTF{Arial}{
+    \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+    \setmainfont{Arial}
+  }{
+    \IfFontExistsTF{Liberation Sans}{
+      \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+      \setmainfont{Liberation Sans}
+    }{}
+  }
+\else\ifLuaTeX
+  \usepackage{fontspec}
+  \IfFontExistsTF{Arial}{
+    \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+    \setmainfont{Arial}
+  }{
+    \IfFontExistsTF{Liberation Sans}{
+      \defaultfontfeatures{Ligatures=TeX,Kerning=Off}
+      \setmainfont{Liberation Sans}
+    }{}
+  }
+\else
+  \usepackage[T1]{fontenc}
+  \usepackage{helvet}
+  \renewcommand{\familydefault}{\sfdefault}
+\fi\fi
+`;
+    const oldGenerated = current.replace("\\usepackage{needspace}\n", `\\usepackage{needspace}\n${oldSansFontBlock}`);
+    expect(upgradeLegacyAtsBackbone(oldGenerated)).toBe(current);
+
+    const customized = oldGenerated.replace("\\addtolength{\\textheight}{1.1in}", "\\addtolength{\\textheight}{1.0in}");
+    expect(upgradeLegacyAtsBackbone(customized)).toBe(customized);
+  });
+
+  test("accepts extractable resume text and warns on split skills and Unicode date dashes", () => {
+    const profile = {
+      id: "alex",
+      name: "Alex Example",
+      headline: "Platform Engineer",
+      email: "alex@example.com",
+      phone: "",
+      location: "London",
+      postcode: "",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: ["Platform Engineer"],
+      targetLocations: ["London"],
+      preferredRadiusMiles: 30,
+      minSalary: 0,
+      skills: { cloud: ["AWS"], devops: ["Kubernetes", "Terraform"] },
+      experience: [],
+      education: [],
+      certifications: [],
+    } as CandidateProfile;
+    const source = String.raw`Alex Example alex@example.com AWS Kubernetes Terraform`;
+    const readable = "Alex Example alex@example.com AWS Kubernetes Terraform. Built and maintained production platform services from 2021 - Present.";
+    expect(validateATSResumeText(readable, source, profile).status).toBe("passed");
+
+    const split = "Alex Example alex@example.com A WS Kubernetes Terraform. Built production platform services from 2021 – Present.";
+    const result = validateATSResumeText(split, source, profile);
+    expect(result.status).toBe("warning");
+    expect(result.warnings.join(" ")).toContain("AWS");
+    expect(result.warnings.join(" ")).toContain("non-ASCII dash");
   });
 
   test("keeps LaTeX paragraph commands executable in grounded cover letters", () => {
     const parsed = parseResumeDeterministically(latex).profile as CandidateProfile;
-    const profile = { ...parsed, id:"jordan", location:"London", postcode:"", linkedin:"", github:"", visaSponsorshipRequired:false, targetRoles:["Platform Engineer"], targetLocations:["London"], preferredRadiusMiles:30, minSalary:0, education:parsed.education||[], certifications:[] } as CandidateProfile;
+    const profile = { ...parsed, id:"alex", location:"London", postcode:"", linkedin:"", github:"", visaSponsorshipRequired:false, targetRoles:["Platform Engineer"], targetLocations:["London"], preferredRadiusMiles:30, minSalary:0, education:parsed.education||[], certifications:[] } as CandidateProfile;
     const job = { company:"Orbit & Co", role:"Platform Engineer", location:"London", fullJd:"AWS and Kubernetes are required." };
     const analysis = analyzeApplication(profile, job);
     const output = renderGroundedCoverLetter(profile, job, analysis);
@@ -74,23 +147,22 @@ describe("resume backbone pipeline", () => {
     expect(output).not.toContain("textbackslash{}par");
   });
 
-  test("synthesizes tailored active-voice humanized experience when candidate has no uploaded resume", () => {
-    // Manually created profile (e.g. Dynamics Developer or Data Scientist) with no uploaded resume
+  test("does not invent work history when a profile has no source experience", () => {
     const manualProfile: CandidateProfile = {
-      id: "jordan-test",
-      name: "Jordan Patel",
+      id: "candidate-test",
+      name: "Alex Example",
       headline: "Senior Dynamics Developer",
-      email: "jordan.patel@example.com",
-      phone: "+44 7700 900456",
+      email: "alex@example.com",
+      phone: "",
       location: "Manchester, United Kingdom",
-      postcode: "M1",
-      linkedin: "https://linkedin.com/in/jordanpatel",
-      github: "https://github.com/jordanpatel",
+      postcode: "",
+      linkedin: "",
+      github: "",
       visaSponsorshipRequired: false,
       targetRoles: ["Senior Dynamics Developer"],
       targetLocations: ["Remote", "Manchester", "London"],
       preferredRadiusMiles: 50,
-      minSalary: 75000,
+      minSalary: 0,
       skills: {
         cloud: ["Azure"],
         devops: ["Microsoft Dynamics 365", "Power Apps", "Power Automate"],
@@ -98,11 +170,11 @@ describe("resume backbone pipeline", () => {
         tools: ["Dataverse"]
       },
       experience: [],
+      projects: [{ name: "Personal project", tools: "C#, SQL", bullets: ["Built a sample project catalog."] }],
       education: [],
       certifications: [],
       latexBackbone: createLatexBackbone()
     };
-
     const job = {
       company: "Contoso Enterprise",
       role: "Senior Dynamics 365 Developer",
@@ -113,26 +185,113 @@ describe("resume backbone pipeline", () => {
     const analysis = analyzeApplication(manualProfile, job);
     const resumeLatex = renderTailoredResume(manualProfile, job, analysis);
 
-    // Resume should be complete with header, skills, and synthesized experience
-    expect(resumeLatex).toContain("Jordan Patel");
-    expect(resumeLatex).toContain("Senior Dynamics 365 Developer");
+    expect(resumeLatex).toContain("Alex Example");
     expect(resumeLatex).toContain("Microsoft Dynamics 365");
-    expect(resumeLatex).toContain("Enterprise Solutions");
-    expect(resumeLatex).toContain("2021 -- Present");
-    expect(resumeLatex).toContain("\\resumeSubheading");
-    expect(resumeLatex).toContain("\\resumeItem{Architected and delivered scalable technical solutions");
+    expect(resumeLatex).toContain("\\section{Technical Projects}");
+    expect(resumeLatex).toContain("Personal project");
+    expect(resumeLatex).toContain("Built a sample project catalog.");
+    expect(resumeLatex).not.toContain("\\section{Work Experience}");
+    expect(resumeLatex).not.toContain("Enterprise Solutions");
+    expect(resumeLatex).not.toContain("Technology Consulting Partners");
+    expect(resumeLatex).not.toContain("2021 - Present");
+    expect(resumeLatex).not.toContain("Senior Professional");
+    expect(resumeLatex).not.toContain("Architected and delivered scalable technical solutions");
+  });
 
-    // Humanizer checks: Zero banned AI marketing clichés
-    expect(resumeLatex).not.toContain("proven track record");
-    expect(resumeLatex).not.toContain("mission-critical");
-    expect(resumeLatex).not.toContain("seamlessly");
-    expect(resumeLatex).not.toContain("leveraging");
+  test("keeps incomplete recorded roles without filling fictional employer or dates", () => {
+    const parsed = parseResumeDeterministically(latex).profile as CandidateProfile;
+    const partialProfile: CandidateProfile = {
+      ...parsed,
+      id: "candidate-partial-role",
+      name: "Alex Example",
+      email: "alex@example.com",
+      phone: "",
+      location: "",
+      postcode: "",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: [],
+      targetLocations: [],
+      preferredRadiusMiles: 30,
+      minSalary: 0,
+      experience: [{ company: "", role: "Platform Engineer", location: "", startDate: "", endDate: "", bullets: ["Built a deployment helper."] }],
+      education: [],
+      certifications: [],
+      latexBackbone: createLatexBackbone()
+    };
+    const job = { company: "Example", role: "Platform Engineer", location: "", fullJd: "" };
+    const output = renderTailoredResume(partialProfile, job, analyzeApplication(partialProfile, job));
+    const experienceStart = output.indexOf("\\section{Work Experience}");
+    const skillsStart = output.indexOf("\\section{Technical Skills}");
+    const workSection = output.slice(experienceStart, skillsStart);
 
-    // Cover letter check: no generic error sentence
-    const coverLatex = renderGroundedCoverLetter(manualProfile, job, analysis);
-    expect(coverLatex).toContain("Contoso Enterprise");
-    expect(coverLatex).toContain("Senior Dynamics 365 Developer");
-    expect(coverLatex).not.toContain("The uploaded resume does not yet contain direct evidence");
+    expect(workSection).toContain("\\resumeSubheading{}{}{Platform Engineer}{}");
+    expect(workSection).toContain("Built a deployment helper.");
+    expect(workSection).not.toContain("Enterprise Solutions");
+    expect(workSection).not.toContain("2021 - Present");
+  });
+
+  test("uses the uploaded resume text for deterministic import fallback", async () => {
+    const rawResume = `Alex Example\nPlatform Engineer\nalex@example.com\n\nProfessional Experience\nNorthstar Labs\nPlatform Engineer | January 2022 - Present\n- Built a release automation service with Go and Kubernetes.`;
+    const aiService = new AIService({ provider: "builtin" } as any, "/tmp");
+    const imported = await aiService.parseResumeText(rawResume);
+
+    expect(imported.experience?.[0].company).toBe("Northstar Labs");
+    expect(imported.experience?.[0].role).toBe("Platform Engineer");
+    expect(imported.experience?.[0].bullets).toContain("Built a release automation service with Go and Kubernetes.");
+    expect(imported.sourceResume?.text).toBe(rawResume);
+  });
+
+  test("does not ask an AI provider to invent work history for an empty profile", async () => {
+    const prompts: string[] = [];
+    const aiService = new AIService({ provider: "openai", openaiApiKey: "test" } as any, "/tmp");
+    (aiService as any).generateText = async (prompt: string) => {
+      prompts.push(prompt);
+      if (prompt.includes("Generate 2 realistic work experience positions")) {
+        return JSON.stringify([{
+          company: "Test-only Fictional Employer",
+          role: "Platform Engineer",
+          location: "London",
+          startDate: "2021",
+          endDate: "Present",
+          bullets: ["Fabricated test-only work item."]
+        }]);
+      }
+      return "";
+    };
+    const emptyProfile: CandidateProfile = {
+      id: "candidate-empty",
+      name: "Alex Example",
+      headline: "Platform Engineer",
+      email: "alex@example.com",
+      phone: "",
+      location: "London",
+      postcode: "",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: ["Platform Engineer"],
+      targetLocations: ["London"],
+      preferredRadiusMiles: 30,
+      minSalary: 0,
+      skills: { cloud: ["AWS"], containers: ["Kubernetes"], iac: ["Terraform"] },
+      experience: [],
+      projects: [],
+      education: [],
+      certifications: []
+    };
+    const resumeLatex = await aiService.generateTailoredCV(emptyProfile, {
+      company: "Example Systems",
+      role: "Platform Engineer",
+      location: "London",
+      keySkills: ["AWS", "Kubernetes", "Terraform"]
+    }, "en");
+
+    expect(prompts.some(prompt => prompt.includes("Generate 2 realistic work experience positions"))).toBe(false);
+    expect(resumeLatex).not.toContain("Test-only Fictional Employer");
+    expect(resumeLatex).not.toContain("Fabricated test-only work item.");
+    expect(resumeLatex).not.toContain("\\section{Work Experience}");
   });
 
   test("resume parser derives authentic domain roles and location for non-devops candidate", () => {
@@ -263,10 +422,10 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
 
     // 3. Multi-Track: Dynamics 365 profile protection
     const dynamicsCandidate: CandidateProfile = {
-      id: "jordan-test",
-      name: "Jordan Patel",
+      id: "candidate-test",
+      name: "Alex Example",
       headline: "Senior Dynamics 365 CRM & Power Platform Developer",
-      email: "jordan.patel@example.com",
+      email: "alex@example.com",
       phone: "+44 7700 900456",
       location: "Manchester, UK",
       postcode: "M1",
@@ -335,7 +494,7 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     expect(qaRole).not.toContain("Ref: QA-101");
   });
 
-  test("Deep AI Match & Keyword Infusion adapts work experience and skills to target stack", async () => {
+  test("deep tailoring updates JD skills but does not invent work experience", async () => {
     const aiService = new AIService({ provider: "builtin" });
     const awsCandidate: CandidateProfile = {
       id: "alex-test",
@@ -401,13 +560,13 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     const alignedProfile = await aiService.deepAlignCandidateExperience(awsCandidate, azureJob, initialAnalysis, "en");
 
     expect(alignedProfile.skills.cloud).toContain("Azure");
-    expect(alignedProfile.skills.cloud?.[0]).toBe("Azure");
     expect(alignedProfile.skills.containers).toContain("Kubernetes (AKS)");
     expect(alignedProfile.skills.cicd).toContain("Azure DevOps");
 
     const allAlignedBullets = alignedProfile.experience.flatMap(e => e.bullets || []);
-    expect(allAlignedBullets.some(b => b.includes("Azure") || b.includes("AKS"))).toBe(true);
-    expect(allAlignedBullets.some(b => b.includes("Azure DevOps"))).toBe(true);
+    expect(allAlignedBullets.some(b => /Azure|AKS/i.test(b))).toBe(false);
+    expect(allAlignedBullets.some(b => /Azure DevOps/i.test(b))).toBe(false);
+    expect(allAlignedBullets[0]).toContain("AWS EKS infrastructure");
 
     // Verify Humanizer rules: no AI marketing clichés in aligned bullets
     const bannedCliches = /proven track record|mission-critical|seamlessly|leveraging|testament to|foster|spearheaded/i;
@@ -419,13 +578,177 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     const standardCV = await aiService.generateTailoredCV(awsCandidate, azureJob, "en", false);
     const deepCV = await aiService.generateTailoredCV(awsCandidate, azureJob, "en", true);
 
-    // Deep tailored CV must contain Azure, AKS, and Azure DevOps in skills & experience
-    expect(deepCV).toContain("Azure");
-    expect(deepCV).toContain("AKS");
+    // JD skills may be added to the categorized skills section, but should not be
+    // converted into unsupported experience bullets.
     expect(deepCV).toContain("Azure DevOps");
-
-    // Standard CV should not force AKS into bullets
     expect(standardCV).not.toContain("Kubernetes manifests for Azure Kubernetes Service (AKS)");
+  });
+
+  test("dynamic JD skills do not add an unrecorded certification keyword", async () => {
+    const candidate = {
+      id: "candidate-no-cert",
+      name: "Alex Example",
+      headline: "Platform Engineer",
+      location: "Leeds",
+      skills: { cloud: ["AWS"] },
+      experience: [{ company: "Northstar Cloud", role: "Platform Engineer", location: "Leeds", startDate: "2022", endDate: "Present", bullets: ["Managed AWS platform services."] }],
+      education: [],
+      certifications: []
+    } as CandidateProfile;
+    const job = {
+      company: "Example Systems",
+      role: "Platform Engineer",
+      location: "Remote",
+      keySkills: ["Azure", "CKA"],
+      fullJd: "Experience with Azure is preferred. The CKA certification is also preferred."
+    };
+    const result = await new AIService({ provider: "builtin" }).deepAlignCandidateExperience(
+      candidate,
+      job,
+      analyzeApplication(candidate, job),
+      "en",
+      "At Northstar Cloud, add this point: I earned the CKA certification."
+    );
+
+    expect(result.skills.cloud).toContain("Azure");
+    expect(Object.values(result.skills).flat().some(skill => /\bCKA\b/i.test(skill))).toBe(false);
+    expect(result.experience[0].bullets).toEqual(["Managed AWS platform services."]);
+    expect(result.certifications).toEqual([]);
+  });
+
+  test("built-in tailoring adds an explicitly supplied fact to the named employer", async () => {
+    const aiService = new AIService({ provider: "builtin" });
+    const candidate: CandidateProfile = {
+      id: "alex-test",
+      name: "Alex Taylor",
+      headline: "DevOps Engineer / Platform Engineer",
+      email: "alex.taylor@example.com",
+      phone: "+44 7700 900123",
+      location: "Leeds",
+      postcode: "LS1",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: [],
+      targetLocations: [],
+      preferredRadiusMiles: 0,
+      minSalary: 0,
+      skills: { cloud: ["AWS"], containers: ["Kubernetes"] },
+      experience: [
+        { company: "Northstar Cloud", role: "Platform Engineer", location: "Leeds", startDate: "2023", endDate: "Present", bullets: ["Maintained AWS platform services."] },
+        { company: "HealthTech Solutions", role: "DevOps Consultant", location: "Leeds", startDate: "2021", endDate: "2023", bullets: ["Built Python automation tools."] }
+      ],
+      education: [],
+      certifications: []
+    };
+    const job = {
+      company: "Myn",
+      role: "Azure DevOps Engineer",
+      location: "Lancaster, UK",
+      keySkills: ["Azure", "AKS", "Azure DevOps"],
+      fullJd: "Seeking Azure DevOps experience with AKS."
+    };
+    const analysis = analyzeApplication(candidate, job);
+    const tailored = await aiService.deepAlignCandidateExperience(
+      candidate,
+      job,
+      analysis,
+      "en",
+      "At HealthTech Solutions, add this point: I used Microsoft Azure to automate deployment workflows for an internal product."
+    );
+
+    expect(tailored.experience[0].bullets).toEqual(["Maintained AWS platform services."]);
+    expect(tailored.experience[1].bullets).toContain("Used Microsoft Azure to automate deployment workflows for an internal product.");
+    expect(tailored.skills.cloud).toContain("Azure");
+    expect(tailored.skills.containers).toContain("Kubernetes (AKS)");
+    expect(tailored.skills.cicd || []).toContain("Azure DevOps");
+    expect(tailored.certifications).toEqual([]);
+  });
+
+  test("AI tailoring humanizes a user-added fact without changing its employer or dates", async () => {
+    const candidate = {
+      id: "candidate-ai",
+      name: "Alex Taylor",
+      headline: "Platform Engineer",
+      location: "Leeds",
+      skills: { cloud: ["AWS"] },
+      experience: [
+        { company: "Northstar Cloud", role: "Platform Engineer", location: "Leeds", startDate: "2023", endDate: "Present", bullets: ["Maintained AWS platform services."] },
+        { company: "HealthTech Solutions", role: "DevOps Consultant", location: "Leeds", startDate: "2021", endDate: "2023", bullets: ["Built Python automation tools."] }
+      ],
+      education: [],
+      certifications: []
+    } as CandidateProfile;
+    const job = {
+      company: "Myn",
+      role: "Azure DevOps Engineer",
+      location: "Lancaster, UK",
+      keySkills: ["Azure", "AKS", "Azure DevOps"],
+      fullJd: "Seeking Azure DevOps experience with AKS."
+    };
+    const instructions = "At HealthTech Solutions, add this point: I used Microsoft Azure to automate deployment workflows for an internal product.";
+    const service = new AIService({ provider: "openai", openaiApiKey: "test" } as any);
+    let capturedPrompt = "";
+    (service as any).generateText = async (prompt: string) => {
+      capturedPrompt = prompt;
+      return JSON.stringify([
+        { company: "Renamed company", role: "Renamed role", location: "Elsewhere", startDate: "1900", endDate: "1901", bullets: ["Operated AWS platform services."] },
+        { company: "Another company", role: "Another role", location: "Elsewhere", startDate: "1900", endDate: "1901", bullets: ["Built Python automation tools.", "Automated deployment workflows for an internal product with Microsoft Azure.", "Configured AKS and Azure DevOps for the project."] }
+      ]);
+    };
+
+    const tailored = await service.deepAlignCandidateExperience(candidate, job, analyzeApplication(candidate, job), "en", instructions);
+    expect(capturedPrompt).toContain("Humanizer rules");
+    expect(capturedPrompt).toContain(instructions);
+    expect(tailored.experience[0].company).toBe("Northstar Cloud");
+    expect(tailored.experience[0].startDate).toBe("2023");
+    expect(tailored.experience[1].company).toBe("HealthTech Solutions");
+    expect(tailored.experience[1].role).toBe("DevOps Consultant");
+    expect(tailored.experience[1].startDate).toBe("2021");
+    expect(tailored.experience[1].endDate).toBe("2023");
+    expect(tailored.experience[1].bullets).toContain("Automated deployment workflows for an internal product with Microsoft Azure.");
+    expect(tailored.experience[1].bullets).toHaveLength(2);
+    expect(tailored.experience.flatMap(item => item.bullets || []).some(bullet => /AKS|Azure DevOps/i.test(bullet))).toBe(false);
+    expect(tailored.skills.cloud).toContain("Azure");
+    expect(tailored.skills.containers || []).toContain("Kubernetes (AKS)");
+    expect(tailored.skills.cicd || []).toContain("Azure DevOps");
+    expect(tailored.certifications || []).toEqual([]);
+  });
+
+  test("AI tailoring preserves every existing responsibility when its rewrite is shorter", async () => {
+    const candidate = {
+      id: "candidate-preserve-work",
+      name: "Alex Example",
+      headline: "Platform Engineer",
+      location: "Leeds",
+      skills: { cloud: ["AWS"] },
+      experience: [{
+        company: "Northstar Cloud",
+        role: "Platform Engineer",
+        location: "Leeds",
+        startDate: "2020",
+        endDate: "Present",
+        bullets: [
+          "Maintained AWS EKS clusters and CI/CD pipelines.",
+          "Automated deployments with Helm and Terraform.",
+          "Resolved production incidents and documented follow-up actions."
+        ]
+      }],
+      education: [],
+      certifications: []
+    } as CandidateProfile;
+    const service = new AIService({ provider: "openai", openaiApiKey: "test" } as any);
+    (service as any).generateText = async () => JSON.stringify([{
+      company: "Northstar Cloud",
+      role: "Platform Engineer",
+      bullets: ["Maintained AWS infrastructure and delivery pipelines."]
+    }]);
+    const job = { company: "Myn", role: "Platform Engineer", location: "Remote", fullJd: "AWS platform engineering role." };
+    const result = await service.deepAlignCandidateExperience(candidate, job, analyzeApplication(candidate, job));
+
+    expect(result.experience[0].bullets).toEqual(candidate.experience[0].bullets);
+    expect(result.experience[0].startDate).toBe("2020");
+    expect(result.experience[0].endDate).toBe("Present");
   });
 
   test("generateAptJobDesignation synthesizes believable natural title and falls back gracefully", async () => {
@@ -489,15 +812,15 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
   test("candidate header customization respects individual header preferences and mobility notes", () => {
     const baseCandidate: CandidateProfile = {
       id: "candidate-a",
-      name: "Alex Jordan",
+      name: "Candidate Example",
       headline: "Senior DevOps Engineer",
-      email: "alex.jordan@example.com",
-      phone: "+44 7123 456789",
+      email: "candidate@example.com",
+      phone: "+44 7700 900123",
       location: "Manchester",
       postcode: "M1",
-      linkedin: "https://linkedin.com/in/alexjordan",
-      github: "https://github.com/alexjordan",
-      portfolio: "https://alexjordan.dev",
+      linkedin: "https://linkedin.com/in/example-candidate",
+      github: "https://github.com/example-candidate",
+      portfolio: "https://example.com/portfolio",
       visaSponsorshipRequired: true,
       targetRoles: ["DevOps Engineer"],
       targetLocations: ["Remote", "Leeds"],
@@ -512,11 +835,11 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     // 1. Default without preferences includes all standard fields
     const defaultHdr = header(baseCandidate, "Senior DevOps Engineer");
     expect(defaultHdr).toContain("Manchester");
-    expect(defaultHdr).toContain("+44 7123 456789");
-    expect(defaultHdr).toContain("alex.jordan@example.com");
+    expect(defaultHdr).toContain("+44 7700 900123");
+    expect(defaultHdr).toContain("candidate@example.com");
     expect(defaultHdr).toContain("LinkedIn");
-    expect(defaultHdr).toContain("\\href{https://github.com/alexjordan}{GitHub}");
-    expect(defaultHdr).toContain("\\href{https://alexjordan.dev}{Portfolio}");
+    expect(defaultHdr).toContain("\\href{https://github.com/example-candidate}{GitHub}");
+    expect(defaultHdr).toContain("\\href{https://example.com/portfolio}{Portfolio}");
 
     // 2. Candidate opting to hide phone and append relocation mobility note
     const customCandidate: CandidateProfile = {
@@ -533,8 +856,8 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     };
     const customHdr = header(customCandidate, "Senior DevOps Engineer");
     expect(customHdr).toContain("Manchester (Open to Relocation / Hybrid: Leeds, Manchester)");
-    expect(customHdr).not.toContain("+44 7123 456789");
-    expect(customHdr).toContain("alex.jordan@example.com");
+    expect(customHdr).not.toContain("+44 7700 900123");
+    expect(customHdr).toContain("candidate@example.com");
     expect(customHdr).toContain("LinkedIn");
     expect(customHdr).not.toContain("GitHub");
     expect(customHdr).toContain("Portfolio");
@@ -564,15 +887,16 @@ BSc Adult Nursing | University of Manchester | 2015 - 2018
     };
     const privacyHdr = header(privacyCandidate, "Platform Engineer");
     expect(privacyHdr).not.toContain("Manchester");
-    expect(privacyHdr).toContain("+44 7123 456789");
+    expect(privacyHdr).toContain("+44 7700 900123");
     expect(privacyHdr).not.toContain("LinkedIn");
   });
 
-  test("localized LaTeX backbone contains clean ATS fontspec definition preventing word-split glitches", () => {
+  test("generated LaTeX resumes retain the original serif default and ATS Unicode mapping", () => {
     const backbone = createLatexBackbone();
-    expect(backbone).toContain("\\usepackage{iftex}");
-    expect(backbone).toContain("Kerning=Off");
-    expect(backbone).toContain("Arial");
+    expect(backbone).not.toContain("fontspec");
+    expect(backbone).not.toContain("Arial");
+    expect(backbone).not.toContain("helvet");
+    expect(backbone).toContain("\\pdfgentounicode=1");
   });
 });
 
