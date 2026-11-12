@@ -5,7 +5,7 @@ import { analyzeApplication, buildGroundedSummary, applyUserInstructionsToSummar
 import { parseResumeDeterministically } from "./resume_parser";
 import {
   renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole,
-  detectLanguageDeterministically, type SupportedLanguage, LANGUAGE_PACKS,
+  detectLanguageDeterministically, hasWorkExperienceEvidence, type SupportedLanguage, LANGUAGE_PACKS,
 } from "./resume_engine";
 import { detectCandidateCountry, type CandidateCountryInfo } from "./job_sources";
 import {
@@ -102,6 +102,91 @@ export interface GenerationError {
 
 const ROOT_DIR = process.env.AI_JOB_SEARCH_ROOT || process.cwd();
 const CONFIG_FILE = join(ROOT_DIR, "data", "ai_config.json");
+
+type RequestedExperienceAddition = { experienceIndex: number; fact: string };
+
+function extractRequestedExperienceAdditions(
+  instructions: string | undefined,
+  experience: CandidateProfile["experience"]
+): RequestedExperienceAddition[] {
+  if (!instructions?.trim() || !experience?.length) return [];
+
+  const additions: RequestedExperienceAddition[] = [];
+  const clauses = instructions.split(/[\r\n;]+|(?<=[.!?])\s+/).map(clause => clause.trim()).filter(Boolean);
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  for (const clause of clauses) {
+    const action = /\b(?:add|include|insert|record|capture|mention)\b/i.exec(clause);
+    if (!action) continue;
+
+    const lowerClause = clause.toLowerCase();
+    const companyMatches = experience.flatMap((item, index) =>
+      item.company && lowerClause.includes(item.company.toLowerCase()) ? [index] : []
+    );
+    const roleMatches = experience.flatMap((item, index) =>
+      item.role && lowerClause.includes(item.role.toLowerCase()) ? [index] : []
+    );
+    const matches = companyMatches.length ? companyMatches : roleMatches;
+    if (matches.length !== 1) continue;
+
+    let fact = clause.slice(action.index! + action[0].length).trim().replace(/^[,:-]\s*/, "");
+    const colon = fact.indexOf(":");
+    if (colon >= 0) fact = fact.slice(colon + 1).trim();
+    const target = experience[matches[0]];
+    for (const name of [target.company, target.role].filter(Boolean) as string[]) {
+      fact = fact.replace(new RegExp(`^(?:(?:a|an|the|some|new|my|one|two|three)\\s+)*(?:(?:work\\s+)?(?:experience\\s+)?(?:point|bullet|detail|achievement|responsibility|fact)\\s+)?(?:under|at|for|with)\\s+${escapeRegExp(name)}\\b[:,]?\\s*`, "i"), "");
+      fact = fact.replace(new RegExp(`\\b(?:under|at|for|with)\\s+${escapeRegExp(name)}\\b`, "gi"), "");
+    }
+    fact = fact.replace(/^(?:(?:a|an|the|some|new|my|one|two|three)\s+)*(?:(?:work\s+)?(?:experience\s+)?(?:point|bullet|detail|achievement|responsibility|fact)\s+)?(?:that|this)\s+/i, "");
+    fact = fact.replace(/\s+(?:please|thanks?)\.?$/i, "").trim();
+    if (fact.length < 12 || /\bto (?:my )?(?:resume|cv|skills)\b/i.test(fact)) continue;
+
+    fact = fact.replace(/^I(?:\s+have|\s+had|['’]ve|['’]d)?\s+/i, "").replace(/^we(?:\s+have|\s+had|['’]ve|['’]d)?\s+/i, "");
+    fact = fact[0].toUpperCase() + fact.slice(1);
+    if (!/[.!?]$/.test(fact)) fact += ".";
+    if (!additions.some(item => item.experienceIndex === matches[0] && item.fact.toLowerCase() === fact.toLowerCase())) {
+      additions.push({ experienceIndex: matches[0], fact });
+    }
+  }
+
+  return additions;
+}
+
+function isCredentialKeywordInJobDescription(keyword: string, jobDescription: string): boolean {
+  if (/\b(?:certifications?|certificates?|certified|licen[cs]e[sd]?|credentials?)\b/i.test(keyword)) return true;
+  const term = keyword.trim();
+  if (!term) return false;
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const normalizedDescription = (jobDescription || "").replace(/\s+/g, " ");
+  const matches = normalizedDescription.matchAll(new RegExp(`(?:^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, "gi"));
+  for (const match of matches) {
+    const index = match.index || 0;
+    const context = normalizedDescription.slice(Math.max(0, index - 30), Math.min(normalizedDescription.length, index + match[0].length + 30));
+    if (/\b(?:certifications?|certificates?|certified|licen[cs]e[sd]?|credentials?)\b/i.test(context)) return true;
+  }
+  return false;
+}
+
+function appendRequestedExperienceAdditions(
+  experience: CandidateProfile["experience"],
+  additions: RequestedExperienceAddition[]
+): CandidateProfile["experience"] {
+  const stopWords = new Set(["the", "and", "for", "with", "from", "into", "that", "this", "while", "during", "using", "used", "have", "has", "had", "was", "were", "are", "been", "being", "you", "your", "under", "over", "into", "onto", "our", "their", "they", "them", "its"]);
+  return experience.map((item, index) => {
+    const bullets = [...(item.bullets || [])];
+    for (const addition of additions.filter(candidate => candidate.experienceIndex === index)) {
+      const factTerms = [...new Set(addition.fact.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/))]
+        .filter(term => term.length > 2 && !stopWords.has(term));
+      const covered = bullets.some(bullet => {
+        const bulletTerms = new Set(bullet.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/));
+        const sharedTerms = factTerms.filter(term => bulletTerms.has(term)).length;
+        return sharedTerms >= Math.max(2, Math.ceil(factTerms.length * 0.6));
+      });
+      if (!covered) bullets.push(addition.fact);
+    }
+    return { ...item, bullets };
+  });
+}
 
 export class AIService {
   private config: AIConfig;
@@ -2629,43 +2714,42 @@ private parseExperienceJson(text: string): any[] | null {
     userInstructions?: string
   ): Promise<CandidateProfile> {
     const aligned = JSON.parse(JSON.stringify(profile)) as CandidateProfile;
-    const jdText = ((job.fullJd || "") + " " + (job.role || "") + (userInstructions ? " " + userInstructions : "")).toLowerCase();
+    const jdText = `${job.fullJd || ""} ${job.role || ""}`.toLowerCase();
     this.lastAddedSkills = [];
     this.lastBridgedGaps = [];
     this.lastLlmSuccess = false;
 
-    // 1. Detect target technology focus
-    const isAzure = /\b(?:azure|aks|azure\s*devops|arm|bicep|entra)\b/i.test(jdText);
-    const isAws = /\b(?:aws|eks|lambda|cloudformation|ecs|fargate)\b/i.test(jdText);
-    const isGcp = /\b(?:gcp|google\s*cloud|gke|cloud\s*run|bigquery)\b/i.test(jdText);
-
-    // 2. Align and prioritize skills dynamically using shared taxonomy
+    const requestedAdditionCandidates = extractRequestedExperienceAdditions(userInstructions, aligned.experience || []);
     const gaps = (analysis.gapKeywords || []).map(g => g.trim()).filter(Boolean);
     const domainContext = aligned.domain || detectProfessionDomain(aligned.headline, jdText, aligned.skills);
-    const hasTechOrCloud = domainContext === "devops" || domainContext === "cloud" || domainContext === "software" || domainContext === "platform";
     const sanitizedBaseSkills = sanitizeAndCategorizeSkills(aligned.skills || {}, domainContext);
-    const alignmentResult = alignSkillsForJob(sanitizedBaseSkills, jdText, gaps, domainContext);
+    const targetKeywords = [...new Set([
+      ...gaps,
+      ...(job.keySkills || [])
+    ].map(keyword => keyword.trim()).filter(Boolean))];
+    const recordedCertificationText = (aligned.certifications || []).map(item => item.name).join(" ").toLowerCase();
+    const unverifiedCredentialKeywords = targetKeywords.filter(keyword =>
+      isCredentialKeywordInJobDescription(keyword, jdText) && !recordedCertificationText.includes(keyword.toLowerCase())
+    );
+    const requestedAdditions = requestedAdditionCandidates.filter(addition =>
+      !unverifiedCredentialKeywords.some(keyword => addition.fact.toLowerCase().includes(keyword.toLowerCase()))
+    );
+    const candidateEvidence = [
+      aligned.headline,
+      aligned.summary,
+      ...Object.values(aligned.skills || {}).flatMap(items => items || []),
+      ...(aligned.experience || []).flatMap(item => [item.role, ...(item.bullets || [])]),
+      ...(aligned.projects || []).flatMap(project => [project.name, project.tools, ...(project.bullets || [])]),
+      ...(aligned.education || []).flatMap(item => [item.degree, item.institution]),
+      ...(aligned.certifications || []).flatMap(item => [item.name, item.issuer]),
+      aligned.sourceResume?.text,
+      ...requestedAdditions.map(item => item.fact)
+    ].filter(Boolean).join("\n");
+    const skillKeywords = targetKeywords.filter(keyword => !unverifiedCredentialKeywords.includes(keyword));
+    const alignmentResult = alignSkillsForJob(sanitizedBaseSkills, jdText, skillKeywords, domainContext);
     aligned.skills = alignmentResult.skills;
     this.lastAddedSkills = alignmentResult.addedSkills;
     this.lastBridgedGaps = alignmentResult.bridgedGaps;
-
-    // Align summary if present (only apply cloud-specific substitutions if candidate is in devops/cloud)
-    if (aligned.summary) {
-      let sum = aligned.summary;
-      if (domainContext === "devops" || domainContext === "cloud") {
-        if (isAzure) {
-          sum = sum.replace(/\bon AWS and Kubernetes\b/g, "across Azure, AWS, and Kubernetes (AKS)");
-          sum = sum.replace(/\bAWS and Kubernetes\b/g, "Azure and Kubernetes");
-          sum = sum.replace(/\bmulti-cluster EKS infrastructure\b/g, "multi-cluster cloud Kubernetes infrastructure (AKS, EKS)");
-          sum = sum.replace(/\bTerraform and AWS CDK\b/g, "Terraform, Azure DevOps, and cloud");
-        } else if (isAws) {
-          sum = sum.replace(/\bon Azure and Kubernetes\b/g, "across AWS and Kubernetes (EKS)");
-        } else if (isGcp) {
-          sum = sum.replace(/\bon AWS and Kubernetes\b/g, "across GCP, hybrid cloud, and Kubernetes (GKE)");
-        }
-      }
-      aligned.summary = sum;
-    }
 
     // 3. Adapt experience bullets
     const existingExperience = aligned.experience || [];
@@ -2683,41 +2767,47 @@ private parseExperienceJson(text: string): any[] | null {
           bullets: exp.bullets || []
         }));
 
-        const candidateHeadline = aligned.headline || "";
-        const isTechCandidate = hasTechOrCloud || /\b(cloud|devops|sre|platform|infrastructure|kubernetes|software|engineer|developer|sysadmin|fullstack|backend|frontend)\b/i.test(candidateHeadline);
-        const primaryFocus = isAzure
-          ? "Azure (AKS, Azure DevOps, Terraform, Azure Monitor)"
-          : (isAws
-            ? "AWS (EKS, Terraform, Lambda, CloudWatch)"
-            : (isGcp
-              ? "GCP (GKE, Terraform)"
-              : (isTechCandidate ? "Cloud Infrastructure & Software Engineering" : (candidateHeadline || "Core Professional Focus"))));
-        const targetReqs = analysis.requirements.slice(0, 8).map(r => r.requirement).join(", ");
-        const gapNotice = gaps.length > 0 ? `Target Gaps to Bridge in Experience: ${gaps.join(", ")}` : "";
+        const targetReqs = (analysis.requirements || []).slice(0, 8).map(r => r.requirement).join(", ");
+        const gapNotice = gaps.length > 0
+          ? `\nTarget gaps: ${gaps.join(", ")}. Treat these as matching targets only. Include a gap in the resume only when the candidate evidence or a direct user-provided fact supports it.`
+          : "";
+        const userInstructionNotice = userInstructions?.trim()
+          ? `\n\nCandidate instructions (candidate-provided facts are authorized evidence):\n${userInstructions.trim()}\nWhen an instruction adds a fact to a named existing company or role, place it under that exact entry. Do not infer extra dates, metrics, tools, or outcomes.`
+          : "";
+        const candidateFacts = {
+          summary: aligned.summary || "",
+          skills: aligned.skills || {},
+          projects: aligned.projects || [],
+          education: aligned.education || [],
+          certifications: aligned.certifications || [],
+          sourceResumeText: (aligned.sourceResume?.text || "").slice(0, 10000)
+        };
+        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nTarget Requirements: ${targetReqs}${gapNotice}${userInstructionNotice}\nCandidate facts recorded outside work history:\n${JSON.stringify(candidateFacts, null, 2)}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Reorder and rewrite the existing work bullets so relevant, supported experience is easy to find. Rewrite each original bullet one-to-one, preserve every responsibility and detail, and never merge or drop source bullets. Use the candidate's project, skills, education, certification, and source-resume facts to bridge a job requirement only when those facts support it. User instructions that clearly state an additional candidate fact may be added to the existing company or role they name. Do not add unsupported skills, achievements, responsibilities, or experience. Do not transfer experience between employers or time periods.\n\nHumanizer rules: write in direct, natural language; keep specific facts and metrics; remove stock resume phrases, inflated claims, forced triads, and filler. Use active voice where the source supports the actor. Keep every existing company, role, location, and date unchanged. Return a JSON array with the same work history entries and the same number of original bullets per entry, plus only explicitly requested candidate facts.`;
+        const system = "You edit resumes using only candidate evidence and explicit candidate-provided facts. A job description is not evidence about the candidate. Never replace one platform, product, or skill with another. Preserve the candidate's meaning and all work-history metadata. Return a valid JSON array only.";
 
-        let userInstructionNotice = "";
-        if (userInstructions && userInstructions.trim()) {
-          userInstructionNotice = `\n\nCRITICAL USER INSTRUCTION:\n"${userInstructions.trim()}"\nYou MUST strictly obey this user instruction when adapting and phrasing these work experience bullets:
-- If the user explicitly asks to add points or real-time experience in specific technologies (e.g. TypeScript, AWS CDK, Node.js, Python, or Flutter) under a specific company or role, formulate 1 to 3 authentic, high-impact active-voice bullet points and ADD them directly to that company's bullets list.
-- If the user asks to emphasize or omit specific skills, version numbers, or frameworks, adapt the bullets accordingly.
-- Ensure the requested technologies and accomplishments are clearly and naturally represented in the bullets.`;
-        }
-
-        const prompt = `Candidate: ${aligned.name}\nTarget Role: ${job.role} at ${job.company}\nPrimary Domain Focus: ${primaryFocus}\nTarget Requirements: ${targetReqs}\n${gapNotice}${userInstructionNotice}\nCandidate Work Experience:\n${JSON.stringify(expPayload, null, 2)}\n\nTask: Deeply adapt and sharpen the candidate's work experience bullets to showcase authentic alignment with the target role and employer requirements (${targetReqs}). Where applicable, naturally highlight their experience with core requirements (${targetReqs}). If the user requested adding experience, bullets, or points for specific tools or frameworks (such as TypeScript, AWS CDK, Node.js, Flutter) under a specific company (like Flutter or IBM), you MUST formulate concrete, active-voice engineering bullet points and add them directly into that company's bullets list.\n\nStrict Humanizer & Integrity Rules:\n- Keep the candidate's authentic companies, job titles, and dates exactly as given.\n- Start EVERY single bullet with a direct, active-voice professional action verb suited to the role (e.g. Developed, Built, Engineered, Automated, Deployed, Led, Delivered, Implemented, Designed).\n- Strictly ban AI clichés: NO 'proven track record', NO 'mission-critical', NO 'seamlessly', NO 'leveraging', NO shallow '-ing' riders, NO forced triads.\n- Preserve authentic metrics (>20%, 99.9%, etc.). Do NOT invent fake company names.\n- Return a valid JSON array only with updated experience objects.`;
-
-        const system = "You are an expert resume writer. Return a valid JSON array only with work experience entries. Strictly obey the candidate facts, humanizer rules, and any explicit user instructions.";
         const resp = await this.generateText(prompt, system, 4096);
         const parsed = this.parseExperienceJson(resp);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0 && parsed[0].bullets?.length > 0) {
+        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
           const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i;
-          aligned.experience = parsed.map((item: any, i: number) => ({
-            company: item.company || existingExperience[i]?.company || "",
-            role: item.role || existingExperience[i]?.role || "",
-            location: item.location || existingExperience[i]?.location || "",
-            startDate: item.startDate || existingExperience[i]?.startDate || "",
-            endDate: item.endDate || existingExperience[i]?.endDate || "",
-            bullets: (Array.isArray(item.bullets) ? item.bullets : []).filter((b: string) => !banned.test(b) && b.trim().length > 0)
-          }));
+          const allowedNumbers = new Set((candidateEvidence + "\n" + (userInstructions || "")).match(/\b\d+(?:[.,]\d+)?%?\b/g) || []);
+          const unsupportedGaps = targetKeywords.filter(keyword =>
+            unverifiedCredentialKeywords.includes(keyword) || !candidateEvidence.toLowerCase().includes(keyword.toLowerCase())
+          );
+          aligned.experience = existingExperience.map((original: any, i: number) => {
+            const proposed = parsed[i];
+            if (!proposed || !Array.isArray(proposed.bullets)) return original;
+            const maxBulletCount = (original.bullets || []).length + requestedAdditions.filter(item => item.experienceIndex === i).length;
+            const bullets = proposed.bullets
+              .filter((bullet: unknown): bullet is string => typeof bullet === "string" && Boolean(bullet.trim()))
+              .filter((bullet: string) => !banned.test(bullet))
+              .filter((bullet: string) => (bullet.match(/\b\d+(?:[.,]\d+)?%?\b/g) || []).every(value => allowedNumbers.has(value)))
+              .filter((bullet: string) => !unsupportedGaps.some(gap => bullet.toLowerCase().includes(gap.toLowerCase())))
+              .slice(0, maxBulletCount);
+            const sourceBullets = original.bullets || [];
+            // A rewrite must retain one bullet per recorded responsibility. If the
+            // model compresses or drops bullets, keep the source entry intact.
+            return { ...original, bullets: bullets.length >= sourceBullets.length ? bullets : sourceBullets };
+          });
           llmSuccess = true;
           this.lastLlmSuccess = true;
         }
@@ -2727,129 +2817,28 @@ private parseExperienceJson(text: string): any[] | null {
     }
 
     if (!llmSuccess) {
-      // Deterministic cloud and scenario alignment
-      const hasIntuneGap = gaps.some(g => /intune/i.test(g)) || jdText.includes("intune");
-      const hasProcessGap = gaps.some(g => /process/i.test(g)) || jdText.includes("process");
-      const hasTestAutoGap = gaps.some(g => /test|qa/i.test(g)) || jdText.includes("test");
-      const hasOwnershipGap = gaps.some(g => /ownership/i.test(g)) || jdText.includes("ownership");
-
-      aligned.experience = existingExperience.map((exp, expIdx) => {
-        const bullets = (exp.bullets || []).map((bullet, bIdx) => {
-          let b = bullet;
-          if (isAzure) {
-            b = b.replace(/\bmulti-cluster AWS EKS infrastructure and CI\/CD pipelines\b/g, "multi-cluster cloud and hybrid Kubernetes infrastructure (EKS, AKS) and CI/CD pipelines");
-            b = b.replace(/\bmulti-cluster AWS EKS infrastructure\b/g, "multi-cluster cloud Kubernetes infrastructure (EKS, AKS)");
-            b = b.replace(/\bAWS infrastructure including EC2, VPC, S3, IAM, Route 53, and Lambda via Terraform and CloudFormation\b/g,
-                          "cloud infrastructure across Azure (Virtual Machines, VNet, Blob Storage, Entra ID) and hybrid environments using Terraform");
-            b = b.replace(/\bAWS and Kubernetes\b/g, "Azure and Kubernetes");
-            b = b.replace(/\bKubernetes manifests\b/g, "Kubernetes manifests for Azure Kubernetes Service (AKS)");
-            b = b.replace(/\bVSTS and Git pipelines\b/g, "Azure DevOps (VSTS) and Git pipelines");
-            b = b.replace(/\bJenkins to provision build jobs\b/g, "Azure DevOps and Jenkins to automate CI/CD build stages");
-            b = b.replace(/\bSplunk dashboards and alert rules\b/g, "Azure Monitor and Splunk dashboards to track operational health and alert rules");
-            b = b.replace(/\bProvisioned cloud and on-premises infrastructure using Terraform\b/g, "Provisioned Azure and on-premises cloud infrastructure using Terraform");
-            b = b.replace(/\bMigrated worker node groups from legacy EC2 Launch Configurations to Launch Templates running Amazon Linux 2023 \(AL2023\)\b/g,
-                          "Automated Kubernetes cluster node pool upgrades and Linux host provisioning with Terraform");
-          } else if (isAws) {
-            b = b.replace(/\bcloud and on-premises infrastructure using Terraform\b/g, "AWS and on-premises infrastructure using Terraform");
-            b = b.replace(/\bKubernetes manifests\b/g, "Kubernetes (EKS) manifests and Helm charts");
-          } else if (isGcp) {
-            b = b.replace(/\bcloud and on-premises infrastructure using Terraform\b/g, "GCP and cloud infrastructure using Terraform");
-            b = b.replace(/\bKubernetes manifests\b/g, "Kubernetes (GKE) manifests and Helm charts");
-          }
-
-          if (hasIntuneGap && expIdx === 1 && bIdx === 0) {
-            b = b.replace(/using Python and Jenkins/g, "using Python, Microsoft Intune endpoint configurations, and Jenkins");
-          }
-          if (hasProcessGap && expIdx === 0 && bIdx === 0) {
-            b = b.replace(/^Maintained and supported\b/, "Led process improvement initiatives, maintaining and supporting");
-          }
-          if (hasTestAutoGap && /Selenium|JUnit|automated testing/i.test(b)) {
-            b = b.replace(/automated testing and builds/g, "test automation and pipeline validation");
-          }
-          if (hasOwnershipGap && expIdx === 0 && bIdx === 3) {
-            b = b.replace(/^Handled out-of-hours\b/, "Took operational ownership of platform reliability and handled out-of-hours");
-          }
-          return b;
-        });
-        return { ...exp, bullets };
-      });
+      // The local fallback keeps source bullets intact. It can still include a
+      // candidate-supplied fact when the instruction names its existing role.
+      aligned.experience = existingExperience.map(exp => ({ ...exp, bullets: [...(exp.bullets || [])] }));
     }
 
-    // 4. Guaranteed enforcement of user instructions on bullets and skills
-    if (userInstructions && userInstructions.trim()) {
-      const inst = userInstructions.toLowerCase();
-      const wantsOmitVersions = /\b(?:dont|don't|do not|omit|remove|without|avoid|no)\b.*?\b(?:mention|explain|include)?.*?\b(?:versions?|numbers?)\b/i.test(inst) ||
-                                /\b(?:no|omit|remove)\s+versions?\b/i.test(inst);
-      const wantsEksHandsOn = /\b(?:hands-on|good experience)\b.*?\beks upgrade\b/i.test(inst) || /\b(?:dont|don't|do not)\s+over\s*explain.*?eks/i.test(inst);
-      const wantsOwnership = /\b(?:ownership|owner)\b/i.test(inst);
-      const wantsTypeScriptCdk = (/\b(?:type\s*script|typescript)\b/i.test(inst) && /\b(?:cdk|node)/i.test(inst)) ||
-                                 /\b(?:cdk|typescript|node\.?js)\b.*?\b(?:points?|experience|cva?|resume|cv)/i.test(inst);
+    aligned.experience = appendRequestedExperienceAdditions(aligned.experience || [], requestedAdditions);
 
-      aligned.experience = (aligned.experience || []).map((exp, expIdx) => {
-        const bullets = (exp.bullets || []).map((bullet, bIdx) => {
-          let b = bullet;
-          if (wantsEksHandsOn || wantsOmitVersions) {
-            b = b.replace(/Upgraded production EKS clusters in place across five minor versions, from 1\.26 to 1\.31\. Verified VPC CNI, CoreDNS, kube-proxy, EBS CSI, and Cluster Autoscaler compatibility on each release with no downtime\./gi, "Hands-on experience in production EKS cluster upgrades, verifying VPC CNI, CoreDNS, and autoscaler compatibility without downtime.");
-            b = b.replace(/\s*across five minor versions, from 1\.\d+ to 1\.\d+/gi, "");
-            b = b.replace(/\s*\(v1\.\d+\s+to\s+v1\.\d+\)/gi, "");
-            b = b.replace(/\s*from 1\.\d+ to 1\.\d+/gi, "");
-          }
-          if (wantsOwnership && expIdx === 0 && bIdx === 0 && !b.toLowerCase().includes("ownership")) {
-            b = b.replace(/^Maintained and supported\b/, "Took operational ownership of");
-          }
-          if (wantsOwnership && expIdx === 0 && bIdx === 3 && !b.toLowerCase().includes("ownership")) {
-            b = b.replace(/^Handled out-of-hours\b/, "Took operational ownership of platform reliability and handled out-of-hours");
-          }
-          return b;
-        });
-        return { ...exp, bullets };
-      });
-
-      // Inject requested TypeScript / CDK / Node.js bullet points if not already present
-      if (wantsTypeScriptCdk) {
-        const isFlutterTarget = /\bflutter\b/i.test(inst);
-        const flutterIdx = aligned.experience.findIndex(e => /flutter/i.test(e.company));
-        const ibmIdx = aligned.experience.findIndex(e => /ibm/i.test(e.company));
-        const targetExpIdx = (isFlutterTarget && flutterIdx !== -1) ? flutterIdx : (flutterIdx !== -1 ? flutterIdx : 0);
-
-        if (aligned.experience[targetExpIdx]) {
-          const currentBullets = aligned.experience[targetExpIdx].bullets || [];
-          const hasTsBullet = currentBullets.some(b => /typescript|node\.?js/i.test(b));
-          if (!hasTsBullet) {
-            currentBullets.push(
-              "Developed TypeScript/Node.js Lambda functions for RDS endpoint health checks and CloudFront IP range queries, integrated with NLB target groups and S3 bucket policies. Functions included automated testing and error handling for production deployment."
-            );
-            aligned.experience[targetExpIdx].bullets = currentBullets;
-          }
-        }
-
-        if (/\b(?:2|3|two|three)\s+points\b/i.test(inst) && ibmIdx !== -1 && aligned.experience[ibmIdx]) {
-          const ibmBullets = aligned.experience[ibmIdx].bullets || [];
-          const hasIbmTs = ibmBullets.some(b => /typescript|node\.?js/i.test(b));
-          if (!hasIbmTs) {
-            ibmBullets.push(
-              "Built backend tooling in TypeScript and Node.js for microservice onboarding automation, including unit tests and integration tests with Jenkins CI/CD pipelines to validate build job creation and Kubernetes manifest generation."
-            );
-            aligned.experience[ibmIdx].bullets = ibmBullets;
-          }
-        }
-
-        if (aligned.skills) {
-          if (!aligned.skills.languages) aligned.skills.languages = [];
-          if (!aligned.skills.languages.some(s => /typescript/i.test(s))) aligned.skills.languages.unshift("TypeScript");
-          if (!aligned.skills.languages.some(s => /node\.?js/i.test(s))) aligned.skills.languages.push("Node.js");
-          if (!aligned.skills.iac) aligned.skills.iac = [];
-          if (!aligned.skills.iac.some(s => /cdk/i.test(s))) aligned.skills.iac.unshift("AWS CDK (TypeScript)");
-        }
-      }
-
-      if (wantsOmitVersions && aligned.skills) {
-        for (const cat of Object.keys(aligned.skills)) {
-          aligned.skills[cat] = (aligned.skills[cat] || []).map(s => {
-            return s.replace(/\s*\(\s*v?\d+\.\d+\s+(?:to|--|-)\s+v?\d+\.\d+\s*\)/gi, "")
-                    .replace(/\s*\(EKS\s+v\d+\.\d+\s+to\s+v\d+\.\d+\)/gi, " (EKS)");
-          });
-        }
+    // Apply explicit formatting guidance without introducing new experience claims.
+    if (userInstructions?.trim() && /\b(?:don\'t|do not|omit|remove|without|avoid|no)\b.*?\b(?:versions?|numbers?)\b|\b(?:omit|remove|no)\s+versions?\b/i.test(userInstructions)) {
+      aligned.experience = aligned.experience.map(exp => ({
+        ...exp,
+        bullets: (exp.bullets || []).map(bullet => bullet
+          .replace(/\s*\(\s*v?\d+\.\d+\s+(?:to|--|-)\s+v?\d+\.\d+\s*\)/gi, "")
+          .replace(/\s*from 1\.\d+ to 1\.\d+/gi, "")
+          .replace(/\s*v\d+\.\d+(?:\s*(?:to|--|-)\s*v?\d+\.\d+)?/gi, ""))
+      }));
+      for (const category of Object.keys(aligned.skills || {})) {
+        aligned.skills[category] = (aligned.skills[category] || []).map(skill => skill
+          .replace(/\s*\(\s*v?\d+\.\d+\s+(?:to|--|-)\s+v?\d+\.\d+\s*\)/gi, " (EKS)")
+          .replace(/\s*\(EKS\s+v\d+\.\d+\s+to\s+v\d+\.\d+\)/gi, " (EKS)")
+          .replace(/\s*from 1\.\d+ to 1\.\d+/gi, "")
+          .replace(/\s*v\d+\.\d+(?:\s*(?:to|--|-)\s*v?\d+\.\d+)?/gi, ""));
       }
     }
 
@@ -2968,7 +2957,6 @@ CRITICAL RULES:
     const jobInput: JobInput = { ...job, fullJd: job.fullJd || job.keySkills.join("\n") };
     let tailoredProfile = { ...profile };
     const resolvedLang: SupportedLanguage = targetLanguage || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text) || "en";
-    const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
 
     // Check if source bullets or candidate background are non-English and target is English
     const allExistingBullets = (tailoredProfile.experience || []).flatMap(e => e.bullets || []).filter(Boolean);
@@ -3024,37 +3012,6 @@ ${JSON.stringify(expPayload, null, 2)}`;
       }
     }
 
-    // If candidate has no experience recorded, synthesize humanized tailored experience using AI (if available)
-    const hasExp = (tailoredProfile.experience || []).some(e => e.bullets && e.bullets.some(b => b && b.trim().length > 0));
-    if (!hasExp && this.config.provider !== "builtin") {
-      try {
-        const allSkills = Object.values(tailoredProfile.skills || {}).flatMap(v => Array.isArray(v) ? v : []).filter(Boolean);
-        const langNotice = resolvedLang === "de" ? "in German (Deutsch)" : (resolvedLang === "es" ? "in Spanish (Español)" : (resolvedLang === "fr" ? "in French (Français)" : "in English"));
-        const prompt = `Candidate Name: ${tailoredProfile.name}\nCandidate Headline: ${tailoredProfile.headline}\nCandidate Location: ${tailoredProfile.location}\nLanguage: ${langNotice}\nCandidate Skills: ${allSkills.join(", ")}\nTarget Role: ${job.role} at ${job.company}\nJob JD: ${(job.fullJd || "").slice(0, 1000)}\n\nGenerate 2 realistic work experience positions tailored to this job based on candidate's skills.\nStrict Humanizer rules:\n- Use direct active-voice verbs.\n- Plain, direct engineering prose ${langNotice}.\n- Strict ban on AI cliches: NO "proven track record", NO "mission-critical", NO "seamlessly", NO "leveraging", NO shallow "-ing" riders, NO forced triads.\n- Ground all bullets in candidate's skills.\n\nReturn a JSON array only in this format:\n[{"company": "Enterprise Solutions", "role": "${tailoredProfile.headline || job.role}", "location": "${tailoredProfile.location || "Metropolitan Area"}", "startDate": "2021", "endDate": "${pack.presentLabel}", "bullets": ["...", "...", "...", "..."]}, {"company": "Technology Consulting Partners", "role": "Technical Specialist", "location": "${tailoredProfile.location || "Metropolitan Area"}", "startDate": "2018", "endDate": "2021", "bullets": ["...", "...", "..."]}]`;
-        const system = "You are an expert technical resume writer. Return a valid JSON array only with work experience entries. Strictly obey the humanizer guidelines.";
-        const resp = await this.generateText(prompt, system);
-        const match = resp.match(/\[[\s\S]*\]/);
-        if (match) {
-          const parsed = JSON.parse(match[0]);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b/i;
-            const valid = parsed.map((item: any) => ({
-              company: String(item.company || "Enterprise Solutions"),
-              role: String(item.role || tailoredProfile.headline || job.role),
-              location: String(item.location || tailoredProfile.location || "Metropolitan Area"),
-              startDate: String(item.startDate || "2021"),
-              endDate: String(item.endDate || pack.presentLabel),
-              bullets: (Array.isArray(item.bullets) ? item.bullets : []).map(String).filter((b: string) => !banned.test(b) && b.trim().length > 0)
-            })).filter((item: any) => item.bullets.length > 0);
-            if (valid.length > 0) {
-              tailoredProfile.experience = valid;
-            }
-          }
-        }
-      } catch (err) {
-        console.warn("LLM tailored experience synthesis fallback to deterministic:", err);
-      }
-    }
 
     if (deepTailor || tailoredProfile.enableDeepTailor || (userInstructions && userInstructions.trim())) {
       const initialAnalysis = analyzeApplication(tailoredProfile, jobInput);
@@ -3064,41 +3021,57 @@ ${JSON.stringify(expPayload, null, 2)}`;
     const analysis = analyzeApplication(tailoredProfile, jobInput);
     let summary = buildGroundedSummary(tailoredProfile, jobInput, analysis, resolvedLang, userInstructions);
     if (this.config.provider !== "builtin") {
-      try {
-        const source = [tailoredProfile.summary, ...(tailoredProfile.experience || []).flatMap(item => item.bullets || [])].filter(Boolean).join("\n");
-        const langNotice = resolvedLang === "de" ? "in German (auf Deutsch)" : (resolvedLang === "es" ? "in Spanish (en Español)" : (resolvedLang === "fr" ? "in French (en Français)" : "in English"));
-        let prompt = `Target Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nRelevant Matched Technical Skills: ${analysis.matchedKeywords.slice(0, 8).join(", ")}\nCandidate Profile Facts:\n${source}`;
-        if (userInstructions && userInstructions.trim()) {
-          prompt += `\n\nUser-Specified Custom Guidance & Requirements for Summary:\n"${userInstructions.trim()}"\nCRITICAL PRIORITY: You MUST directly obey the user's custom instructions in the summary (e.g. omit version numbers, rephrase as instructed, emphasize requested themes such as ownership) while remaining grounded in candidate facts.`;
-        }
-        const system = `Write a direct, explanatory professional CV summary of 65 to 90 words (3 to 4 sentences) strictly ${langNotice}.
-Follow these structure rules:
-1. First sentence: State the candidate's core engineering identity, years of experience, and primary cloud/platform environments (e.g. AWS, Azure, Kubernetes).
-2. Second sentence: Detail concrete infrastructure and automation capabilities (e.g. multi-cluster Kubernetes/EKS, Infrastructure as Code with Terraform, and CI/CD pipelines).
-3. Third and fourth sentences: Explain operational scope and resilience (e.g. zero-downtime cluster upgrades, production observability, telemetry, and platform reliability for high-throughput services).
+      const skillFacts = Object.values(tailoredProfile.skills || {})
+        .flatMap(value => Array.isArray(value) ? value : [])
+        .filter(Boolean);
+      const workFacts = (tailoredProfile.experience || []).filter(exp =>
+        hasWorkExperienceEvidence(exp)
+      ).map(exp => [
+        exp.role?.trim(),
+        ...(exp.bullets || []).filter(Boolean)
+      ].filter(Boolean).join("\n"));
+      const projectFacts = (tailoredProfile.projects || []).map(project => [
+        project.name,
+        project.tools,
+        ...(project.bullets || []).filter(Boolean)
+      ].filter(Boolean).join("\n"));
+      const educationFacts = (tailoredProfile.education || []).map(item => [item.degree, item.institution].filter(Boolean).join(" - "));
+      const certificationFacts = (tailoredProfile.certifications || []).map(item => [item.name, item.issuer].filter(Boolean).join(" - "));
+      const source = [
+        tailoredProfile.headline && `Recorded headline: ${tailoredProfile.headline}`,
+        tailoredProfile.summary && `Recorded summary: ${tailoredProfile.summary}`,
+        skillFacts.length && `Candidate-listed skills: ${skillFacts.join(", ")}`,
+        workFacts.length && `Recorded work history:\n${workFacts.join("\n")}`,
+        projectFacts.length && `Recorded projects:\n${projectFacts.join("\n")}`,
+        educationFacts.length && `Recorded education:\n${educationFacts.join("\n")}`,
+        certificationFacts.length && `Recorded certifications:\n${certificationFacts.join("\n")}`
+      ].filter(Boolean).join("\n");
 
-Strict Humanizer Rules:
-- Plain, direct, active-voice engineering prose only.
-- Do not invent facts, tools, or metrics not present in the candidate facts.
-- Do not name current or past employers.
-- Strictly ban AI clichés and marketing fluff: do not use "proven track record", "mission-critical", "seamlessly", "leveraging", "passionate", "pivotal", "adept at", "cutting-edge", or "dynamic".
-- Strictly ban shallow "-ing" clauses (avoid "ensuring high availability", "driving velocity", "highlighting best practices").
-- Do not use em-dashes (—) or double hyphens (--).
-- Return only the raw summary paragraph with no quotes, headings, or conversational wrapper.`;
-        const candidate = (await this.generateText(prompt, system)).trim();
-        const sourceNumbers = new Set(source.match(/\b\d+(?:[.,]\d+)?%?\b/g) || []);
-        const candidateNumbers = candidate.match(/\b\d+(?:[.,]\d+)?%?\b/g) || [];
-        const safeNumbers = Boolean(userInstructions) || candidateNumbers.every(value => sourceNumbers.has(value) || /^(?:24\/7|99\.9%?|100%?|\d{1,2})$/.test(value));
-        const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b|cutting-edge|passionate|\badept\b/i.test(candidate);
-        const isCorrectLang = resolvedLang === "de" ? detectLanguageDeterministically(candidate) === "de" : true;
-        if (candidate.length >= 80 && candidate.length <= 1200 && safeNumbers && !banned && isCorrectLang) {
-          summary = applyUserInstructionsToSummary(candidate, userInstructions);
-          this.lastLlmSuccess = true;
-        } else {
+      if (source.trim()) {
+        try {
+          const langNotice = resolvedLang === "de" ? "in German (auf Deutsch)" : (resolvedLang === "es" ? "in Spanish (en Español)" : (resolvedLang === "fr" ? "in French (en Français)" : "in English"));
+          let prompt = `Target Role: ${job.role}\nTarget Language: Write strictly ${langNotice}\nRelevant Candidate-Supported Skills: ${analysis.matchedKeywords.slice(0, 8).join(", ")}\nCandidate Profile Facts:\n${source}`;
+          if (userInstructions && userInstructions.trim()) {
+            prompt += `\n\nUser-Specified Custom Guidance for Summary:\n"${userInstructions.trim()}"\nFollow the guidance while keeping every factual claim grounded in candidate profile facts.`;
+          }
+          const system = `Write a direct CV summary of 2 to 4 sentences, using only the supplied candidate profile facts.\n- Do not use the job description as evidence about the candidate.\n- Mention technologies, employers, dates, years, metrics, and qualifications only when explicitly present in the candidate facts.\n- Do not infer years of experience from dates.\n- If no work history is listed, do not imply employment; describe only recorded skills, projects, or education.\n- Omit details that are not present instead of filling gaps with typical industry claims.\n- Do not name current or past employers.\n- Use plain, direct, active-voice prose in ${langNotice}.\n- Avoid AI clichés, marketing language, and em-dashes.\nReturn only the summary paragraph.`;
+          const candidate = (await this.generateText(prompt, system)).trim();
+          const sourceNumbers = new Set(source.match(/\b\d+(?:[.,]\d+)?%?\b/g) || []);
+          const candidateNumbers = candidate.match(/\b\d+(?:[.,]\d+)?%?\b/g) || [];
+          const safeNumbers = candidateNumbers.every(value => sourceNumbers.has(value));
+          const banned = /proven track record|mission-critical|seamlessly|leveraging|\bensuring\b|\bdriving\b|cutting-edge|passionate|\badept\b/i.test(candidate);
+          const isCorrectLang = resolvedLang === "de" ? detectLanguageDeterministically(candidate) === "de" : true;
+          if (candidate.length >= 80 && candidate.length <= 1200 && safeNumbers && !banned && isCorrectLang) {
+            summary = applyUserInstructionsToSummary(candidate, userInstructions);
+            this.lastLlmSuccess = true;
+          } else {
+            summary = applyUserInstructionsToSummary(summary, userInstructions);
+          }
+        } catch (err) {
+          console.warn("LLM summary generation fallback to deterministic:", err);
           summary = applyUserInstructionsToSummary(summary, userInstructions);
         }
-      } catch (err) {
-        console.warn("LLM summary generation fallback to deterministic:", err);
+      } else {
         summary = applyUserInstructionsToSummary(summary, userInstructions);
       }
     } else {

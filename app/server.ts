@@ -7,7 +7,7 @@ import { createHash } from "crypto";
 import { ProfilesManager, CandidateProfile, type ProfileScheduleConfig } from "./profiles_manager";
 import { AIService } from "./ai_service";
 import { analyzeApplication, analyzeTailoredResume, clearAnalysisCache } from "./application_engine";
-import { createLatexBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, cleanJobTitle, type SupportedLanguage } from "./resume_engine";
+import { createLatexBackbone, upgradeLegacyAtsBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, cleanJobTitle, type SupportedLanguage } from "./resume_engine";
 import { validateATSResumeText, type ATSValidationResult } from "./resume_pdf_validation";
 import { parseResumeDeterministically } from "./resume_parser";
 import { taxonomyStore } from "./taxonomy";
@@ -2832,10 +2832,13 @@ serve({
         let coverContent = "";
 
         // Regenerate if force requested, user instructions provided, file doesn't exist, deep alignment changed, or file is a legacy basic stub / wrong language
+        const hasUnchangedSansBackbone = Boolean(activeProfile.latexBackbone &&
+          upgradeLegacyAtsBackbone(activeProfile.latexBackbone) !== activeProfile.latexBackbone);
         const isCvStale = !existsSync(cvFullPath) || force || deepTailorChanged || Boolean(cleanInstructions) || (() => {
           const content = readFileSync(cvFullPath, "utf-8");
           if (content.split("\n").length < 100) return true;
           if (detectedLang === "de" && !/\\section\{Profil\}/i.test(content)) return true;
+          if ((hasUnchangedSansBackbone || !activeProfile.latexBackbone) && /\\setmainfont\{(?:Arial|Liberation Sans)\}|\\renewcommand\{\\familydefault\}\{\\sfdefault\}/i.test(content)) return true;
           return false;
         })();
         if (isCvStale) {

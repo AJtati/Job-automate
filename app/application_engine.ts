@@ -754,59 +754,48 @@ export function buildGroundedSummary(
   const profileSummary = (profile.summary || "").trim();
   const summaryLang = profileSummary ? detectLanguageDeterministically(profileSummary, profile.country) : "en";
 
-  // If candidate's stored summary matches the target language, use it
   if (profileSummary.length >= 80 && summaryLang === targetLang) {
     return applyUserInstructionsToSummary(profileSummary, userInstructions);
   }
 
-  const location = profile.location ? profile.location.split(",")[0].trim() : (targetLang === "de" ? "Deutschland" : "United Kingdom");
-  const recent = profile.experience?.[0];
-  const matchedTech = analysis.matchedKeywords.slice(0, 6);
-  const headline = profile.headline || recent?.role || (targetLang === "de" ? "Software- und Cloud-Spezialist" : "Software Engineering Professional");
+  const recent = (profile.experience || []).find(item =>
+    Boolean(item.company?.trim() || item.role?.trim() || item.startDate?.trim() || item.endDate?.trim() ||
+      (item.bullets || []).some(bullet => bullet && bullet.trim()))
+  );
+  const location = profile.location?.split(",")[0]?.trim() || "";
+  const headline = profile.headline?.trim() || recent?.role?.trim() || "";
+  const allSkills = Object.values(profile.skills || {}).flatMap(value => Array.isArray(value) ? value : []).filter(Boolean);
+  const matchedTech = (analysis.matchedKeywords || []).slice(0, 6);
+  const relevantSkills = matchedTech.length ? matchedTech : allSkills.slice(0, 6);
+  const sameLanguageSummary = profileSummary && summaryLang === targetLang ? profileSummary : "";
+  const sentences: string[] = [];
+  const isGerman = targetLang === "de";
 
-  let baseSummary = "";
-  if (targetLang === "de") {
-    // Generate grounded German summary
-    const roleText = (profile.headline || "").toLowerCase();
-    if (/devops|platform|cloud|sre|infrastructure/.test(roleText)) {
-      baseSummary = `DevOps- und Cloud-Ingenieur mit fundierter Erfahrung in CI/CD-Pipelines, Infrastructure as Code und Containerisierung auf AWS und Azure. Sicherer Umgang mit Python, Linux-Systemen und Automatisierung. Zertifizierter Microsoft DevOps Engineer Expert mit Fokus auf stabile, reproduzierbare Infrastrukturen und cloud-native Architekturen.`;
-    } else if (/dynamics|power\s*platform|d365|crm/.test(roleText)) {
-      baseSummary = `Dynamics 365 und Power Platform Spezialist mit fundierter Praxiserfahrung in Geschäftsprozessautomatisierung, Datenmodellierung und Systemintegration. Versiert in Power Apps, Power Automate, Dataverse und cloudbasierten Enterprise-Lösungen.`;
-    } else if (/qa|test|quality|automation/.test(roleText)) {
-      baseSummary = `Test-Automation und QA-Spezialist mit fundierter Erfahrung in der Konzeption und Umsetzung automatisierter Test-Frameworks, Regressionstests und End-to-End-Qualitätssicherung innerhalb agiler CI/CD-Pipelines.`;
-    } else {
-      const sentences = [`${headline} mit Sitz in ${location}.`];
-      if (recent?.company && recent?.role) sentences.push(`Zuletzt tätig als ${recent.role} bei ${recent.company}.`);
-      else sentences.push(`Schwerpunkt auf der Entwicklung robuster technischer Lösungen, Systemintegrationen und Produktionsautomatisierung.`);
-      if (matchedTech.length) sentences.push(`Relevante dokumentierte Qualifikationen: ${matchedTech.join(", ")}.`);
-      baseSummary = sentences.join(" ");
-    }
-  } else if (summaryLang === "de" && profileSummary.length >= 80) {
-    // English adaptation of German profile
-    const roleText = (profile.headline || "").toLowerCase();
-    if (/devops|platform|cloud|sre|infrastructure/.test(roleText)) {
-      baseSummary = `DevOps and Cloud Engineer experienced with CI/CD pipelines, Infrastructure as Code, and containerization across AWS and Azure. Proficient in Python, Bash, and Linux automation. Certified Microsoft DevOps Engineer Expert and Azure Developer with focus on resilient, reproducible infrastructure.`;
-    } else if (/dynamics|power\s*platform|d365|crm/.test(roleText)) {
-      baseSummary = `Dynamics 365 and Power Platform Specialist experienced in business process automation, data modeling, and enterprise integrations using Power Apps, Power Automate, Dataverse, and cloud architectures.`;
-    } else if (/qa|test|quality|automation/.test(roleText)) {
-      baseSummary = `QA Automation Engineer experienced in designing end-to-end testing frameworks, regression suites, and continuous testing within modern CI/CD pipelines.`;
-    }
+  if (sameLanguageSummary) sentences.push(sameLanguageSummary);
+  if (headline) {
+    sentences.push(isGerman
+      ? `${headline}${location ? ` mit Sitz in ${location}` : ""}.`
+      : `${headline}${location ? ` based in ${location}` : ""}.`);
+  }
+  if (recent?.company?.trim() && recent?.role?.trim()) {
+    sentences.push(isGerman
+      ? `Zuletzt dokumentierte Position: ${recent.role} bei ${recent.company}.`
+      : `Most recent recorded role: ${recent.role} at ${recent.company}.`);
+  }
+  const sourceBullets = (recent?.bullets || []).filter(Boolean).slice(0, 2);
+  if (sourceBullets.length) {
+    sentences.push(isGerman
+      ? `Ausgewählte Belege: ${sourceBullets.join(" ")}`
+      : `Selected evidence: ${sourceBullets.join(" ")}`);
+  }
+  if (relevantSkills.length) {
+    sentences.push(isGerman
+      ? `Dokumentierte Kenntnisse: ${relevantSkills.join(", ")}.`
+      : `Relevant documented skills: ${relevantSkills.join(", ")}.`);
   }
 
-  if (!baseSummary) {
-    if (profileSummary.length >= 80) {
-      baseSummary = profileSummary;
-    } else {
-      const sentences = [`${headline} based in ${location}.`];
-      if (recent?.company && recent?.role) sentences.push(`Most recent recorded role: ${recent.role} at ${recent.company}.`);
-      else sentences.push(`Focuses on delivering technical solutions, system integrations, and production automation.`);
-      const sourceBullets = (recent?.bullets || []).filter(Boolean).slice(0, 2);
-      if (sourceBullets.length) sentences.push(`Selected evidence: ${sourceBullets.join(" ")}`);
-      if (matchedTech.length) sentences.push(`Relevant documented skills: ${matchedTech.join(", ")}.`);
-      baseSummary = sentences.join(" ");
-    }
-  }
-
+  let baseSummary = sentences.join(" ");
+  if (!baseSummary && profileSummary.length >= 80) baseSummary = profileSummary;
   return applyUserInstructionsToSummary(baseSummary, userInstructions);
 }
 

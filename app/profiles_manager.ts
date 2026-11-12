@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { createLatexBackbone } from "./resume_engine";
 import { detectCandidateCountry } from "./job_sources";
 import { sanitizeAndCategorizeSkills, detectProfessionDomain, calculateTotalYearsExperience } from "./taxonomy";
