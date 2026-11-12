@@ -129,9 +129,9 @@ describe("Intelligent Skill Taxonomy, Self-Healing, and Segregation", () => {
 
   test("renderTailoredResume formats skills cleanly with Jake's template standard", () => {
     const profile = {
-      name: "Ajith Surya Thati",
+      name: "Alex Morgan",
       headline: "Senior Platform Engineer",
-      location: "Hartlepool",
+      location: "Leeds",
       skills: {
         cloud: ["AWS", "Azure"],
         containers: ["Kubernetes", "Docker"],

@@ -5937,7 +5937,15 @@ async function downloadPDF(type) {
         body: JSON.stringify({ path: result.repoPath })
       }).catch(() => {});
 
-      showToast(`ATS PDF compiled and opened: ${result.filename}`);
+      if (result.atsValidation?.status === "warning") {
+        showToast(`PDF compiled with ATS warning: ${result.atsValidation.warnings.join(" ")}`);
+      } else if (result.atsValidation?.status === "unavailable") {
+        showToast("PDF compiled; ATS text verification was unavailable.");
+      } else if (result.atsValidation?.status === "passed") {
+        showToast(`PDF text extraction checks passed: ${result.filename}`);
+      } else {
+        showToast(`PDF compiled and opened: ${result.filename}`);
+      }
     } else {
       console.error("Compilation error:", result);
       showToast(`PDF compilation failed: ${result.error || "Check LaTeX syntax"}`);

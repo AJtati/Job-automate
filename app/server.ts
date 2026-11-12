@@ -8,6 +8,7 @@ import { ProfilesManager, CandidateProfile, type ProfileScheduleConfig } from ".
 import { AIService } from "./ai_service";
 import { analyzeApplication, analyzeTailoredResume, clearAnalysisCache } from "./application_engine";
 import { createLatexBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, cleanJobTitle, type SupportedLanguage } from "./resume_engine";
+import { validateATSResumeText, type ATSValidationResult } from "./resume_pdf_validation";
 import { parseResumeDeterministically } from "./resume_parser";
 import { taxonomyStore } from "./taxonomy";
 import { SchedulerService, computeNextRun, type ScrapeExecutionResult } from "./scheduler_service";
@@ -3575,7 +3576,16 @@ serve({
               .replace(/\\input\{glyphtounicode\}/g, "\\ifx\\pdfgentounicode\\undefined\\else\\input{glyphtounicode}\\fi")
               .replace(/\\pdfgentounicode=1/g, "\\ifx\\pdfgentounicode\\undefined\\else\\pdfgentounicode=1\\fi");
           }
-          // Tectonic font protection: replace problematic fontspec / proprietary font calls with universal helvetica
+          // Tectonic uses XeTeX, but its bundled build should use the template's
+          // portable PDFTeX font fallback instead of leaving fontspec commands behind.
+          if (compiler.isTectonic && kind !== "cover") {
+            const conditionalFontBlock = /\\usepackage\{iftex\}\s*\\ifXeTeX[\s\S]*?\\else\s*\\ifLuaTeX[\s\S]*?\\else([\s\S]*?)\\fi\s*\\fi/;
+            const fontBlock = cleanLatex.match(conditionalFontBlock);
+            if (fontBlock) {
+              const fallback = fontBlock[1].replace(/\\usepackage\{helvet\}/gi, "\\usepackage[scaled=0.92]{helvet}");
+              cleanLatex = cleanLatex.replace(conditionalFontBlock, fallback);
+            }
+          }
           if (cleanLatex.includes("\\setmainfont") || cleanLatex.includes("fontspec")) {
             cleanLatex = cleanLatex
               .replace(/\\usepackage\{fontspec\}\s*\\setmainfont\{[^}]+\}/gi, "\\usepackage[scaled=0.92]{helvet}\\renewcommand{\\familydefault}{\\sfdefault}")
@@ -3603,6 +3613,19 @@ serve({
             }), { status: 422, headers: { "Content-Type": "application/json" } });
           }
 
+          let atsValidation: ATSValidationResult = { status: "not_applicable", warnings: [] };
+          if (kind !== "cover") {
+            try {
+              const extractedText = extractPdfText(new Uint8Array(readFileSync(pdfPath)), "document.pdf");
+              atsValidation = validateATSResumeText(extractedText, latexCode, profilesManager.getActiveProfile());
+            } catch (error: any) {
+              atsValidation = {
+                status: "unavailable",
+                warnings: [`PDF compiled, but text extraction could not run: ${error.message || error}`],
+              };
+            }
+          }
+
           const folder = kind === "cover" ? "cover_letters" : "cv";
           const safeName = basename(filename).replace(/[^a-zA-Z0-9._-]/g, "-").replace(/\.tex$/i, ".pdf");
           const repoFilePath = join(ROOT_DIR, folder, safeName.toLowerCase().endsWith(".pdf") ? safeName : `${safeName}.pdf`);
@@ -3614,7 +3637,14 @@ serve({
             repoPath: repoRelative,
             downloadUrl: `/api/pdf?download=1&path=${encodeURIComponent(repoRelative)}`,
             engine: compiler.name,
-            message: "Native ATS vector PDF compiled successfully.",
+            atsValidation,
+            message: kind === "cover"
+              ? "PDF compiled successfully."
+              : atsValidation.status === "passed"
+                ? "PDF compiled and text extraction checks passed."
+                : atsValidation.status === "warning"
+                  ? `PDF compiled with text extraction warnings: ${atsValidation.warnings.join(" ")}`
+                  : "PDF compiled, but ATS text verification was unavailable.",
           }), { headers: { "Content-Type": "application/json" } });
         } finally {
           rmSync(workDir, { recursive: true, force: true });

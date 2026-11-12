@@ -447,6 +447,10 @@ export function header(profile: CandidateProfile, role: string): string {
   return `\\begin{center}\n\\textbf{\\Huge \\scshape ${escapeLatex(profile.name)}} \\\\ \\vspace{3pt}\n\\textbf{\\large ${escapeLatex(role)}} \\\\ \\vspace{3pt}\n\\small ${links.join(" $|$ ")}\n\\end{center}`;
 }
 
+export function formatDateRange(startDate?: string, endDate?: string): string {
+  return [startDate?.trim(), endDate?.trim()].filter(Boolean).join(" - ");
+}
+
 function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobInput, analysis?: ApplicationAnalysis, lang: SupportedLanguage = "en", customRole?: string): string {
   const roleTitle = customRole || getDisplayRole(profile, job, analysis);
   const locParts = (profile.location || "").split(",").map(p => p.trim()).filter(Boolean);
@@ -470,7 +474,7 @@ function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobI
   // Role 1: Current / Senior position
   const r1Company = "Enterprise Solutions";
   const r1Location = displayLoc;
-  const r1Dates = `2021 -- ${pack.presentLabel}`;
+  const r1Dates = formatDateRange("2021", pack.presentLabel);
   let r1Bullets: string[] = [];
   let r2Bullets: string[] = [];
 
@@ -512,11 +516,11 @@ function synthesizeTailoredExperienceLatex(profile: CandidateProfile, job?: JobI
     ];
   }
 
-  // Role 2: Previous position (2018 -- 2021)
+  // Role 2: Previous position (2018 - 2021)
   const r2Company = "Technology Consulting Partners";
   const r2Role = lang === "de" ? "Software-Entwickler / Technischer Berater" : (lang === "es" ? "Desarrollador de Software / Consultor Técnico" : "Software Developer / Technical Consultant");
   const r2Location = displayLoc;
-  const r2Dates = "2018 -- 2021";
+  const r2Dates = formatDateRange("2018", "2021");
 
   const formatSubheading = (company: string, loc: string, role: string, dates: string, bullets: string[]) => {
     const items = bullets.map(b => `  \\resumeItem{${escapeLatex(b)}}`).join("\n");
@@ -539,8 +543,7 @@ function experience(profile: CandidateProfile, analysis: ApplicationAnalysis, jo
       const bulletBlock = validBullets.length > 0 ? `\n\\resumeItemListStart\n${bullets}\n\\resumeItemListEnd` : "";
       const company = item.company?.trim() || "Enterprise Solutions";
       const location = item.location?.trim() || (profile.location ? profile.location.split(",")[0].trim() : "");
-      const datesRaw = `${item.startDate} -- ${item.endDate}`;
-      const dates = datesRaw.replace(/\bpresent\b/gi, pack.presentLabel);
+      const dates = formatDateRange(item.startDate, item.endDate).replace(/\bpresent\b/gi, pack.presentLabel);
       return `\\resumeSubheading{${escapeLatex(company)}}{${escapeLatex(location)}}{${escapeLatex(item.role || profile.headline || "Senior Professional")}}{${escapeLatex(dates)}}${bulletBlock}`;
     }).join("\n");
   }
@@ -759,7 +762,7 @@ export function cleanEducationItem(item: {
   institution = institution.replace(/[:,\-\s]+$/, "").trim();
   degree = degree.replace(/[:,\-\s]+$/, "").trim();
 
-  const dates = [startDate, endDate].filter(Boolean).join(" -- ");
+  const dates = formatDateRange(startDate, endDate);
 
   return {
     degree: degree || "Bachelor's Degree",
@@ -806,6 +809,22 @@ export function formatSummary(summaryText: string): string {
 
 export function createLatexBackbone(): string {
   return DEFAULT_LATEX_BACKBONE;
+}
+
+const LEGACY_ATS_FONT_BLOCK = /\\usepackage\{iftex\}\r?\n\\ifXeTeX[\s\S]*?\\fi\\fi\r?\n(?=\\ifx\\pdfgentounicode)/;
+
+function normalizeBackboneSummaryToken(backbone: string): string {
+  return backbone.replace(/\\small\{%%PROFILE_SUMMARY%%\}/g, TOKENS.summary);
+}
+
+export function upgradeLegacyAtsBackbone(backbone: string): string {
+  const normalized = normalizeBackboneSummaryToken(backbone);
+  for (const lang of Object.keys(LANGUAGE_PACKS) as SupportedLanguage[]) {
+    const current = createLocalizedBackbone(lang);
+    const legacy = current.replace(LEGACY_ATS_FONT_BLOCK, "");
+    if (normalized === normalizeBackboneSummaryToken(legacy)) return current;
+  }
+  return backbone;
 }
 
 export function cleanJobTitle(raw: string): string {
@@ -973,8 +992,8 @@ export function renderTailoredResume(
   const resolvedLang: SupportedLanguage = lang || (profile.preferredLanguage as SupportedLanguage) || detectLanguageDeterministically(profile.sourceResume?.text, profile.country) || "en";
   const pack = LANGUAGE_PACKS[resolvedLang] || LANGUAGE_PACKS.en;
 
-  let backbone = profile.latexBackbone?.includes(TOKENS.experience) 
-    ? profile.latexBackbone 
+  let backbone = profile.latexBackbone?.includes(TOKENS.experience)
+    ? upgradeLegacyAtsBackbone(profile.latexBackbone)
     : createLocalizedBackbone(resolvedLang);
 
   if (backbone.includes("\\small{" + TOKENS.summary + "}")) {

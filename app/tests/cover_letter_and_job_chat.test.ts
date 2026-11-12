@@ -305,7 +305,7 @@ Alex Taylor`;
     const sampleCover = `\\documentclass[]{cover}
 \\begin{document}
 \\lettercontent{I am applying for the DevOps Engineer role at Anson McCade.}
-\\lettercontent{Over the last two years at CloudTech UK, I executed five consecutive production cluster upgrades from Kubernetes 1.26 to 1.31 with zero downtime.}
+\\lettercontent{Over the last two years at CloudTech UK, I executed five consecutive production cluster upgrades from Kubernetes 1.25 to 1.29 with zero downtime.}
 \\lettercontent{I require Skilled Worker visa sponsorship to work in the UK.}
 \\end{document}`;
 
@@ -320,7 +320,7 @@ Alex Taylor`;
     expect(sampleCover).not.toContain("mission-critical");
 
     // Real grounded engineering content
-    expect(sampleCover).toContain("1.26 to 1.31");
+    expect(sampleCover).toContain("1.25 to 1.29");
     expect(sampleCover).toContain("Skilled Worker visa sponsorship");
   });
 
@@ -385,7 +385,7 @@ I am writing to apply for the Azure DevOps Engineer position.`;
 
 1. **Analyze the Requirements:**
 - Role: Azure DevOps Engineer
-- Candidate: Ajith Surya Thati
+- Candidate: Alex Morgan
 - Constraints: No em-dashes, no AI marketing clichés.
 
 2. **Deconstruct the Constraints:**
@@ -393,31 +393,31 @@ I am writing to apply for the Azure DevOps Engineer position.`;
 
 Dear Hiring Team,
 
-I am writing to express my interest in the Azure DevOps Engineer role at BCN group. Over the past three years, I have maintained production cloud infrastructure with Terraform and Kubernetes.`;
+I am writing to express my interest in the Azure DevOps Engineer role at Northstar Systems. Over the past three years, I have maintained production cloud infrastructure with Terraform and Kubernetes.`;
 
     const stripped = stripThinkingProcess(rawWithMarkdownPreamble);
     expect(stripped).not.toContain("Here's a thinking process");
     expect(stripped).not.toContain("Analyze the Requirements");
     expect(stripped).not.toContain("Deconstruct the Constraints");
     expect(stripped).toContain("Dear Hiring Team,");
-    expect(stripped).toContain("Azure DevOps Engineer role at BCN group");
+    expect(stripped).toContain("Azure DevOps Engineer role at Northstar Systems");
   });
 
   test("isValidCoverLetter rejects pure thinking process or truncated scratchpads", () => {
     const pureThinkingDump = `Here's a thinking process:
 
 1. **Analyze the Request:**
-   - Goal: Write a cover letter for Ajith Surya Thati.
+   - Goal: Write a cover letter for Alex Morgan.
    - Strict rules: No em-dashes, no AI clichés.
 2. **Deconstruct Constraints:**
    - Paragraph structure: 4 paragraphs.
 Sincerely,
-Ajith`;
+Alex`;
 
     expect(isValidCoverLetter(pureThinkingDump)).toBe(false);
     expect(isValidCoverLetter("Too short")).toBe(false);
 
-    const validLetter = `I am writing to apply for the Azure DevOps Engineer position at BCN group. My background centers on cloud infrastructure, container orchestration with Kubernetes, and automated deployment pipelines. In my recent work, I upgraded production clusters across five versions with zero downtime and built reusable Terraform modules for application teams.`;
+    const validLetter = `I am writing to apply for the Azure DevOps Engineer position at Northstar Systems. My background centers on cloud infrastructure, container orchestration with Kubernetes, and automated deployment pipelines. In my recent work, I upgraded production clusters across five versions with zero downtime and built reusable Terraform modules for application teams.`;
     expect(isValidCoverLetter(validLetter)).toBe(true);
   });
 
@@ -425,27 +425,27 @@ Ajith`;
     const screenshotSample = `Here's a thinking process:
 
 1. **Analyze User Input:**
-   - User is the candidate (Ajith Surya Thati)
+   - User is the candidate (Alex Morgan)
    - They say "hi"
    - Then they ask for "Give me a cover letter for this"
-   - The "this" refers to the Azure DevOps Engineer role at bcn group that I have the full context for
+   - The "this" refers to the Azure DevOps Engineer role at Northstar Systems that I have the full context for
 
 2. **Check Constraints & Rules:**
-   - I am Ajith Surya Thati's Personal Career Co-Pilot and Application Strategist
+   - I am Alex Morgan's Personal Career Co-Pilot and Application Strategist
    - Must follow CRITICAL MANDATORY HUMANIZER RULES strictly
    - ABSOLUTE ZERO TOLERANCE FOR AI TROPES:
      - Zero em-dashes
      - Zero "not-X-but-Y" contrast formulas
      - Zero AI sales puffery, hype, staged openers
-   - NO unresolved placeholders: Use actual company name "bcn group", candidate name "Ajith Surya Thati"
+   - NO unresolved placeholders: Use actual company name "Northstar Systems", candidate name "Alex Morgan"
 
 Let's outline:
 
-Here is a revised cover letter for the Azure DevOps Engineer role at bcn group:
+Here is a revised cover letter for the Azure DevOps Engineer role at Northstar Systems:
 
 Dear Hiring Team,
 
-I am writing to express my interest in the Azure DevOps Engineer position at bcn group. Over the past five years, I have architected and automated cloud infrastructure across Azure and AWS.`;
+I am writing to express my interest in the Azure DevOps Engineer position at Northstar Systems. Over the past five years, I have architected and automated cloud infrastructure across Azure and AWS.`;
 
     const cleaned = stripThinkingProcess(screenshotSample);
     expect(cleaned).not.toContain("Here's a thinking process");
@@ -453,7 +453,7 @@ I am writing to express my interest in the Azure DevOps Engineer position at bcn
     expect(cleaned).not.toContain("Check Constraints & Rules");
     expect(cleaned).not.toContain("CRITICAL MANDATORY HUMANIZER RULES");
     expect(cleaned).not.toContain("Let's outline");
-    expect(cleaned).toContain("Here is a revised cover letter for the Azure DevOps Engineer role at bcn group:");
+    expect(cleaned).toContain("Here is a revised cover letter for the Azure DevOps Engineer role at Northstar Systems:");
     expect(cleaned).toContain("Dear Hiring Team,");
     expect(isValidJobChatResponse(cleaned)).toBe(true);
   });
@@ -465,7 +465,7 @@ I am writing to express my interest in the Azure DevOps Engineer position at bcn
 Let's outline:`;
     expect(isValidJobChatResponse(pureScratchpad)).toBe(false);
 
-    const normalAnswer = `### Key Strengths for Azure DevOps Engineer at bcn group
+    const normalAnswer = `### Key Strengths for Azure DevOps Engineer at Northstar Systems
 - **Infrastructure as Code**: Deep experience writing reusable Terraform modules.
 - **CI/CD Pipelines**: Production pipelines using GitHub Actions with security gates.`;
     expect(isValidJobChatResponse(normalAnswer)).toBe(true);
@@ -499,26 +499,26 @@ Senior Platform & DevOps Engineer with 5+ years of experience automating Azure a
   test("extractGroundedCoverText extracts body paragraphs cleanly from LaTeX cover letter", () => {
     const latexCover = `\\documentclass{article}
 \\begin{document}
-\\textbf{Ajith Surya Thati}\\\\
-Hartlepool
+\\textbf{Alex Morgan}\\\\
+Leeds
 \\vspace{1em}
 \\textbf{Hiring Team}\\\\
-bcn group
+Northstar Systems
 \\vspace{1em}
 \\textbf{Dear Hiring Team,}
 
-I am writing to apply for the Azure DevOps Engineer position at bcn group.
+I am writing to apply for the Azure DevOps Engineer position at Northstar Systems.
 
 Over the past four years, I have focused on automating scalable Azure infrastructure using Terraform. In my previous role, I designed automated CI/CD workflows and implemented automated security checks.
 
 I would welcome the opportunity to speak with your team about your cloud roadmap.
 
 Yours sincerely,
-Ajith Surya Thati
+Alex Morgan
 \\end{document}`;
 
     const extracted = extractGroundedCoverText(latexCover);
-    expect(extracted).toContain("I am writing to apply for the Azure DevOps Engineer position at bcn group.");
+    expect(extracted).toContain("I am writing to apply for the Azure DevOps Engineer position at Northstar Systems.");
     expect(extracted).toContain("Over the past four years, I have focused on automating scalable Azure infrastructure using Terraform.");
     expect(extracted).toContain("I would welcome the opportunity to speak with your team about your cloud roadmap.");
     expect(extracted).not.toContain("\\documentclass");
@@ -558,21 +558,21 @@ Specialized Azure DevOps Engineer with hands-on enterprise landing zone delivery
   test("humanizeText cleans LaTeX spacing commands, \\[0.5em], and stray [0.5em] artifacts", () => {
     const rawWithLatexSpacing = `Thank you for your time and consideration.
 
-Sincerely,\\\\[0.5em] Ajith Surya Thati`;
+Sincerely,\\\\[0.5em] Alex Morgan`;
 
-    const cleaned = aiService.humanizeText(rawWithLatexSpacing, { company: "bcn group", candidateName: "Ajith Surya Thati" });
+    const cleaned = aiService.humanizeText(rawWithLatexSpacing, { company: "Northstar Systems", candidateName: "Alex Morgan" });
     expect(cleaned).not.toContain("[0.5em]");
     expect(cleaned).not.toContain("\\\\[0.5em]");
     expect(cleaned).toContain("Sincerely,");
-    expect(cleaned).toContain("Ajith Surya Thati");
+    expect(cleaned).toContain("Alex Morgan");
 
-    const rawWithStrayBrackets = `I am based in Hartlepool and require sponsorship.
+    const rawWithStrayBrackets = `I am based in Leeds and require sponsorship.
 
-Sincerely, [0.5em] Ajith Surya Thati`;
-    const cleanedStray = aiService.humanizeText(rawWithStrayBrackets, { company: "bcn group", candidateName: "Ajith Surya Thati" });
+Sincerely, [0.5em] Alex Morgan`;
+    const cleanedStray = aiService.humanizeText(rawWithStrayBrackets, { company: "Northstar Systems", candidateName: "Alex Morgan" });
     expect(cleanedStray).not.toContain("[0.5em]");
     expect(cleanedStray).toContain("Sincerely,");
-    expect(cleanedStray).toContain("Ajith Surya Thati");
+    expect(cleanedStray).toContain("Alex Morgan");
   });
 
   test("humanizeText resolves [Hiring Team / Recruiter] and company placeholders cleanly", () => {
@@ -583,13 +583,13 @@ I saw the opening at [Company] and wanted to connect directly.
 Sincerely,
 [Candidate Name]`;
 
-    const resolved = aiService.humanizeText(rawWithPlaceholders, { company: "bcn group", candidateName: "Ajith Surya Thati" });
+    const resolved = aiService.humanizeText(rawWithPlaceholders, { company: "Northstar Systems", candidateName: "Alex Morgan" });
     expect(resolved).not.toContain("[Hiring Team / Recruiter]");
     expect(resolved).not.toContain("[Company]");
     expect(resolved).not.toContain("[Candidate Name]");
     expect(resolved).toContain("Dear Hiring Team,");
-    expect(resolved).toContain("bcn group");
-    expect(resolved).toContain("Ajith Surya Thati");
+    expect(resolved).toContain("Northstar Systems");
+    expect(resolved).toContain("Alex Morgan");
   });
 
   test("Universal multi-profession adaptability: Healthcare profile produces domain-authentic materials without DevOps leakage", async () => {
@@ -713,24 +713,24 @@ Sincerely,
   test("cleanEducationItem separates combined degree and university, stripping prefixes and trailing dates", () => {
     // Malformed input from resume parser / raw profile import
     const rawEducation = {
-      degree: "Bachelor of Technology (B.Tech) Jawaharlal Nehru Technological University Hyderabad (JNTUH)",
-      institution: "Bachelor’s Degree: Bachelor of Technology (B.Tech) Jawaharlal Nehru Technological University Hyderabad (JNTUH) 2014 - 2018",
-      startDate: "2014",
-      endDate: "2018",
+      degree: "Bachelor of Engineering (B.Eng.) Westbridge Institute of Technology",
+      institution: "Bachelor’s Degree: Bachelor of Engineering (B.Eng.) Westbridge Institute of Technology 2018 - 2022",
+      startDate: "2018",
+      endDate: "2022",
       details: ""
     };
 
     const cleaned = cleanEducationItem(rawEducation);
 
     // Degree and institution are cleanly separated
-    expect(cleaned.degree).toBe("Bachelor of Technology (B.Tech)");
-    expect(cleaned.institution).toBe("Jawaharlal Nehru Technological University Hyderabad (JNTUH)");
-    expect(cleaned.dates).toBe("2014 -- 2018");
+    expect(cleaned.degree).toBe("Bachelor of Engineering (B.Eng.)");
+    expect(cleaned.institution).toBe("Westbridge Institute of Technology");
+    expect(cleaned.dates).toBe("2018 - 2022");
 
     // Strictly verify no prefixes like "Bachelor's Degree:" remain
     expect(cleaned.institution).not.toContain("Bachelor’s Degree:");
-    expect(cleaned.institution).not.toContain("2014 - 2018");
-    expect(cleaned.degree).not.toContain("Jawaharlal Nehru Technological University");
+    expect(cleaned.institution).not.toContain("2018 - 2022");
+    expect(cleaned.degree).not.toContain("Westbridge Institute of Technology");
   });
 
   test("formatSummary normalizes bulleted summary into a single cohesive paragraph", () => {
@@ -747,35 +747,35 @@ Sincerely,
   });
 
   test("isProfileOwnerOfFile strictly prevents cross-profile CV and cover letter leakage", () => {
-    const profileAjith = {
-      id: "ajith-surya-thati",
-      name: "Ajith Surya Thati",
+    const profileAlex = {
+      id: "alex-morgan",
+      name: "Alex Morgan",
       tracker: {}
     } as any;
 
-    const profileManju = {
-      id: "manjubhargavi-cherupally-dynamics",
-      name: "Manjubhargavi Cherupally",
+    const profileTaylor = {
+      id: "taylor-singh",
+      name: "Taylor Singh",
       tracker: {}
     } as any;
 
-    const allProfiles = [profileAjith, profileManju];
+    const allProfiles = [profileAlex, profileTaylor];
 
-    const ajithCv = "cv/main_ajith_surya_thati_opencast_software_senior_devops_engineer.tex";
-    const ajithCover = "cover_letters/cover_ajith_surya_thati_opencast_software_senior_devops_engineer.tex";
-    const manjuCv = "cv/main_manjubhargavi_cherupally_srg_dynamics_365_developer.tex";
+    const alexCv = "cv/main_alex_morgan_northstar_platform_engineer.tex";
+    const alexCover = "cover_letters/cover_alex_morgan_northstar_platform_engineer.tex";
+    const taylorCv = "cv/main_taylor_singh_srg_dynamics_365_developer.tex";
 
-    // Ajith owns his CV
-    expect(isProfileOwnerOfFile(ajithCv, profileAjith, allProfiles)).toBe(true);
-    expect(isProfileOwnerOfFile(ajithCover, profileAjith, allProfiles)).toBe(true);
+    // Alex owns his CV
+    expect(isProfileOwnerOfFile(alexCv, profileAlex, allProfiles)).toBe(true);
+    expect(isProfileOwnerOfFile(alexCover, profileAlex, allProfiles)).toBe(true);
 
-    // Manju must NEVER be assigned Ajith's CV
-    expect(isProfileOwnerOfFile(ajithCv, profileManju, allProfiles)).toBe(false);
-    expect(isProfileOwnerOfFile(ajithCover, profileManju, allProfiles)).toBe(false);
+    // Taylor must NEVER be assigned Alex's CV
+    expect(isProfileOwnerOfFile(alexCv, profileTaylor, allProfiles)).toBe(false);
+    expect(isProfileOwnerOfFile(alexCover, profileTaylor, allProfiles)).toBe(false);
 
-    // Manju owns her CV
-    expect(isProfileOwnerOfFile(manjuCv, profileManju, allProfiles)).toBe(true);
-    expect(isProfileOwnerOfFile(manjuCv, profileAjith, allProfiles)).toBe(false);
+    // Taylor owns her CV
+    expect(isProfileOwnerOfFile(taylorCv, profileTaylor, allProfiles)).toBe(true);
+    expect(isProfileOwnerOfFile(taylorCv, profileAlex, allProfiles)).toBe(false);
   });
 
   test("wrapParagraphsInCoverLatex strips rogue fontspec/Calibri and compiles cleanly with tectonic", () => {
@@ -895,28 +895,28 @@ Taylor Reed
   test("Custom AI instructions strictly omit versions, simplify EKS upgrades to hands-on, and add operational ownership", async () => {
     const aiService = new AIService({ provider: "builtin" } as any, "/tmp");
     const candidateProfile: any = {
-      name: "Jordan North",
+      name: "Riley Example",
       headline: "DevOps Engineer / Platform Engineer",
-      summary: "DevOps and Platform Engineer based in Hartlepool with over eight years of experience running production cloud systems on AWS and Kubernetes. Currently managing multi-cluster EKS infrastructure, CI/CD pipelines, and on-call reliability. Deep background in in-place Kubernetes version upgrades (v1.26 to v1.31), Terraform and AWS CDK infrastructure, container builds, and database networking.",
-      location: "Hartlepool, UK",
-      email: "jordan@example.com",
+      summary: "Platform engineer experienced with AWS EKS, managing multi-cluster environments and running production cloud systems. Work includes in-place Kubernetes version upgrades, infrastructure automation, container builds, and service networking.",
+      location: "Leeds, UK",
+      email: "riley@example.com",
       phone: "+44 7000 123456",
       experience: [
         {
-          company: "Enterprise Cloud Systems",
-          role: "Platform / DevOps Engineer",
-          location: "Leeds, UK (Hybrid)",
-          startDate: "June 2023",
+          company: "Northstar Cloud",
+          role: "Platform Engineer",
+          location: "Leeds, UK",
+          startDate: "May 2020",
           endDate: "Present",
           bullets: [
-            "Maintained and supported multi-cluster AWS EKS infrastructure and CI/CD pipelines (Jenkins, GoCD, Concourse, GitHub Actions).",
-            "Upgraded production EKS clusters in place across five minor versions, from 1.26 to 1.31. Verified VPC CNI, CoreDNS, kube-proxy, EBS CSI, and Cluster Autoscaler compatibility on each release with no downtime.",
-            "Handled out-of-hours on-call rotations on PagerDuty for platform and application incidents."
+            "Maintained and supported AWS EKS services and CI/CD workflows using Jenkins and GitHub Actions.",
+            "Supported production EKS cluster upgrades across version releases and verified networking, DNS, storage, and autoscaling components.",
+            "Handled on-call support for platform and application incidents."
           ]
         }
       ],
       skills: {
-        cloud: ["AWS", "Kubernetes (EKS v1.26 to v1.31)"],
+        cloud: ["AWS", "Kubernetes (EKS v1.25 to v1.29)"],
         iac: ["Terraform", "AWS CDK"],
         cicd: ["Jenkins", "GitHub Actions"]
       }
@@ -930,14 +930,14 @@ Taylor Reed
       fullJd: "Byteful is looking for an Infrastructure DevOps Engineer with AWS, EKS, and Terraform experience."
     };
 
-    const userInstructions = "please dont over explain about eks upgrade and mention of versions , just say, have good experience in hands-on in eks upgrade, also add key words of ownership";
+    const userInstructions = "Don't over explain EKS upgrades or include version numbers; emphasize hands-on experience and operational ownership.";
 
     const cvTex = await aiService.generateTailoredCV(candidateProfile, targetJob, "en", true, userInstructions);
 
     // 1. Must NOT contain version numbers
-    expect(cvTex).not.toContain("v1.26 to v1.31");
-    expect(cvTex).not.toContain("1.26 to 1.31");
-    expect(cvTex).not.toContain("(v1.26");
+    expect(cvTex).not.toContain("v1.25 to v1.29");
+    expect(cvTex).not.toContain("1.25 to 1.29");
+    expect(cvTex).not.toContain("(v1.25");
 
     // 2. Must contain hands-on EKS upgrade phrasing
     expect(cvTex.toLowerCase()).toContain("hands-on");
@@ -947,16 +947,16 @@ Taylor Reed
     expect(cvTex.toLowerCase()).toContain("ownership");
 
     // 4. Must not crash with ReferenceError
-    expect(cvTex).toContain("Jordan North");
+    expect(cvTex).toContain("Riley Example");
     expect(cvTex).toContain("\\section{Summary}");
     expect(cvTex).toContain("\\section{Work Experience}");
 
     // 5. Check cover letter respects instructions as well
     const coverTex = await aiService.generateTailoredCoverLetter(candidateProfile, targetJob, "en", true, userInstructions);
-    expect(coverTex).not.toContain("v1.26 to v1.31");
-    expect(coverTex).not.toContain("1.26 to 1.31");
+    expect(coverTex).not.toContain("v1.25 to v1.29");
+    expect(coverTex).not.toContain("1.25 to 1.29");
     expect(coverTex).toContain("Byteful");
-    expect(coverTex).toContain("Jordan North");
+    expect(coverTex).toContain("Riley Example");
   });
 
   test("Cover Letter template unifies typography to Computer Modern Roman and hairline rule", () => {
@@ -1018,7 +1018,7 @@ Taylor Reed
       "\\documentclass[10pt,a4paper]{article}",
       "\\begin{document}",
       "\\textbf{Taylor Reed}",
-      "Summary: Platform engineer managing multi-cluster EKS infrastructure v1.26 to v1.31.",
+      "Summary: Platform engineer managing multi-cluster EKS infrastructure v1.25 to v1.29.",
       "\\end{document}"
     ].join("\n");
 
@@ -1029,10 +1029,10 @@ Taylor Reed
 
       // 2. User edits raw LaTeX to remove version numbers and adjust wording
       const editedLatex = initialLatex.replace(
-        "v1.26 to v1.31",
+        "v1.25 to v1.29",
         "with hands-on ownership of production cluster upgrades"
       );
-      expect(editedLatex).not.toContain("v1.26 to v1.31");
+      expect(editedLatex).not.toContain("v1.25 to v1.29");
       expect(editedLatex).toContain("with hands-on ownership of production cluster upgrades");
 
       writeFileSync(fullTestPath, editedLatex, "utf-8");
@@ -1051,7 +1051,7 @@ Taylor Reed
   test("applyUserInstructionsToCoverLetter dynamically curates cover letter according to user instructions", () => {
     const rawParagraphs = [
       "I am writing to apply for the Platform Engineer position at Acme Corp. My background aligns directly with your team focus.",
-      "At previous roles, I have maintained and supported multi-cluster Kubernetes infrastructure across EKS and AKS, and I have handled complex infrastructure upgrades in production (v1.26 to v1.31) without downtime. Earlier, I worked on mobile and desktop apps.",
+      "At previous roles, I have maintained and supported multi-cluster Kubernetes infrastructure across EKS and AKS, and I have handled complex infrastructure upgrades in production (v1.25 to v1.29) without downtime. Earlier, I worked on mobile and desktop apps.",
       "In my daily engineering work, I keep architectures simple and practical.",
       "I would welcome the opportunity to discuss how my background can support your growth."
     ];
@@ -1060,7 +1060,7 @@ Taylor Reed
     const tailored = applyUserInstructionsToCoverLetter(rawParagraphs, instructions);
 
     // 1. Version numbers omitted
-    expect(tailored[1]).not.toContain("v1.26 to v1.31");
+    expect(tailored[1]).not.toContain("v1.25 to v1.29");
 
     // 2. EKS upgrade phrasing tailored
     expect(tailored[1].toLowerCase()).toContain("hands-on");

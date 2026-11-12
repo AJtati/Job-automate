@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { analyzeApplication } from "../application_engine";
 import { parseResumeDeterministically } from "../resume_parser";
-import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole, header } from "../resume_engine";
+import { createLatexBackbone, renderGroundedCoverLetter, renderTailoredResume, cleanJobTitle, getDisplayRole, header, upgradeLegacyAtsBackbone } from "../resume_engine";
 import type { CandidateProfile } from "../profiles_manager";
+import { validateATSResumeText } from "../resume_pdf_validation";
 import { AIService } from "../ai_service";
 
 const latex = String.raw`\textbf{\Huge Jordan Patel} \\
@@ -61,7 +62,52 @@ describe("resume backbone pipeline", () => {
     expect(output).toContain("\\pdfgentounicode=1");
     expect(output).toContain("Northstar");
     expect(output).toContain("Cut deployment recovery time");
+    expect(output).toContain("2021 - Present");
+    expect(output).not.toContain("2021 -- Present");
     expect(output).not.toContain("%%WORK_EXPERIENCE%%");
+  });
+
+  test("upgrades only an unchanged legacy stock backbone", () => {
+    const current = createLatexBackbone();
+    const legacy = current
+      .replace(/\\usepackage\{iftex\}\n\\ifXeTeX[\s\S]*?\\fi\\fi\n(?=\\ifx\\pdfgentounicode)/, "")
+      .replace("\\small{%%PROFILE_SUMMARY%%}", "%%PROFILE_SUMMARY%%");
+
+    expect(upgradeLegacyAtsBackbone(legacy)).toBe(current);
+    const customized = legacy.replace("\\addtolength{\\textheight}{1.1in}", "\\addtolength{\\textheight}{1.0in}");
+    expect(upgradeLegacyAtsBackbone(customized)).toBe(customized);
+  });
+
+  test("accepts extractable resume text and warns on split skills and Unicode date dashes", () => {
+    const profile = {
+      id: "jordan",
+      name: "Jordan Patel",
+      headline: "Platform Engineer",
+      email: "jordan@example.com",
+      phone: "",
+      location: "London",
+      postcode: "",
+      linkedin: "",
+      github: "",
+      visaSponsorshipRequired: false,
+      targetRoles: ["Platform Engineer"],
+      targetLocations: ["London"],
+      preferredRadiusMiles: 30,
+      minSalary: 0,
+      skills: { cloud: ["AWS"], devops: ["Kubernetes", "Terraform"] },
+      experience: [],
+      education: [],
+      certifications: [],
+    } as CandidateProfile;
+    const source = String.raw`Jordan Patel jordan@example.com AWS Kubernetes Terraform`;
+    const readable = "Jordan Patel jordan@example.com AWS Kubernetes Terraform. Built and maintained production platform services from 2021 - Present.";
+    expect(validateATSResumeText(readable, source, profile).status).toBe("passed");
+
+    const split = "Jordan Patel jordan@example.com A WS Kubernetes Terraform. Built production platform services from 2021 – Present.";
+    const result = validateATSResumeText(split, source, profile);
+    expect(result.status).toBe("warning");
+    expect(result.warnings.join(" ")).toContain("AWS");
+    expect(result.warnings.join(" ")).toContain("non-ASCII dash");
   });
 
   test("keeps LaTeX paragraph commands executable in grounded cover letters", () => {
@@ -118,7 +164,7 @@ describe("resume backbone pipeline", () => {
     expect(resumeLatex).toContain("Senior Dynamics 365 Developer");
     expect(resumeLatex).toContain("Microsoft Dynamics 365");
     expect(resumeLatex).toContain("Enterprise Solutions");
-    expect(resumeLatex).toContain("2021 -- Present");
+    expect(resumeLatex).toContain("2021 - Present");
     expect(resumeLatex).toContain("\\resumeSubheading");
     expect(resumeLatex).toContain("\\resumeItem{Architected and delivered scalable technical solutions");
 
