@@ -6,20 +6,45 @@ DIST_DIR="$REPO_DIR/dist"
 APP_NAME="AI Job Search Studio"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 DMG_PATH="$DIST_DIR/AI-Job-Search-Studio.dmg"
+NEW_DMG="$DIST_DIR/AI-Job-Search-Studio.new.dmg"
 STAGING_DIR="$DIST_DIR/dmg_staging"
-HOST_ARCH="$(uname -m)"
-if [ "$HOST_ARCH" = "x86_64" ]; then
-    SWIFT_TARGET="x86_64-apple-macosx12.0"
-else
-    SWIFT_TARGET="arm64-apple-macosx12.0"
-fi
+PREVIOUS_APP="$DIST_DIR/.AI Job Search Studio.previous.app"
+PREVIOUS_DMG="$DIST_DIR/.AI-Job-Search-Studio.previous.dmg"
+BUN_VERSION="1.3.10"
+TECTONIC_VERSION="0.17.0"
+MACOS_MIN_VERSION="13.0"
+BUILD_SUCCEEDED=0
 
 echo "=========================================================="
 echo "🍏 Building Native macOS Cocoa .app & DMG for AI Job Search"
 echo "=========================================================="
 
-rm -rf "$DIST_DIR"
-mkdir -p "$DIST_DIR" "$STAGING_DIR"
+cleanup_build() {
+    local status="$?"
+    set +e
+    if [ "$BUILD_SUCCEEDED" -eq 1 ]; then
+        rm -rf "$PREVIOUS_APP" "$PREVIOUS_DMG"
+    else
+        rm -rf "$APP_BUNDLE" "$NEW_DMG" "$DIST_DIR/dmg_staging"
+        if [ -d "$PREVIOUS_APP" ]; then mv "$PREVIOUS_APP" "$APP_BUNDLE"; fi
+        if [ -f "$PREVIOUS_DMG" ]; then mv "$PREVIOUS_DMG" "$DMG_PATH"; fi
+    fi
+    exit "$status"
+}
+trap cleanup_build EXIT
+
+mkdir -p "$DIST_DIR"
+rm -rf "$STAGING_DIR" "$DIST_DIR/AppIcon.iconset" "$DIST_DIR/runtime-downloads"
+rm -f "$NEW_DMG" "$DIST_DIR/temp_rw.dmg" "$DIST_DIR/generate_icon" "$DIST_DIR/generate_icon.swift" \
+    "$DIST_DIR/icon_1024.png" "$DIST_DIR/generate_dmg_background" "$DIST_DIR/dmg_background.tiff" "$DIST_DIR/dmg_background.png"
+if [ -e "$PREVIOUS_APP" ] || [ -e "$PREVIOUS_DMG" ]; then
+    echo "A previous interrupted build needs recovery before another DMG build." >&2
+    exit 1
+fi
+if [ -d "$APP_BUNDLE" ]; then
+    mv "$APP_BUNDLE" "$PREVIOUS_APP"
+fi
+mkdir -p "$STAGING_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
@@ -50,7 +75,7 @@ cat <<EOF > "$APP_BUNDLE/Contents/Info.plist"
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
-    <string>12.0</string>
+    <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAppTransportSecurity</key>
@@ -66,9 +91,13 @@ echo "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
 # 2. Compile native Swift Cocoa binary with WebKit and real Dock integration
 echo "Compiling native Swift binary..."
-swiftc -target "$SWIFT_TARGET" -O -framework Cocoa -framework WebKit \
-    "$REPO_DIR/native_app/main.swift" \
-    -o "$APP_BUNDLE/Contents/MacOS/AI Job Search Studio"
+swiftc -target "arm64-apple-macosx$MACOS_MIN_VERSION" -O -framework Cocoa -framework WebKit \
+    "$REPO_DIR/native_app/main.swift" -o "$DIST_DIR/AI Job Search Studio.arm64"
+swiftc -target "x86_64-apple-macosx$MACOS_MIN_VERSION" -O -framework Cocoa -framework WebKit \
+    "$REPO_DIR/native_app/main.swift" -o "$DIST_DIR/AI Job Search Studio.x86_64"
+lipo -create "$DIST_DIR/AI Job Search Studio.arm64" "$DIST_DIR/AI Job Search Studio.x86_64" \
+    -output "$APP_BUNDLE/Contents/MacOS/AI Job Search Studio"
+rm -f "$DIST_DIR/AI Job Search Studio.arm64" "$DIST_DIR/AI Job Search Studio.x86_64"
 
 chmod +x "$APP_BUNDLE/Contents/MacOS/AI Job Search Studio"
 
@@ -117,7 +146,7 @@ if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
 }
 SWIFTEOF
 
-swiftc -target "$SWIFT_TARGET" -framework Cocoa "$DIST_DIR/generate_icon.swift" -o "$DIST_DIR/generate_icon"
+swiftc -O -framework Cocoa "$DIST_DIR/generate_icon.swift" -o "$DIST_DIR/generate_icon"
 (cd "$REPO_DIR" && "$DIST_DIR/generate_icon")
 rm "$DIST_DIR/generate_icon"
 rm "$DIST_DIR/generate_icon.swift"
@@ -140,9 +169,92 @@ fi
 
 # 3.5 Bundle web app code and assets into Resources for standalone execution
 echo "Bundling web app resources into .app bundle..."
-cp -R "$REPO_DIR/app" "$APP_BUNDLE/Contents/Resources/"
-rm -rf "$APP_BUNDLE/Contents/Resources/app/tests"
-cp "$REPO_DIR/package.json" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
+APP_RESOURCES="$APP_BUNDLE/Contents/Resources"
+BUN_HOST="$(command -v bun 2>/dev/null || true)"
+if [ -z "$BUN_HOST" ] || [ ! -x "$BUN_HOST" ]; then
+    echo "Bun is required on the build machine to prepare the packaged app." >&2
+    exit 1
+fi
+(
+    cd "$REPO_DIR"
+    "$BUN_HOST" install --frozen-lockfile
+)
+
+download_verified() {
+    local url="$1"
+    local path="$2"
+    local expected="$3"
+    curl -fsSL --retry 3 "$url" -o "$path"
+    local actual
+    actual="$(shasum -a 256 "$path" | awk '{print $1}')"
+    if [ "$actual" != "$expected" ]; then
+        rm -f "$path"
+        echo "SHA-256 verification failed for $path" >&2
+        exit 1
+    fi
+}
+
+mkdir -p "$DIST_DIR/runtime-downloads" "$APP_RESOURCES/bin" "$APP_RESOURCES/runtime"
+BUN_ARM_ZIP="$DIST_DIR/runtime-downloads/bun-darwin-aarch64.zip"
+BUN_X64_ZIP="$DIST_DIR/runtime-downloads/bun-darwin-x64.zip"
+download_verified \
+    "https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION/bun-darwin-aarch64.zip" \
+    "$BUN_ARM_ZIP" \
+    "82034e87c9d9b4398ea619aee2eed5d2a68c8157e9a6ae2d1052d84d533ccd8d"
+download_verified \
+    "https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION/bun-darwin-x64.zip" \
+    "$BUN_X64_ZIP" \
+    "c1d90bf6140f20e572c473065dc6b37a4b036349b5e9e4133779cc642ad94323"
+
+BUN_ARM_MEMBER="bun-darwin-aarch64/bun"
+BUN_X64_MEMBER="bun-darwin-x64/bun"
+if ! unzip -Z1 "$BUN_ARM_ZIP" | grep -Fxq "$BUN_ARM_MEMBER" || ! unzip -Z1 "$BUN_X64_ZIP" | grep -Fxq "$BUN_X64_MEMBER"; then
+    echo "A Bun release archive did not contain the expected runtime." >&2
+    exit 1
+fi
+unzip -p "$BUN_ARM_ZIP" "$BUN_ARM_MEMBER" > "$DIST_DIR/runtime-downloads/bun-arm64"
+unzip -p "$BUN_X64_ZIP" "$BUN_X64_MEMBER" > "$DIST_DIR/runtime-downloads/bun-x64"
+lipo -create "$DIST_DIR/runtime-downloads/bun-arm64" "$DIST_DIR/runtime-downloads/bun-x64" -output "$APP_RESOURCES/bin/bun"
+chmod +x "$APP_RESOURCES/bin/bun"
+
+TECTONIC_ARM_ARCHIVE="$DIST_DIR/runtime-downloads/tectonic-arm64.tar.gz"
+TECTONIC_X64_ARCHIVE="$DIST_DIR/runtime-downloads/tectonic-x64.tar.gz"
+download_verified \
+    "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40$TECTONIC_VERSION/tectonic-$TECTONIC_VERSION-aarch64-apple-darwin.tar.gz" \
+    "$TECTONIC_ARM_ARCHIVE" \
+    "a3f1cac7c5678f01661a92212f58480ae3b0634115d880dbc59e2953ded45667"
+download_verified \
+    "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40$TECTONIC_VERSION/tectonic-$TECTONIC_VERSION-x86_64-apple-darwin.tar.gz" \
+    "$TECTONIC_X64_ARCHIVE" \
+    "7c90ef5b6ddb1eb1937e4337add5237b79338e4b9676459fa91187d24d6cdf80"
+mkdir -p "$DIST_DIR/runtime-downloads/tectonic-arm64" "$DIST_DIR/runtime-downloads/tectonic-x64"
+tar -xzf "$TECTONIC_ARM_ARCHIVE" -C "$DIST_DIR/runtime-downloads/tectonic-arm64"
+tar -xzf "$TECTONIC_X64_ARCHIVE" -C "$DIST_DIR/runtime-downloads/tectonic-x64"
+TECTONIC_ARM_BIN="$(find "$DIST_DIR/runtime-downloads/tectonic-arm64" -type f -name tectonic -print -quit)"
+TECTONIC_X64_BIN="$(find "$DIST_DIR/runtime-downloads/tectonic-x64" -type f -name tectonic -print -quit)"
+if [ -z "$TECTONIC_ARM_BIN" ] || [ -z "$TECTONIC_X64_BIN" ]; then
+    echo "A Tectonic release archive did not contain the expected executable." >&2
+    exit 1
+fi
+lipo -create "$TECTONIC_ARM_BIN" "$TECTONIC_X64_BIN" -output "$APP_RESOURCES/bin/tectonic"
+chmod +x "$APP_RESOURCES/bin/tectonic"
+
+ARCHS="$(lipo -archs "$APP_RESOURCES/bin/bun")"
+if [[ "$ARCHS" != *arm64* || "$ARCHS" != *x86_64* ]]; then
+    echo "The packaged Bun runtime is not universal: $ARCHS" >&2
+    exit 1
+fi
+ARCHS="$(lipo -archs "$APP_RESOURCES/bin/tectonic")"
+if [[ "$ARCHS" != *arm64* || "$ARCHS" != *x86_64* ]]; then
+    echo "The packaged Tectonic runtime is not universal: $ARCHS" >&2
+    exit 1
+fi
+
+cp -R "$REPO_DIR/app" "$APP_RESOURCES/"
+rm -rf "$APP_RESOURCES/app/tests"
+cp "$REPO_DIR/package.json" "$REPO_DIR/bun.lock" "$APP_RESOURCES/"
+mkdir -p "$APP_RESOURCES/node_modules"
+cp -R "$REPO_DIR/node_modules/pdfjs-dist" "$APP_RESOURCES/node_modules/"
 
 # Bundle the exact zero-dependency scraper sources used by the server. Do not
 # package node_modules or any local candidate/job data.
@@ -157,55 +269,28 @@ for SKILL_DIR in "$REPO_DIR"/.agents/skills/*; do
 done
 
 # Bundle clean template data and public sponsor register without any personal candidate data
-mkdir -p "$APP_BUNDLE/Contents/Resources/data"
-cp "$REPO_DIR/data/profiles.template.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
-cp "$REPO_DIR/data/sponsor_register.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
-cp "$REPO_DIR/data/new_sponsors.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
-cp "$REPO_DIR/data/taxonomy_knowledge.json" "$APP_BUNDLE/Contents/Resources/data/" 2>/dev/null || true
+mkdir -p "$APP_RESOURCES/data"
+cp "$REPO_DIR/data/profiles.template.json" "$APP_RESOURCES/data/" 2>/dev/null || true
+cp "$REPO_DIR/data/sponsor_register.json" "$APP_RESOURCES/data/" 2>/dev/null || true
+cp "$REPO_DIR/data/new_sponsors.json" "$APP_RESOURCES/data/" 2>/dev/null || true
+cp "$REPO_DIR/data/taxonomy_knowledge.json" "$APP_RESOURCES/data/" 2>/dev/null || true
 
 # Bundle lightweight tools needed by the app at runtime
-mkdir -p "$APP_BUNDLE/Contents/Resources/tools"
-cp "$REPO_DIR/tools/scrape_jobspy.py" "$APP_BUNDLE/Contents/Resources/tools/" 2>/dev/null || true
+mkdir -p "$APP_RESOURCES/tools"
+cp "$REPO_DIR/tools/scrape_jobspy.py" "$APP_RESOURCES/tools/" 2>/dev/null || true
 
-# A packaged runtime makes the installed app independent of the user's PATH.
-BUN_PATH="$(command -v bun 2>/dev/null || true)"
-if [ -z "$BUN_PATH" ] || [ ! -x "$BUN_PATH" ]; then
-    if [ -x "$HOME/.bun/bin/bun" ]; then
-        BUN_PATH="$HOME/.bun/bin/bun"
-    elif [ -x "/opt/homebrew/bin/bun" ]; then
-        BUN_PATH="/opt/homebrew/bin/bun"
-    elif [ -x "/usr/local/bin/bun" ]; then
-        BUN_PATH="/usr/local/bin/bun"
-    fi
-fi
-mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
-cp "$BUN_PATH" "$APP_BUNDLE/Contents/Resources/bin/bun"
-chmod +x "$APP_BUNDLE/Contents/Resources/bin/bun"
-
-# Bundle standalone Tectonic LaTeX engine so any user gets zero-dependency PDF compiling
-TECTONIC_BIN="$REPO_DIR/bin/tectonic"
-if [ ! -f "$TECTONIC_BIN" ]; then
-    echo "Downloading standalone Tectonic for macOS ($HOST_ARCH)..."
-    mkdir -p "$REPO_DIR/bin"
-    if [ "$HOST_ARCH" = "x86_64" ]; then
-        curl -sL "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/tectonic-0.17.0-x86_64-apple-darwin.tar.gz" | tar -xz -C "$REPO_DIR/bin"
-    else
-        curl -sL "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/tectonic-0.17.0-aarch64-apple-darwin.tar.gz" | tar -xz -C "$REPO_DIR/bin"
-    fi
-    chmod +x "$TECTONIC_BIN"
-fi
-cp "$TECTONIC_BIN" "$APP_BUNDLE/Contents/Resources/bin/tectonic"
-chmod +x "$APP_BUNDLE/Contents/Resources/bin/tectonic"
+"$BUN_HOST" run "$REPO_DIR/tools/prepare_tectonic_cache.ts" \
+    "$APP_RESOURCES/bin/tectonic" \
+    "$APP_RESOURCES/runtime/tectonic-cache/bundles"
 
 # 4. Generate Apple-designed retina DMG background (Multi-Resolution HiDPI TIFF)
 echo "Generating Apple-designed retina DMG background..."
-swiftc -target "$SWIFT_TARGET" -framework Cocoa "$REPO_DIR/tools/generate_dmg_background.swift" -o "$DIST_DIR/generate_dmg_background"
+swiftc -O -framework Cocoa "$REPO_DIR/tools/generate_dmg_background.swift" -o "$DIST_DIR/generate_dmg_background"
 "$DIST_DIR/generate_dmg_background" "$DIST_DIR/dmg_background.tiff"
 rm -f "$DIST_DIR/generate_dmg_background"
 
 # 5. Build Styled macOS DMG Package using Native Finder AppleScript
 echo "Creating styled macOS DMG installer..."
-rm -f "$DMG_PATH"
 TMP_DMG="$DIST_DIR/temp_rw.dmg"
 rm -f "$TMP_DMG"
 hdiutil detach "/Volumes/$APP_NAME" 2>/dev/null || true
@@ -266,7 +351,13 @@ echo "Detaching writable disk image..."
 hdiutil detach "$DEV" || hdiutil detach "$DEV" -force
 
 echo "Converting to final compressed DMG..."
-hdiutil convert "$TMP_DMG" -format UDZO -ov -o "$DMG_PATH"
+hdiutil convert "$TMP_DMG" -format UDZO -ov -o "$NEW_DMG"
+hdiutil verify "$NEW_DMG"
+if [ -f "$DMG_PATH" ]; then
+    mv "$DMG_PATH" "$PREVIOUS_DMG"
+fi
+mv "$NEW_DMG" "$DMG_PATH"
+BUILD_SUCCEEDED=1
 rm -f "$TMP_DMG" "$DIST_DIR"/dmg_background*
 
 echo "=========================================================="

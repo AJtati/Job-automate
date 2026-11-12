@@ -1,5 +1,5 @@
 import { serve } from "bun";
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, copyFileSync, accessSync, constants } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, copyFileSync, cpSync, accessSync, constants } from "fs";
 import { join, resolve, relative, basename, dirname, isAbsolute } from "path";
 import { tmpdir, homedir } from "os";
 import { spawnSync } from "child_process";
@@ -9,6 +9,7 @@ import { AIService } from "./ai_service";
 import { analyzeApplication, analyzeTailoredResume, clearAnalysisCache } from "./application_engine";
 import { createLatexBackbone, upgradeLegacyAtsBackbone, LANGUAGE_PACKS, detectLanguageDeterministically, cleanJobTitle, type SupportedLanguage } from "./resume_engine";
 import { validateATSResumeText, type ATSValidationResult } from "./resume_pdf_validation";
+import { extractPdfText as extractPdfTextBundled } from "./pdf_text_extractor";
 import { parseResumeDeterministically } from "./resume_parser";
 import { taxonomyStore } from "./taxonomy";
 import { SchedulerService, computeNextRun, type ScrapeExecutionResult } from "./scheduler_service";
@@ -46,6 +47,34 @@ mkdirSync(join(ROOT_DIR, "job_scraper"), { recursive: true });
 mkdirSync(join(ROOT_DIR, "cv"), { recursive: true });
 mkdirSync(join(ROOT_DIR, "cover_letters"), { recursive: true });
 mkdirSync(join(ROOT_DIR, "data"), { recursive: true });
+
+function initializeBundledTectonicResources() {
+  if (process.env.TECTONIC_CACHE_DIR) return;
+
+  const cacheRoot = join(ROOT_DIR, ".cache", "TectonicProject.Tectonic");
+  const cacheBundles = join(cacheRoot, "bundles");
+  const bundledBundles = join(APP_ROOT, "runtime", "tectonic-cache", "bundles");
+  const bundledVersionFile = join(APP_ROOT, "runtime", "tectonic-cache", "version.txt");
+  const installedVersionFile = join(cacheRoot, "app-bundled-resources.txt");
+  let bundledVersion = "";
+  let installedVersion = "";
+  try { bundledVersion = readFileSync(bundledVersionFile, "utf-8").trim(); } catch {}
+  try { installedVersion = readFileSync(installedVersionFile, "utf-8").trim(); } catch {}
+
+  if (
+    existsSync(bundledBundles) &&
+    bundledVersion &&
+    (!existsSync(cacheBundles) || bundledVersion !== installedVersion)
+  ) {
+    mkdirSync(dirname(cacheBundles), { recursive: true });
+    cpSync(bundledBundles, cacheBundles, { recursive: true });
+    writeFileSync(installedVersionFile, bundledVersion + "\n");
+  }
+
+  process.env.TECTONIC_CACHE_DIR = cacheRoot;
+}
+
+initializeBundledTectonicResources();
 
 function getRuntimeDiagnostics() {
   const linkedinPath = join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts");
@@ -124,36 +153,6 @@ function openSystemPath(filePath: string, reveal = false) {
   return spawnSync("xdg-open", [reveal ? dirname(filePath) : filePath]);
 }
 
-function extractPdfText(bytes: Uint8Array, fileName: string): string {
-  const workDir = mkdtempSync(join(tmpdir(), "ai-job-search-pdf-"));
-  const input = join(workDir, basename(fileName || "resume.pdf"));
-  writeFileSync(input, bytes);
-  try {
-    // 1. Native macOS PDFKit (works natively on 100% of Macs with zero third-party dependencies)
-    if (process.platform === "darwin") {
-      const swiftCode = `import Foundation; import PDFKit; if CommandLine.arguments.count > 1, let doc = PDFDocument(url: URL(fileURLWithPath: CommandLine.arguments[1])) { for i in 0..<doc.pageCount { if let p = doc.page(at: i), let s = p.string { print(s) } } }`;
-      const swiftRes = spawnSync("swift", ["-e", swiftCode, input], { encoding: "utf-8", timeout: 15000 });
-      if (swiftRes.status === 0 && swiftRes.stdout.trim().length > 30) {
-        return swiftRes.stdout;
-      }
-    }
-
-    // 2. pdftotext (Poppler CLI)
-    const pdftotext = spawnSync("pdftotext", ["-layout", "-enc", "UTF-8", input, "-"], { encoding: "utf-8" });
-    if (pdftotext.status === 0 && pdftotext.stdout.trim()) return pdftotext.stdout;
-
-    // 3. python / python3 with pypdf or pdfminer
-    for (const python of process.platform === "win32" ? ["python", "py"] : ["python3", "python"]) {
-      const script = "import sys; from pypdf import PdfReader; print('\\n'.join((p.extract_text() or '') for p in PdfReader(sys.argv[1]).pages))";
-      const result = spawnSync(python, ["-c", script, input], { encoding: "utf-8" });
-      if (result.status === 0 && result.stdout.trim()) return result.stdout;
-    }
-    throw new Error("PDF text extraction is unavailable. Install pypdf or Poppler pdftotext, then retry.");
-  } finally {
-    rmSync(workDir, { recursive: true, force: true });
-  }
-}
-
 async function readResumeRequest(req: Request): Promise<{ text: string; fileName: string; mediaType: string; previewOnly: boolean; targetProfileId?: string }> {
   const contentType = req.headers.get("content-type") || "";
   if (contentType.includes("multipart/form-data")) {
@@ -166,7 +165,7 @@ async function readResumeRequest(req: Request): Promise<{ text: string; fileName
       const bytes = new Uint8Array(await file.arrayBuffer());
       const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
       return {
-        text: isPdf ? extractPdfText(bytes, file.name) : new TextDecoder("utf-8", { fatal: false }).decode(bytes),
+        text: isPdf ? await extractPdfTextBundled(bytes) : new TextDecoder("utf-8", { fatal: false }).decode(bytes),
         fileName: file.name,
         mediaType: file.type || "text/plain",
         previewOnly,
@@ -3534,11 +3533,12 @@ serve({
         }
 
         // Compiler discovery: Prefer bundled standalone tectonic, then homebrew/system tectonic, then lualatex/xelatex/pdflatex
+        const tectonicExecutable = process.platform === "win32" ? "tectonic.exe" : "tectonic";
         const candidates = [
           { name: "tectonic", paths: [
-              join(APP_ROOT, "bin", "tectonic"),
-              join(dirname(BUN_EXECUTABLE), "tectonic"),
-              join(APP_ROOT, "Contents", "Resources", "bin", "tectonic"),
+              join(APP_ROOT, "bin", tectonicExecutable),
+              join(dirname(BUN_EXECUTABLE), tectonicExecutable),
+              join(APP_ROOT, "Contents", "Resources", "bin", tectonicExecutable),
               "/opt/homebrew/bin/tectonic",
               "/usr/local/bin/tectonic",
               "tectonic"
@@ -3619,7 +3619,7 @@ serve({
           let atsValidation: ATSValidationResult = { status: "not_applicable", warnings: [] };
           if (kind !== "cover") {
             try {
-              const extractedText = extractPdfText(new Uint8Array(readFileSync(pdfPath)), "document.pdf");
+              const extractedText = await extractPdfTextBundled(new Uint8Array(readFileSync(pdfPath)));
               atsValidation = validateATSResumeText(extractedText, latexCode, profilesManager.getActiveProfile());
             } catch (error: any) {
               atsValidation = {

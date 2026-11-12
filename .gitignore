@@ -1,6 +1,7 @@
 # Dependencies
 node_modules
-bun.lock
+**/bun.lock
+!/bun.lock
 .cache/
 bin/
 
