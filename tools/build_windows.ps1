@@ -31,6 +31,7 @@ foreach ($Skill in @("linkedin-search", "freehire-search")) {
 
 New-Item -ItemType Directory -Path (Join-Path $PackageRoot "data") -Force | Out-Null
 Copy-Item (Join-Path $RepoRoot "data\profiles.template.json") (Join-Path $PackageRoot "data") -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $RepoRoot "data\taxonomy_knowledge.json") (Join-Path $PackageRoot "data") -ErrorAction SilentlyContinue
 
 $Launcher = Join-Path $PackageRoot "AI Job Search Studio.cmd"
 @'

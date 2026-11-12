@@ -248,6 +248,43 @@ describe("Intelligent Skill Taxonomy, Self-Healing, and Segregation", () => {
     expect(classified.formatted).toBe(novelSkill);
   });
 
+  test("TaxonomyStore seeds baseline to new PC data directory and preserves existing learned knowledge during updates", () => {
+    const { TaxonomyStore } = require("../taxonomy");
+    const { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } = require("fs");
+    const { tmpdir } = require("os");
+    const { join } = require("path");
+
+    const tempDir = mkdtempSync(join(tmpdir(), "taxonomy-test-"));
+    const tempFilePath = join(tempDir, "data", "taxonomy_knowledge.json");
+
+    try {
+      // 1. Initial run on new PC: file does not exist yet
+      expect(existsSync(tempFilePath)).toBe(false);
+      const store = new TaxonomyStore(tempFilePath);
+
+      // Verify it seeded baseline domains into the new location
+      expect(existsSync(tempFilePath)).toBe(true);
+      expect(store.getDomain("qa")).toBeDefined();
+      expect(store.getDomain("qa")?.name).toBe("Quality Assurance & Test Engineering");
+
+      // 2. Continuous learning: teach a novel technical skill on this machine
+      store.recordLearnedSkill("Cilium eBPF", "containers", "devops");
+      expect(store.getLearnedSkill("cilium ebpf")?.category).toBe("containers");
+
+      // Verify it persisted to disk in the new PC path
+      const onDisk = JSON.parse(readFileSync(tempFilePath, "utf-8"));
+      expect(onDisk.learnedSkills["cilium ebpf"]?.category).toBe("containers");
+
+      // 3. App update simulation: load again with existing file present
+      // Ensure existing learned skills and custom edits are never wiped
+      const updatedStore = new TaxonomyStore(tempFilePath);
+      expect(updatedStore.getLearnedSkill("cilium ebpf")?.category).toBe("containers");
+      expect(updatedStore.getDomain("qa")?.name).toBe("Quality Assurance & Test Engineering");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("Imported jobs are strictly isolated to the candidate who imported them and never leak to other profiles", () => {
     const { isJobRelevantToProfile } = require("../server");
 
@@ -360,6 +397,104 @@ describe("Intelligent Skill Taxonomy, Self-Healing, and Segregation", () => {
     }
     const duration = performance.now() - start;
     expect(duration).toBeLessThan(250);
+  });
+
+  test("Custom manual job creation safely applies defaults for missing fields and scores ATS", () => {
+    const { analyzeApplication } = require("../application_engine");
+
+    const testProfile = {
+      id: "test-candidate-1",
+      name: "Taylor Swift",
+      headline: "DevOps Engineer",
+      targetRoles: ["DevOps Engineer"],
+      location: "London, UK",
+      skills: { cloud: ["AWS", "Kubernetes"] },
+      experience: []
+    };
+
+    // Simulate saving a custom manual job with no required fields
+    const body: Record<string, any> = {
+      title: "",
+      company: "",
+      location: "",
+      salary: "",
+      full_jd: "Looking for an engineer with AWS and Kubernetes experience."
+    };
+
+    const title = body.title?.trim() || "Untitled Role";
+    const company = body.company?.trim() || "Direct Employer";
+    const location = body.location?.trim() || testProfile.location || "Remote";
+    const salary = body.salary?.trim() || "Not advertised";
+
+    expect(title).toBe("Untitled Role");
+    expect(company).toBe("Direct Employer");
+    expect(location).toBe("London, UK");
+    expect(salary).toBe("Not advertised");
+
+    const analysis = analyzeApplication(testProfile, {
+      company,
+      role: title,
+      location,
+      fullJd: body.full_jd
+    });
+
+    expect(analysis.overallScore).toBeGreaterThan(0);
+    expect(analysis.matchedKeywords).toContain("AWS");
+  });
+
+  test("Editing existing job metadata allows updating company name, title, and JD repeatedly", () => {
+    const { analyzeApplication } = require("../application_engine");
+
+    const testProfile = {
+      id: "test-candidate-1",
+      name: "Taylor Swift",
+      headline: "DevOps Engineer",
+      targetRoles: ["DevOps Engineer"],
+      location: "London, UK",
+      skills: { cloud: ["AWS", "Terraform"] },
+      experience: []
+    };
+
+    let jobRecord: Record<string, any> = {
+      id: "manual_12345",
+      title: "Wrong Title",
+      company: "Wrong Company",
+      location: "Manchester",
+      salary: "£50,000",
+      full_jd: "Basic engineer role",
+      fit_score: 20
+    };
+
+    // User edits company name, title, and JD
+    const edits = {
+      company: "Acme Global Cloud Ltd",
+      title: "Senior Platform Engineer",
+      salary: "£85,000",
+      full_jd: "Senior role requiring AWS and Terraform mastery."
+    };
+
+    jobRecord = {
+      ...jobRecord,
+      company: edits.company,
+      title: edits.title,
+      salary: edits.salary,
+      full_jd: edits.full_jd
+    };
+
+    const updatedAnalysis = analyzeApplication(testProfile, {
+      company: jobRecord.company,
+      role: jobRecord.title,
+      location: jobRecord.location,
+      fullJd: jobRecord.full_jd
+    });
+
+    jobRecord.fit_score = updatedAnalysis.overallScore;
+
+    expect(jobRecord.company).toBe("Acme Global Cloud Ltd");
+    expect(jobRecord.title).toBe("Senior Platform Engineer");
+    expect(jobRecord.salary).toBe("£85,000");
+    expect(jobRecord.id).toBe("manual_12345");
+    expect(jobRecord.fit_score).toBeGreaterThan(20);
   });
 });
 

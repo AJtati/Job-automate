@@ -80,11 +80,23 @@ function findContact(rawText: string) {
     visaSponsorshipRequired = true;
   }
 
+  const allUrls = [...cleaned.matchAll(/https?:\/\/[^\s<>"'{}|\\^`)]+/gi)].map(m => m[0]);
+  let portfolioUrl = "";
+  for (const u of allUrls) {
+    if (!/linkedin\.com/i.test(u) && !/^https?:\/\/(?:www\.)?github\.com\/[a-zA-Z0-9_.-]+\/?$/i.test(u)) {
+      if (/github\.io|web\.app|vercel\.app|netlify\.app|portfolio/i.test(u)) {
+        portfolioUrl = u;
+        break;
+      }
+    }
+  }
+
   return {
     email: cleaned.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)?.[0] || "",
     phone: cleaned.match(/(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{2,5}\)?[ .-]?)?\d{3,4}[ .-]?\d{3,4}/)?.[0]?.trim() || "",
     linkedin: cleaned.match(/https?:\/\/(?:www\.)?linkedin\.com\/in\/[a-zA-Z0-9_%.-]+/i)?.[0] || "",
     github: cleaned.match(/https?:\/\/(?:www\.)?github\.com\/[a-zA-Z0-9_.-]+/i)?.[0] || "",
+    portfolio: portfolioUrl,
     location: labelledLocation || contactLocation || "",
     postcode: postcodeMatch ? postcodeMatch[1].toUpperCase() : "",
     visaSponsorshipRequired,

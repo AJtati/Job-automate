@@ -182,6 +182,21 @@ const importJobSpinner = document.getElementById("importJobSpinner");
 const importJobBtnText = document.getElementById("importJobBtnText");
 const importJobStatus = document.getElementById("importJobStatus");
 
+const btnAddManualJob = document.getElementById("btnAddManualJob");
+const btnEditJobMetadata = document.getElementById("btnEditJobMetadata");
+const jobModal = document.getElementById("jobModal");
+const jobModalHeaderTitle = document.getElementById("jobModalHeaderTitle");
+const btnCloseJobModal = document.getElementById("btnCloseJobModal");
+const btnCancelJobModal = document.getElementById("btnCancelJobModal");
+const btnSaveJobModal = document.getElementById("btnSaveJobModal");
+const jobModalId = document.getElementById("jobModalId");
+const jobModalCompany = document.getElementById("jobModalCompany");
+const jobModalTitleInput = document.getElementById("jobModalTitleInput");
+const jobModalLocation = document.getElementById("jobModalLocation");
+const jobModalSalary = document.getElementById("jobModalSalary");
+const jobModalUrl = document.getElementById("jobModalUrl");
+const jobModalDescription = document.getElementById("jobModalDescription");
+
 const aiConfigModal = document.getElementById("aiConfigModal");
 const btnCloseAiModal = document.getElementById("btnCloseAiModal");
 const btnTestAiConnection = document.getElementById("btnTestAiConnection");
@@ -390,6 +405,7 @@ function setupEventListeners() {
     if (e.key === "Escape") {
       if (scheduleModal?.style.display === "flex") closeScheduleModal();
       if (importJobLinkModal?.style.display === "flex") importJobLinkModal.style.display = "none";
+      if (jobModal?.style.display === "flex") closeJobModal();
     }
   });
   importJobLinkModal?.addEventListener("click", (e) => {
@@ -411,6 +427,90 @@ function setupEventListeners() {
   };
   btnCloseImportJobModal?.addEventListener("click", closeImportJobModal);
   btnCancelImportJobModal?.addEventListener("click", closeImportJobModal);
+
+  // Manual Job & Metadata Editing Modal
+  const closeJobModal = () => {
+    if (jobModal) jobModal.style.display = "none";
+  };
+  btnCloseJobModal?.addEventListener("click", closeJobModal);
+  btnCancelJobModal?.addEventListener("click", closeJobModal);
+  jobModal?.addEventListener("click", (e) => {
+    if (e.target === jobModal) closeJobModal();
+  });
+
+  btnAddManualJob?.addEventListener("click", () => {
+    if (jobModalHeaderTitle) jobModalHeaderTitle.textContent = "➕ Add Job Posting";
+    if (jobModalId) jobModalId.value = "";
+    if (jobModalCompany) jobModalCompany.value = "";
+    if (jobModalTitleInput) jobModalTitleInput.value = "";
+    if (jobModalLocation) jobModalLocation.value = activeProfile?.location || "";
+    if (jobModalSalary) jobModalSalary.value = "";
+    if (jobModalUrl) jobModalUrl.value = "";
+    if (jobModalDescription) jobModalDescription.value = "";
+    if (jobModal) jobModal.style.display = "flex";
+    setTimeout(() => jobModalCompany?.focus(), 50);
+  });
+
+  btnEditJobMetadata?.addEventListener("click", () => {
+    if (!selectedJob) {
+      showToast("Select a job opportunity first.");
+      return;
+    }
+    if (jobModalHeaderTitle) jobModalHeaderTitle.textContent = `✏️ Edit Job Details: ${selectedJob.company || selectedJob.title}`;
+    if (jobModalId) jobModalId.value = selectedJob.id || "";
+    if (jobModalCompany) jobModalCompany.value = selectedJob.company || "";
+    if (jobModalTitleInput) jobModalTitleInput.value = selectedJob.title || selectedJob.role || "";
+    if (jobModalLocation) jobModalLocation.value = selectedJob.location || "";
+    if (jobModalSalary) jobModalSalary.value = selectedJob.salary || "";
+    if (jobModalUrl) jobModalUrl.value = selectedJob.url || "";
+    if (jobModalDescription) jobModalDescription.value = selectedJob.full_jd || selectedJob.description || "";
+    if (jobModal) jobModal.style.display = "flex";
+    setTimeout(() => jobModalCompany?.focus(), 50);
+  });
+
+  btnSaveJobModal?.addEventListener("click", async () => {
+    const jobId = jobModalId?.value.trim() || undefined;
+    const company = jobModalCompany?.value.trim();
+    const title = jobModalTitleInput?.value.trim();
+    const location = jobModalLocation?.value.trim();
+    const salary = jobModalSalary?.value.trim();
+    const url = jobModalUrl?.value.trim();
+    const full_jd = jobModalDescription?.value.trim();
+
+    const saveSpinner = document.getElementById("saveJobSpinner");
+    const saveBtnText = document.getElementById("saveJobBtnText");
+
+    if (btnSaveJobModal) btnSaveJobModal.disabled = true;
+    if (saveSpinner) saveSpinner.style.display = "inline-block";
+    if (saveBtnText) saveBtnText.textContent = "Saving...";
+
+    try {
+      const res = await fetch("/api/jobs/save-custom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId, company, title, location, salary, url, full_jd })
+      });
+      const data = await res.json();
+      if (data.success && data.job) {
+        if (activeProfile?.id) delete profileJobsCache[activeProfile.id];
+        closeJobModal();
+        await fetchJobs();
+        renderJobs();
+        const target = allJobs.find(j => j.id === data.job.id) || data.job;
+        selectJob(target);
+        showToast(`💾 Saved: ${target.title} at ${target.company}`);
+      } else {
+        showToast(data.error || "Failed to save job details");
+      }
+    } catch (err) {
+      console.error("Save custom job error:", err);
+      showToast("Network error saving job details");
+    } finally {
+      if (btnSaveJobModal) btnSaveJobModal.disabled = false;
+      if (saveSpinner) saveSpinner.style.display = "none";
+      if (saveBtnText) saveBtnText.textContent = "💾 Save Opportunity";
+    }
+  });
 
   // Custom AI Instructions Modal
   const customInstructionsModal = document.getElementById("customInstructionsModal");
@@ -1055,6 +1155,7 @@ function clearStudioView() {
   studioJobTitle.textContent = "Selecting opportunity...";
   studioCompanyName.textContent = "";
   studioLocation.textContent = "";
+  if (btnEditJobMetadata) btnEditJobMetadata.style.display = "none";
   const atsBadge = document.getElementById("studioAtsBadge");
   if (atsBadge) atsBadge.style.display = "none";
   studioLinkBtn.style.display = "none";
@@ -1413,7 +1514,8 @@ async function handleProfileModalAutofill(file) {
       if (p.postcode) document.getElementById("formPostcode").value = p.postcode;
       if (p.country && document.getElementById("formCountry")) document.getElementById("formCountry").value = p.country;
       if (p.linkedin) document.getElementById("formLinkedin").value = p.linkedin;
-      if (p.github || p.portfolio) document.getElementById("formGithub").value = p.github || p.portfolio;
+      if (p.github) document.getElementById("formGithub").value = p.github;
+      if (p.portfolio && document.getElementById("formPortfolio")) document.getElementById("formPortfolio").value = p.portfolio;
       if (p.preferredRadiusMiles) document.getElementById("formRadius").value = p.preferredRadiusMiles;
       if (typeof p.minSalary === "number") document.getElementById("formMinSalary").value = p.minSalary;
       if (typeof p.visaSponsorshipRequired === "boolean") document.getElementById("formVisaRequired").checked = p.visaSponsorshipRequired;
@@ -1478,6 +1580,7 @@ function openProfileModal(profileToEdit) {
     if (document.getElementById("formCountry")) document.getElementById("formCountry").value = profileToEdit.country || "";
     document.getElementById("formLinkedin").value = profileToEdit.linkedin || "";
     document.getElementById("formGithub").value = profileToEdit.github || "";
+    if (document.getElementById("formPortfolio")) document.getElementById("formPortfolio").value = profileToEdit.portfolio || "";
     document.getElementById("formRadius").value = profileToEdit.preferredRadiusMiles || 70;
     document.getElementById("formMinSalary").value = (profileToEdit.minSalary !== undefined && profileToEdit.minSalary !== null) ? profileToEdit.minSalary : 0;
     document.getElementById("formVisaRequired").checked = profileToEdit.visaSponsorshipRequired;
@@ -1497,12 +1600,14 @@ function openProfileModal(profileToEdit) {
     if (document.getElementById("formHeaderShowEmail")) document.getElementById("formHeaderShowEmail").checked = headerPrefs.showEmail !== false;
     if (document.getElementById("formHeaderShowLinkedin")) document.getElementById("formHeaderShowLinkedin").checked = headerPrefs.showLinkedin !== false;
     if (document.getElementById("formHeaderShowGithub")) document.getElementById("formHeaderShowGithub").checked = headerPrefs.showGithub !== false;
+    if (document.getElementById("formHeaderShowPortfolio")) document.getElementById("formHeaderShowPortfolio").checked = headerPrefs.showPortfolio !== false;
     if (document.getElementById("formHeaderRelocationNote")) document.getElementById("formHeaderRelocationNote").value = headerPrefs.relocationNote || "";
   } else {
     profileModalTitle.textContent = "Create New Candidate Profile";
     profileForm.reset();
     document.getElementById("formProfileId").value = "";
     if (document.getElementById("formCountry")) document.getElementById("formCountry").value = "";
+    if (document.getElementById("formPortfolio")) document.getElementById("formPortfolio").value = "";
     document.getElementById("formRadius").value = "70";
     document.getElementById("formMinSalary").value = "0";
     document.getElementById("formVisaRequired").checked = true;
@@ -1513,6 +1618,7 @@ function openProfileModal(profileToEdit) {
     if (document.getElementById("formHeaderShowEmail")) document.getElementById("formHeaderShowEmail").checked = true;
     if (document.getElementById("formHeaderShowLinkedin")) document.getElementById("formHeaderShowLinkedin").checked = true;
     if (document.getElementById("formHeaderShowGithub")) document.getElementById("formHeaderShowGithub").checked = true;
+    if (document.getElementById("formHeaderShowPortfolio")) document.getElementById("formHeaderShowPortfolio").checked = true;
     if (document.getElementById("formHeaderRelocationNote")) document.getElementById("formHeaderRelocationNote").value = "";
   }
   profileModal.style.display = "flex";
@@ -1530,6 +1636,7 @@ async function handleSaveProfileForm(e) {
   let country = document.getElementById("formCountry") ? document.getElementById("formCountry").value.trim() : "";
   const linkedin = document.getElementById("formLinkedin").value.trim();
   const github = document.getElementById("formGithub").value.trim();
+  const portfolio = document.getElementById("formPortfolio") ? document.getElementById("formPortfolio").value.trim() : "";
   const preferredRadiusMiles = parseInt(document.getElementById("formRadius").value) || 70;
   const rawSalary = document.getElementById("formMinSalary").value.trim();
   const parsedSalary = parseInt(rawSalary, 10);
@@ -1572,6 +1679,7 @@ async function handleSaveProfileForm(e) {
     showEmail: document.getElementById("formHeaderShowEmail") ? document.getElementById("formHeaderShowEmail").checked : true,
     showLinkedin: document.getElementById("formHeaderShowLinkedin") ? document.getElementById("formHeaderShowLinkedin").checked : true,
     showGithub: document.getElementById("formHeaderShowGithub") ? document.getElementById("formHeaderShowGithub").checked : true,
+    showPortfolio: document.getElementById("formHeaderShowPortfolio") ? document.getElementById("formHeaderShowPortfolio").checked : true,
     relocationNote: document.getElementById("formHeaderRelocationNote") ? document.getElementById("formHeaderRelocationNote").value.trim() : "",
   };
 
@@ -1586,6 +1694,7 @@ async function handleSaveProfileForm(e) {
     country: country || undefined,
     linkedin,
     github,
+    portfolio,
     headerPreferences,
     preferredRadiusMiles,
     minSalary,
@@ -2993,6 +3102,7 @@ function selectJob(job) {
   // Update Studio Header
   studioJobTitle.textContent = job.title;
   studioCompanyName.textContent = job.company;
+  if (btnEditJobMetadata) btnEditJobMetadata.style.display = "inline-flex";
   const distanceStr = (job.distance_miles !== undefined && job.distance_miles !== null && !isNaN(Number(job.distance_miles)))
     ? ` (~${job.distance_miles} mi)`
     : "";

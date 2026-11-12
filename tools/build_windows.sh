@@ -30,6 +30,7 @@ done
 
 # Bundle clean template data (no personal candidate details or API keys)
 cp "$REPO_DIR/data/profiles.template.json" "$PACKAGE_ROOT/data/" 2>/dev/null || true
+cp "$REPO_DIR/data/taxonomy_knowledge.json" "$PACKAGE_ROOT/data/" 2>/dev/null || true
 
 # Obtain Windows bun.exe runtime
 BUN_WIN_ZIP="$CACHE_DIR/bun-windows-x64.zip"

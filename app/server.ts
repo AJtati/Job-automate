@@ -2107,7 +2107,9 @@ serve({
     if (url.pathname === "/api/taxonomy/knowledge" && req.method === "GET") {
       return new Response(JSON.stringify({
         success: true,
-        domains: taxonomyStore.getAllDomains()
+        filePath: taxonomyStore.getFilePath(),
+        domains: taxonomyStore.getAllDomains(),
+        learnedSkills: taxonomyStore.getAllLearnedSkills()
       }), {
         headers: { "Content-Type": "application/json" }
       });
@@ -3084,6 +3086,87 @@ serve({
           });
         }
         return new Response(JSON.stringify({ success: false, error: "Job ID not found" }), { status: 404 });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
+      }
+    }
+
+    // API: POST /api/jobs/save-custom (Create new manual job or edit existing job metadata)
+    if (url.pathname === "/api/jobs/save-custom" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const activeProfile = profilesManager.getActiveProfile();
+        const seen = readSeenJobs();
+
+        let jobId = body.jobId || body.id;
+        const isNew = !jobId || !seen[jobId];
+        if (isNew) {
+          jobId = `manual_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        }
+
+        const existing = seen[jobId] || {};
+
+        // No fields are mandatory - safe defaults if blank
+        const title = (body.title !== undefined ? String(body.title).trim() : (existing.title || "Untitled Role")) || (existing.title || "Untitled Role");
+        const company = (body.company !== undefined ? String(body.company).trim() : (existing.company || "Direct Employer")) || (existing.company || "Direct Employer");
+        const location = (body.location !== undefined ? String(body.location).trim() : (existing.location || activeProfile.location || "Remote")) || (existing.location || "Remote");
+        const salary = (body.salary !== undefined ? String(body.salary).trim() : (existing.salary || "Not advertised")) || (existing.salary || "Not advertised");
+        const jobUrl = body.url !== undefined ? String(body.url).trim() : (existing.url || "");
+        const fullJd = body.full_jd !== undefined ? String(body.full_jd).trim() : (existing.full_jd || "");
+
+        // Compute ATS match against active profile
+        const analysis = analyzeApplication(activeProfile, {
+          company,
+          role: title,
+          location,
+          fullJd
+        });
+
+        // Compute distance and commute tag
+        const dist = profilesManager.calculateDistance(location, activeProfile);
+        const distanceMiles = dist.miles;
+        const commuteTag = dist.tag || (dist.isRemote ? "Remote" : "Local");
+
+        const jobRecord = {
+          ...existing,
+          id: jobId,
+          title,
+          role: title,
+          company,
+          location,
+          salary,
+          url: jobUrl,
+          full_jd: fullJd,
+          description: fullJd,
+          portal: existing.portal || "manual",
+          source: existing.source || "Manual",
+          sourceLabel: existing.sourceLabel || "Manual Job",
+          discovered_at: existing.discovered_at || new Date().toISOString(),
+          postedDate: existing.postedDate || new Date().toISOString().split("T")[0],
+          profileId: existing.profileId || activeProfile.id,
+          is_imported: existing.is_imported ?? true,
+          imported: existing.imported ?? true,
+          distance_miles: distanceMiles,
+          commute_tag: commuteTag,
+          fit_score: analysis.overallScore,
+          baseline_score: analysis.overallScore,
+          analysis,
+          tailored_by_profile: {
+            ...(existing.tailored_by_profile || {}),
+            [activeProfile.id]: {
+              analysis,
+              tailored_score: analysis.overallScore,
+              updatedAt: new Date().toISOString()
+            }
+          }
+        };
+
+        seen[jobId] = jobRecord;
+        saveSeenJobs(seen);
+
+        return new Response(JSON.stringify({ success: true, job: jobRecord }), {
+          headers: { "Content-Type": "application/json" }
+        });
       } catch (err: any) {
         return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500 });
       }
