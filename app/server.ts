@@ -21,9 +21,10 @@ import {
   searchAdzuna, searchArbeitnow, searchCvLibrary, searchGoogleJobs,
   searchJobicy, searchReed, searchRemotive, searchTheMuse,
   searchGreenhouse, searchLever, searchAshby, searchJobSpy,
-  parseJobDateAndTimestamp,
+  parseJobDateAndTimestamp, getSourceAvailabilityMetadata,
   type SourceJob, type SourceReport,
 } from "./job_sources";
+import { confirmedExpiryReason, expiryDateBeforePostedDate, isMateriallyDifferentListing, repairInvalidExpiryMetadata, repostRecordId } from "./job_lifecycle";
 
 const PORT = Number(process.env.PORT || process.env.AI_JOB_SEARCH_PORT || 3333);
 const APP_ROOT = process.env.AI_JOB_SEARCH_APP_ROOT || process.cwd();
@@ -37,6 +38,7 @@ const LAST_SEARCH_STATUS_FILE = join(ROOT_DIR, "data", "last_search_status.json"
 
 const profilesManager = new ProfilesManager(ROOT_DIR);
 const aiService = new AIService();
+const activeAvailabilityChecks = new Set<string>();
 const sponsorRegistry = new SponsorRegistry(ROOT_DIR);
 const newSponsorsRegistry = new NewSponsorsRegistry(ROOT_DIR);
 // Background refresh new sponsors if cache is empty or stale (>24h)
@@ -254,6 +256,8 @@ interface DiscoveredJob {
   location: string;
   postedDate?: string;
   postedAt?: string;
+  expiresAt?: string;
+  sourceIsActive?: boolean;
   description?: string;
   summary?: string;
   skills?: string[];
@@ -474,14 +478,59 @@ function ingestDiscoveredJob(
   if (!matchesSponsorshipMode(sponsorship, sponsorshipMode)) return "filtered";
 
   const dedupKey = getJobDedupKey(job);
-  const existingKey = Object.keys(seen).find(key => getJobDedupKey(seen[key]) === dedupKey);
-  if (existingKey) {
-    if (job.source === "manual" && !seen[existingKey].profileId) {
-      seen[existingKey].profileId = profile.id;
+  const sameRoleKeys = Object.keys(seen).filter(key => getJobDedupKey(seen[key]) === dedupKey);
+  const activeMatch = sameRoleKeys.find(key => seen[key]?.availability_status !== "expired");
+  let existingKey: string | undefined = activeMatch || (seen[job.id] ? job.id : sameRoleKeys[0]);
+  let recordId = job.id;
+  let relistedFrom: string | undefined;
+  const incomingPostedDate = job.postedDate || job.postedAt;
+  const safeExpiresAt = job.expiresAt && !expiryDateBeforePostedDate(job.expiresAt, incomingPostedDate)
+    ? job.expiresAt
+    : undefined;
+  let expiryReason = confirmedExpiryReason({ sourceIsActive: job.sourceIsActive, expiresAt: safeExpiresAt, postedDate: incomingPostedDate });
+
+  if (existingKey && seen[existingKey]?.availability_status === "expired") {
+    const sameSourceListing = existingKey === job.id;
+    const changedListing = sameSourceListing && isMateriallyDifferentListing(
+      seen[existingKey],
+      { postedDate: job.postedDate, description },
+    );
+    if (sameSourceListing && changedListing) {
+      relistedFrom = existingKey;
+      recordId = repostRecordId(job.id, job.postedDate, description);
+      existingKey = seen[recordId] ? recordId : undefined;
+    } else if (sameSourceListing) {
+      if (!job.expiresAt && job.sourceIsActive !== true) {
+        expiryReason = expiryReason || confirmedExpiryReason({ expiresAt: seen[existingKey].expires_at, postedDate: incomingPostedDate || seen[existingKey].posted_date });
+      }
+      if (!expiryReason) {
+        seen[existingKey].availability_status = "active";
+        seen[existingKey].reopened_at = new Date().toISOString();
+        delete seen[existingKey].availability_reason;
+        delete seen[existingKey].availability_closed_at;
+      }
+    } else if (!sameSourceListing) {
+      relistedFrom = existingKey;
+      existingKey = undefined;
     }
-    if (description && (!seen[existingKey].full_jd || seen[existingKey].full_jd.length < description.length)) {
-      seen[existingKey].full_jd = description;
-      if (job.skills?.length) seen[existingKey].key_skills = job.skills.slice(0, 8);
+  }
+
+  if (existingKey) {
+    const existing = seen[existingKey];
+    if (job.source === "manual" && !existing.profileId) {
+      existing.profileId = profile.id;
+    }
+    if (expiryReason) {
+      existing.availability_status = "expired";
+      existing.availability_reason = expiryReason;
+      existing.availability_closed_at = new Date().toISOString();
+    } else if (existing.availability_status !== "expired") {
+      existing.availability_status = "active";
+    }
+    if (safeExpiresAt) existing.expires_at = safeExpiresAt;
+    if (description && (!existing.full_jd || existing.full_jd.length < description.length)) {
+      existing.full_jd = description;
+      if (job.skills?.length) existing.key_skills = job.skills.slice(0, 8);
       return "enriched";
     }
     return "unchanged";
@@ -492,7 +541,11 @@ function ingestDiscoveredJob(
     : null;
   const now = new Date();
   const dateInfo = parseJobDateAndTimestamp(job.postedDate || job.postedAt);
-  seen[job.id] = {
+  if (relistedFrom && seen[relistedFrom]) {
+    seen[relistedFrom].relisted_to = recordId;
+    seen[relistedFrom].relisted_at = now.toISOString();
+  }
+  seen[recordId] = {
     ...(job.source === "manual" ? { profileId: profile.id } : {}),
     title: job.title,
     company: job.company,
@@ -509,6 +562,10 @@ function ingestDiscoveredJob(
     key_skills: (job.skills || []).slice(0, 8),
     salary: job.salary || "Not advertised",
     status: "new",
+    availability_status: expiryReason ? "expired" : "active",
+    ...(expiryReason ? { availability_reason: expiryReason, availability_closed_at: now.toISOString() } : {}),
+    ...(safeExpiresAt && !expiryDateBeforePostedDate(safeExpiresAt, dateInfo.date) ? { expires_at: safeExpiresAt } : {}),
+    ...(relistedFrom ? { relisted_from: relistedFrom, relisted_at: now.toISOString() } : {}),
     portal: job.portal,
     source: job.source,
   };
@@ -750,6 +807,67 @@ async function runCliAsync(cmd: string[], timeoutMs: number = 15000): Promise<{ 
   } catch (err: any) {
     return { status: 1, stdout: "", stderr: err.message };
   }
+}
+
+async function refreshJobAvailability(seen: Record<string, any>, linkedinCliPath?: string): Promise<void> {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  repairInvalidExpiryMetadata(seen);
+
+  // A stated deadline is authoritative and can be evaluated locally without network work.
+  for (const item of Object.values(seen)) {
+    if (!item || item.availability_status === "expired") continue;
+    const reason = confirmedExpiryReason({ expiresAt: item.expires_at, postedDate: item.posted_date }, now);
+    if (reason) {
+      item.availability_status = "expired";
+      item.availability_reason = reason;
+      item.availability_closed_at = nowIso;
+    }
+  }
+
+  if (!linkedinCliPath || !existsSync(linkedinCliPath)) return;
+
+  const freshnessWindowMs = 7 * 24 * 60 * 60 * 1000;
+  const candidates = Object.entries(seen)
+    .filter(([id, item]: [string, any]) => {
+      if (!item || item.availability_status === "expired") return false;
+      if (activeAvailabilityChecks.has(id)) return false;
+      if (item.portal !== "linkedin-search" && !id.startsWith("li_")) return false;
+      const url = String(item.url || "");
+      if (!/linkedin\.com\/jobs\/view\/\d{6,}/i.test(url)) return false;
+      const attemptedAt = Date.parse(item.availability_check_attempted_at || "");
+      return !Number.isFinite(attemptedAt) || now.getTime() - attemptedAt >= freshnessWindowMs;
+    })
+    .sort(([, a]: [string, any], [, b]: [string, any]) => {
+      const attemptA = Date.parse(a.availability_check_attempted_at || "") || 0;
+      const attemptB = Date.parse(b.availability_check_attempted_at || "") || 0;
+      if (attemptA !== attemptB) return attemptA - attemptB;
+      return String(a.posted_date || "").localeCompare(String(b.posted_date || ""));
+    })
+    .slice(0, 1);
+
+  await Promise.all(candidates.map(async ([id, item]: [string, any]) => {
+    const expectedId = String(item.url).match(/\/jobs\/view\/(\d{6,})/i)?.[1];
+    if (!expectedId || activeAvailabilityChecks.has(id)) return;
+    activeAvailabilityChecks.add(id);
+    item.availability_check_attempted_at = nowIso;
+    try {
+      const result = await runCliAsync([BUN_EXECUTABLE, "run", linkedinCliPath, "detail", item.url, "--format", "json"], 5000);
+      if (result.status !== 0 || !result.stdout) return;
+      const detail = JSON.parse(result.stdout);
+      if (String(detail.id || "") !== expectedId || typeof detail.isActive !== "boolean") return;
+      item.availability_checked_at = nowIso;
+      if (detail.isActive === false) {
+        item.availability_status = "expired";
+        item.availability_reason = "LinkedIn confirms this job is no longer accepting applications";
+        item.availability_closed_at = nowIso;
+      }
+    } catch (error: any) {
+      console.warn(`Could not check availability for ${id}:`, error.message || error);
+    } finally {
+      activeAvailabilityChecks.delete(id);
+    }
+  }));
 }
 
 export function cleanHtmlDescription(html: string): string {
@@ -1674,6 +1792,7 @@ export async function runScrapeForProfile(
                   location: job.location || (job.work_mode === "remote" ? `Remote (${countryInfo.countryName})` : countryInfo.countryName),
                   postedDate: job.date || job.posted_at?.split("T")[0],
                   postedAt: job.posted_at || (job.date && job.date.includes("T") ? job.date : undefined),
+                  ...getSourceAvailabilityMetadata(job),
                   description: job.description || "",
                   summary: job.summary || "", skills: job.skills || [],
                   salary: job.salary_min ? `£${job.salary_min.toLocaleString()} - £${(job.salary_max || job.salary_min).toLocaleString()}` : undefined,
@@ -1723,6 +1842,7 @@ export async function runScrapeForProfile(
         countResult(ingestDiscoveredJob(seen, {
           id: `${job.portal}_${job.externalId}`, title: job.title, company: job.company, url: job.url,
           location: job.location, postedDate: job.postedDate, postedAt: job.postedAt, description: job.description,
+          expiresAt: job.expiresAt, sourceIsActive: job.sourceIsActive,
           salary: job.salary, portal: job.portal, source: job.sourceLabel || "api",
         }, profile, sponsorshipMode));
       }
@@ -1732,6 +1852,10 @@ export async function runScrapeForProfile(
     }
   }
 
+  const linkedinCliPath = config.sources.linkedin
+    ? join(APP_ROOT, ".agents", "skills", "linkedin-search", "cli", "src", "cli.ts")
+    : undefined;
+  await refreshJobAvailability(seen, linkedinCliPath);
   saveSeenJobs(seen);
   const searchStatus: ScrapeOutcome = {
     success: true, addedCount, enrichedCount, filteredCount,
@@ -1803,7 +1927,7 @@ serve({
       const allProfiles = profilesManager.getAllProfiles();
       const tracker = readTracker(activeProfile);
 
-      let seenMutated = false;
+      let seenMutated = repairInvalidExpiryMetadata(seen);
       const seenEntries = Object.entries(seen);
       const jobsList = seenEntries
         .filter(([id, item]: [string, any]) => isJobRelevantToProfile(item, activeProfile, id))
@@ -1826,7 +1950,9 @@ serve({
           const normComp = (item.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
           const normRole = (item.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
           const normKey = `norm_${normComp}_${normRole}`;
-          const tracked = tracker[id] || (item.url ? tracker[item.url] : undefined) || tracker[itemDedupKey] || tracker[simpleKey] || tracker[normKey];
+          const tracked = item.relisted_from
+            ? tracker[id]
+            : tracker[id] || (item.url ? tracker[item.url] : undefined) || tracker[itemDedupKey] || tracker[simpleKey] || tracker[normKey];
 
           // Status hierarchy scoped to the active candidate
           const trackedStatus = tracked?.status;
@@ -1951,6 +2077,13 @@ serve({
           sponsorship_employer: sponsor.isNewSponsor ? (sponsor.newSponsorDetails?.organisation || sponsor.assessment.employer.organisation || "") : (sponsor.assessment.employer.organisation || ""),
           sponsorship_source: sponsor.assessment.employer.source,
           status,
+          availability_status: item.availability_status || "active",
+          availability_reason: item.availability_reason || null,
+          availability_closed_at: item.availability_closed_at || null,
+          availability_checked_at: item.availability_checked_at || null,
+          expires_at: item.expires_at || null,
+          relisted_from: item.relisted_from || null,
+          relisted_to: item.relisted_to || null,
           ignored: status === "ignored",
           cv_file: cvFile,
           cover_file: coverFile,
@@ -1966,7 +2099,9 @@ serve({
       // Deduplicate jobsList across keys by canonical job ID / URL / company+title
       const uniqueJobsMap = new Map<string, any>();
       for (const job of jobsList) {
-        const dedupKey = getJobDedupKey(job);
+        const dedupKey = job.availability_status === "expired"
+          ? `expired_${job.id}`
+          : getJobDedupKey(job);
         const existing = uniqueJobsMap.get(dedupKey);
         if (!existing) {
           uniqueJobsMap.set(dedupKey, job);
@@ -2924,7 +3059,7 @@ serve({
           ? currentStatus 
           : "drafted";
 
-        updateTracker(company, role, preservedStatus, cvPath, coverPath, tailoredAnalysis.overallScore, seen[jobId]?.url || "", activeProfile, jobId);
+        updateTracker(company, role, preservedStatus, cvPath, coverPath, tailoredAnalysis.overallScore, seen[jobId]?.url || "", activeProfile, jobId, Boolean(seen[jobId]?.relisted_from));
         profilesManager.updateActiveProfileTracker(jobId || `${cleanCompany}_${cleanRole}`, {
           status: preservedStatus,
           cvFile: cvPath,
@@ -3027,13 +3162,14 @@ serve({
 
         const targetDedup = getJobDedupKey({ company: company || sourceJob.company, title: role || sourceJob.title, url: jobUrl || sourceJob.url });
         const simpleKey = `${company || sourceJob.company}_${role || sourceJob.title}`.toLowerCase();
-        const existingTracked = activeProfile.tracker?.[targetDedup] || 
-                                activeProfile.tracker?.[jobId] || 
-                                activeProfile.tracker?.[simpleKey] || {};
+        const listingScoped = Boolean(sourceJob.relisted_from);
+        const existingTracked = listingScoped
+          ? activeProfile.tracker?.[jobId] || {}
+          : activeProfile.tracker?.[targetDedup] || activeProfile.tracker?.[jobId] || activeProfile.tracker?.[simpleKey] || {};
         const effectiveCv = sourceJob.cv_file || existingTracked.cvFile || "";
         const effectiveCover = sourceJob.cover_file || existingTracked.coverFile || "";
 
-        updateTracker(company || sourceJob.company, role || sourceJob.title, status, effectiveCv, effectiveCover, statusAnalysis.overallScore, jobUrl || sourceJob.url, activeProfile, jobId);
+        updateTracker(company || sourceJob.company, role || sourceJob.title, status, effectiveCv, effectiveCover, statusAnalysis.overallScore, jobUrl || sourceJob.url, activeProfile, jobId, listingScoped);
 
         const seen = seenForScore;
         const normComp = (company || sourceJob.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -3045,7 +3181,7 @@ serve({
           const vRole = (v.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
           const vDedup = getJobDedupKey(v);
 
-          if (k === jobId || vDedup === targetDedup || (normComp && normRole && vComp === normComp && vRole === normRole)) {
+          if (k === jobId || (!listingScoped && v.availability_status !== "expired" && vDedup === targetDedup && (normComp && normRole && vComp === normComp && vRole === normRole))) {
             seen[k].status = status;
             seen[k].profileId = activeProfile.id;
             if (effectiveCv && !seen[k].cv_file) seen[k].cv_file = effectiveCv;
@@ -3685,7 +3821,8 @@ function updateTracker(
   fit = 0,
   sourceUrl = "",
   profile?: CandidateProfile,
-  jobId?: string
+  jobId?: string,
+  listingScoped: boolean = false
 ) {
   const activeProfile = profile || profilesManager.getActiveProfile();
   const dedupKey = getJobDedupKey({ company, title: role, url: sourceUrl });
@@ -3697,9 +3834,11 @@ function updateTracker(
   // Save on candidate profile tracker
   if (!activeProfile.tracker) activeProfile.tracker = {};
   
-  const existing = activeProfile.tracker[dedupKey] || 
-                   activeProfile.tracker[simpleKey] || 
-                   (jobId ? activeProfile.tracker[jobId] : undefined) || {};
+  const existing = listingScoped
+    ? (jobId ? activeProfile.tracker[jobId] : undefined) || {}
+    : activeProfile.tracker[dedupKey] ||
+      activeProfile.tracker[simpleKey] ||
+      (jobId ? activeProfile.tracker[jobId] : undefined) || {};
                    
   const finalCv = cvFile || existing.cvFile || "";
   const finalCover = coverFile || existing.coverFile || "";
@@ -3713,15 +3852,17 @@ function updateTracker(
     updatedAt: new Date().toISOString()
   };
 
-  activeProfile.tracker[dedupKey] = record;
-  activeProfile.tracker[simpleKey] = record;
-  activeProfile.tracker[normKey] = record;
-  if (jobId) {
-    activeProfile.tracker[jobId] = record;
+  if (listingScoped) {
+    if (jobId) activeProfile.tracker[jobId] = record;
+  } else {
+    activeProfile.tracker[dedupKey] = record;
+    activeProfile.tracker[simpleKey] = record;
+    activeProfile.tracker[normKey] = record;
+    if (jobId) activeProfile.tracker[jobId] = record;
   }
 
   // Also update any matching ct_ keys in tracker
-  if (normComp) {
+  if (!listingScoped && normComp) {
     for (const [k, v] of Object.entries(activeProfile.tracker)) {
       if (k.startsWith("ct_") && k.toLowerCase().includes(normComp)) {
         activeProfile.tracker[k] = { ...v, status, cvFile: finalCv || v.cvFile, coverFile: finalCover || v.coverFile, updatedAt: new Date().toISOString() };

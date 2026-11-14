@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { existsSync } from "fs";
 import { resolve } from "path";
 import type { SearchConfig } from "./search_config";
+import { expiryDateBeforePostedDate } from "./job_lifecycle";
 
 export interface SourceJob {
   externalId: string;
@@ -12,6 +13,8 @@ export interface SourceJob {
   url: string;
   postedDate: string;
   postedAt?: string;
+  expiresAt?: string;
+  sourceIsActive?: boolean;
   description: string;
   salary?: string;
   portal: "cv-library" | "reed" | "google-jobs" | "adzuna" | "jobicy" | "arbeitnow" | "remotive" | "themuse" | "greenhouse" | "lever" | "ashby" | "jobspy";
@@ -31,6 +34,47 @@ export interface SourceReport {
 
 function text(value: unknown): string {
   return String(value || "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
+}
+
+export function getSourceAvailabilityMetadata(job: any): Pick<SourceJob, "expiresAt" | "sourceIsActive"> {
+  const activeValue = [job?.isActive, job?.is_active, job?.active].find(value => typeof value === "boolean");
+  const status = String(job?.status || job?.application_status || "").trim().toLowerCase();
+  const sourceIsActive = typeof activeValue === "boolean"
+    ? activeValue
+    : /\b(closed|expired|filled|inactive|withdrawn|no longer accepting|not accepting applications)\b/.test(status)
+      ? false
+      : /\b(open|active|published|live)\b/.test(status)
+        ? true
+        : undefined;
+
+  const deadlineValue = [
+    job?.validThrough, job?.valid_through, job?.expiresAt, job?.expires_at,
+    job?.expirationDate, job?.expiration_date, job?.closingDate, job?.closing_date,
+    job?.applicationDeadline, job?.application_deadline,
+  ].find(value => value !== undefined && value !== null && String(value).trim() !== "");
+  if (deadlineValue === undefined) return sourceIsActive === undefined ? {} : { sourceIsActive };
+
+  let timestamp = NaN;
+  if (typeof deadlineValue === "number" || /^\d{10,13}$/.test(String(deadlineValue).trim())) {
+    const numeric = Number(deadlineValue);
+    timestamp = numeric > 10_000_000_000 ? numeric : numeric * 1000;
+  } else {
+    timestamp = Date.parse(String(deadlineValue).trim());
+  }
+  if (!Number.isFinite(timestamp)) return sourceIsActive === undefined ? {} : { sourceIsActive };
+
+  const rawDeadline = String(deadlineValue).trim();
+  const expiresAt = /^\d{4}-\d{2}-\d{2}$/.test(rawDeadline)
+    ? rawDeadline
+    : new Date(timestamp).toISOString();
+  const postedDate = [
+    job?.date, job?.posted, job?.postedDate, job?.posted_at, job?.postedAt,
+    job?.created, job?.created_at, job?.publication_date, job?.publishedAt, job?.updated_at,
+  ].find(value => value !== undefined && value !== null && String(value).trim() !== "");
+  if (expiryDateBeforePostedDate(expiresAt, String(postedDate || ""))) {
+    return sourceIsActive === undefined ? {} : { sourceIsActive };
+  }
+  return { expiresAt, ...(sourceIsActive === undefined ? {} : { sourceIsActive }) };
 }
 
 export function parseJobDateAndTimestamp(value: unknown): { date: string; timestamp?: string } {
@@ -128,6 +172,7 @@ export function normalizeCvLibraryJobs(payload: any): SourceJob[] {
     location: text(job.location || "United Kingdom"),
     url: String(job.url || "").startsWith("http") ? String(job.url) : `https://www.cv-library.co.uk${job.url || ""}`,
     ...parseJobDate(job.posted),
+    ...getSourceAvailabilityMetadata(job),
     description: text(job.description_full || job.description),
     salary: text(typeof job.salary === "object" ? `${job.salary.min || ""} - ${job.salary.max || ""} ${job.salary.period || ""}` : job.salary),
     portal: "cv-library" as const,
@@ -143,6 +188,7 @@ export function normalizeReedJobs(payload: any): SourceJob[] {
     location: text(job.locationName || "United Kingdom"),
     url: String(job.jobUrl || `https://www.reed.co.uk/jobs/${job.jobId || ""}`),
     ...parseJobDate(job.date),
+    ...getSourceAvailabilityMetadata(job),
     description: text(job.jobDescription),
     salary: job.minimumSalary ? `£${Number(job.minimumSalary).toLocaleString()} - £${Number(job.maximumSalary || job.minimumSalary).toLocaleString()}` : undefined,
     portal: "reed" as const,
@@ -160,6 +206,7 @@ export function normalizeGoogleJobs(payload: any): SourceJob[] {
       location: text(job.location || "United Kingdom"),
       url: String(applyUrl),
       ...parseJobDate(job.detected_extensions?.posted_at || job.extensions?.find((item: string) => /ago|today/i.test(item))),
+      ...getSourceAvailabilityMetadata(job),
       description: text(job.description),
       salary: text(job.detected_extensions?.salary || "") || undefined,
       portal: "google-jobs" as const,
@@ -176,6 +223,7 @@ export function normalizeAdzunaJobs(payload: any): SourceJob[] {
     location: text(job.location?.display_name || "United Kingdom"),
     url: String(job.redirect_url || ""),
     ...parseJobDate(job.created),
+    ...getSourceAvailabilityMetadata(job),
     description: text(job.description),
     salary: salaryRange(job.salary_min, job.salary_max),
     portal: "adzuna" as const,
@@ -191,6 +239,7 @@ export function normalizeJobicyJobs(payload: any): SourceJob[] {
     location: text(job.jobGeo || job.jobLocation || "Remote"),
     url: String(job.url || ""),
     ...parseJobDate(job.pubDate || job.createdAt),
+    ...getSourceAvailabilityMetadata(job),
     description: text(job.jobDescription || job.description),
     salary: text(job.annualSalaryMin && job.annualSalaryMax ? `${job.annualSalaryMin} - ${job.annualSalaryMax}` : job.salary) || undefined,
     portal: "jobicy" as const,
@@ -206,6 +255,7 @@ export function normalizeArbeitnowJobs(payload: any): SourceJob[] {
     location: text(job.remote ? `${job.location || "Europe"} · Remote` : job.location || "Europe"),
     url: String(job.url || ""),
     ...parseJobDate(job.created_at),
+    ...getSourceAvailabilityMetadata(job),
     description: text(job.description),
     portal: "arbeitnow" as const,
     sourceLabel: "Arbeitnow",
@@ -220,6 +270,7 @@ export function normalizeRemotiveJobs(payload: any): SourceJob[] {
     location: text(job.candidate_required_location || "Remote"),
     url: String(job.url || ""),
     ...parseJobDate(job.publication_date),
+    ...getSourceAvailabilityMetadata(job),
     description: text(job.description),
     salary: text(job.salary) || undefined,
     portal: "remotive" as const,
@@ -247,6 +298,7 @@ export function normalizeTheMuseJobs(payload: any): SourceJob[] {
       location: text(locStr),
       url: String(applyUrl),
       ...parseJobDate(job.publication_date),
+      ...getSourceAvailabilityMetadata(job),
       description: text(rawDesc),
       portal: "themuse" as const,
       sourceLabel: "The Muse",
@@ -272,6 +324,7 @@ export function normalizeGreenhouseJobs(company: string, payload: any): SourceJo
       location: text(job.location?.name || "Global / Remote"),
       url: String(job.absolute_url || ""),
       ...parseJobDate(job.updated_at),
+      ...getSourceAvailabilityMetadata(job),
       description: text(rawContent),
       portal: "greenhouse" as const,
       sourceLabel: `Greenhouse (${companyTitle})`,
@@ -292,6 +345,7 @@ export function normalizeLeverJobs(company: string, payload: any): SourceJob[] {
       location: text(loc),
       url: String(job.applyUrl || job.hostedUrl || ""),
       ...parseJobDate(job.createdAt ? new Date(job.createdAt) : undefined),
+      ...getSourceAvailabilityMetadata(job),
       description: desc,
       portal: "lever" as const,
       sourceLabel: `Lever (${companyTitle})`,
@@ -311,6 +365,7 @@ export function normalizeAshbyJobs(company: string, payload: any): SourceJob[] {
       location: text(locStr),
       url: String(job.jobUrl || ""),
       ...parseJobDate(job.publishedAt),
+      ...getSourceAvailabilityMetadata(job),
       description: text(job.descriptionPlain || ""),
       portal: "ashby" as const,
       sourceLabel: `Ashby (${companyTitle})`,

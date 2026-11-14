@@ -2467,7 +2467,7 @@ async function fetchJobs(silent = false) {
 
     // Keep selected job or select first
     if (selectedJob) {
-      const match = allJobs.find(j => j.id === selectedJob.id || (j.company === selectedJob.company && j.title === selectedJob.title));
+      const match = allJobs.find(j => j.id === selectedJob.id) || allJobs.find(j => j.company === selectedJob.company && j.title === selectedJob.title);
       if (match) {
         selectedJob = match;
         if (!silent) selectJob(match);
@@ -2563,7 +2563,8 @@ function renderLocationNavFilters() {
 
 function updateBadgeCounts() {
   const isIgnored = j => j.status === "ignored" || Boolean(j.ignored);
-  const unappliedJobs = allJobs.filter(j => j.status !== "applied" && !isIgnored(j));
+  const isExpired = j => j.availability_status === "expired";
+  const unappliedJobs = allJobs.filter(j => j.status !== "applied" && !isIgnored(j) && !isExpired(j));
   const total = unappliedJobs.length;
   const radius = activeProfile?.preferredRadiusMiles || 50;
   const remote = unappliedJobs.filter(j => j.is_remote).length;
@@ -2572,6 +2573,7 @@ function updateBadgeCounts() {
   const drafted = allJobs.filter(j => j.status === "drafted" && !isIgnored(j)).length;
   const applied = allJobs.filter(j => j.status === "applied" && !isIgnored(j)).length;
   const ignored = allJobs.filter(isIgnored).length;
+  const expired = allJobs.filter(isExpired).length;
   const sponsors = unappliedJobs.filter(j => j.sponsor_verified).length;
   const explicitSponsors = unappliedJobs.filter(j => j.sponsor_verified && j.sponsorship_status === "offered").length;
 
@@ -2582,6 +2584,7 @@ function updateBadgeCounts() {
   const countDraftedEl = document.getElementById("countDrafted");
   const countAppliedEl = document.getElementById("countApplied");
   const countIgnoredEl = document.getElementById("countIgnored");
+  const countExpiredEl = document.getElementById("countExpired");
   const countSponsorsEl = document.getElementById("countSponsors");
   const countExplicitSponsorsEl = document.getElementById("countExplicitSponsors");
 
@@ -2596,6 +2599,7 @@ function updateBadgeCounts() {
   if (countDraftedEl) countDraftedEl.textContent = drafted;
   if (countAppliedEl) countAppliedEl.textContent = applied;
   if (countIgnoredEl) countIgnoredEl.textContent = ignored;
+  if (countExpiredEl) countExpiredEl.textContent = expired;
   const countImportedEl = document.getElementById("countImported");
   if (countImportedEl) countImportedEl.textContent = allJobs.filter(j => isImportedJob(j) && !isIgnored(j)).length;
   if (countSponsorsEl) countSponsorsEl.textContent = sponsors;
@@ -2755,17 +2759,21 @@ function filterJobsList() {
       return false;
     }
 
-    // Ignored filter isolation
+    const isExpired = j.availability_status === "expired";
+
+    // Availability is separate from application progress: applied expired roles remain visible in both sections.
     const isIgnored = j.status === "ignored" || Boolean(j.ignored);
+    if (currentFilter === "expired") return isExpired;
     if (currentFilter === "ignored") {
       return isIgnored;
     }
     if (isIgnored) {
       return false;
     }
+    if (isExpired && currentFilter !== "applied") return false;
 
-    // Once marked as applied, do not show in 'All Opportunities' or discovery filters; show strictly in 'Applied & Active' (or 'Imported Roles')
-    if (currentFilter !== "applied" && currentFilter !== "imported" && j.status === "applied") {
+    // Once marked as applied, keep it in Applied; expired roles also remain accessible in their archive section.
+    if (currentFilter !== "applied" && currentFilter !== "imported" && currentFilter !== "expired" && j.status === "applied") {
       return false;
     }
 
@@ -2934,8 +2942,9 @@ function renderJobs() {
     uk_hybrid_sponsored: "🇬🇧 Nationwide · Licensed Employers",
     nationwide_de: "🇩🇪 Nationwide · Germany",
     drafted: "Drafted Applications",
-    applied: "Applied & Active",
+    applied: "Applied Roles",
     ignored: "🚫 Ignored Roles",
+    expired: "⌛ Expired Postings",
     sponsor_verified: "Licensed Employers",
     sponsorship_explicit: "Vacancies Stating Sponsorship",
     sponsor_new: "✨ Newly Licensed Sponsors (Last 30 Days)"
@@ -2979,6 +2988,13 @@ function renderJobs() {
       statusBadge = '<span class="meta-pill status-applied">✓ Applied</span>';
     } else if (job.status === "drafted") {
       statusBadge = '<span class="meta-pill status-tailored">✓ Tailored</span>';
+    }
+    if (job.availability_status === "expired") {
+      const expiryTitle = job.availability_reason ? ` title="${escapeHtml(job.availability_reason)}"` : "";
+      statusBadge += `<span class="meta-pill" style="color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); font-weight: 600;"${expiryTitle}>⌛ Expired</span>`;
+    }
+    if (job.relisted_from || job.relisted_to) {
+      statusBadge += '<span class="meta-pill" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); font-weight: 600;">↻ Reposted</span>';
     }
 
     const relativeDateBadge = formatRelativeDate(job.posted_date, job.posted_at || job.first_seen_at);

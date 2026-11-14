@@ -16,6 +16,7 @@ This project extends the workflow in [ai-job-search-dev/ai-job-search](https://g
 - Uses AI only for optional constrained rewrites. Matching, gates, and scoring work without a model.
 - Compiles PDFs locally with LuaLaTeX or XeLaTeX.
 - Runs in current browsers on macOS and Windows, with launchers for each platform.
+- Archives confirmed expired postings separately from application status, keeps applied roles saved, and treats a materially changed repost as a new listing.
 
 ## Quick start
 
@@ -67,6 +68,8 @@ bun run app:windows
 4. Review eligibility and language gates before considering the score.
 5. Select requirements to inspect their source evidence.
 6. Tailor the application, review every claim, then build the PDF locally.
+
+Expired Postings uses explicit closure signals or passed application deadlines. A posting is not marked expired only because it is old or missing from a later scrape. LinkedIn detail checks are limited to one saved listing per scrape, time out after five seconds, and are cached for seven days; other sources are checked only when their data includes an explicit closure or deadline.
 
 The score is not an ATS vendor prediction. It is a transparent internal fit score: technical evidence 30%, experience relevance 25%, behavioral evidence 15%, and career alignment 30%. Location is shown as a gate and does not inflate the number.
 

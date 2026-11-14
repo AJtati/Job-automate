@@ -2,10 +2,26 @@ import { describe, expect, test } from "bun:test";
 import {
   normalizeAdzunaJobs, normalizeArbeitnowJobs, normalizeCvLibraryJobs,
   normalizeGoogleJobs, normalizeJobicyJobs, normalizeReedJobs, normalizeRemotiveJobs, normalizeTheMuseJobs,
-  normalizeGreenhouseJobs, normalizeLeverJobs, normalizeAshbyJobs,
+  normalizeGreenhouseJobs, normalizeLeverJobs, normalizeAshbyJobs, getSourceAvailabilityMetadata,
 } from "../job_sources";
 
 describe("job source normalization", () => {
+  test("keeps only explicit source availability and deadline metadata", () => {
+    expect(getSourceAvailabilityMetadata({ isActive: false, validThrough: "2026-10-01" })).toEqual({
+      sourceIsActive: false,
+      expiresAt: "2026-10-01",
+    });
+    expect(getSourceAvailabilityMetadata({ status: "closed" })).toEqual({ sourceIsActive: false });
+    expect(getSourceAvailabilityMetadata({ status: "published" })).toEqual({ sourceIsActive: true });
+    expect(getSourceAvailabilityMetadata({ status: "open", deadline: "unknown" })).toEqual({ sourceIsActive: true });
+  });
+
+  test("ignores generic or pre-posting deadlines while retaining valid explicit dates", () => {
+    expect(getSourceAvailabilityMetadata({ deadline: "2026-01-12", postedDate: "2026-10-28" })).toEqual({});
+    expect(getSourceAvailabilityMetadata({ applicationDeadline: "2026-01-12", postedDate: "2026-10-28" })).toEqual({});
+    expect(getSourceAvailabilityMetadata({ validThrough: "2026-11-30", postedDate: "2026-10-28" })).toEqual({ expiresAt: "2026-11-30" });
+  });
+
   test("normalizes CV-Library results", () => {
     const [job] = normalizeCvLibraryJobs({ jobs: [{ id: 7, title: "Platform Engineer", agency: { title: "Acme" }, location: "London", url: "/job/7", posted: "2026-10-26", description_full: "Build platforms" }] });
     expect(job.portal).toBe("cv-library");
