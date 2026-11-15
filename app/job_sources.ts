@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import { resolve } from "path";
 import type { SearchConfig } from "./search_config";
 import { expiryDateBeforePostedDate } from "./job_lifecycle";
+import { isContractRole } from "./job_classification";
 
 export interface SourceJob {
   externalId: string;
@@ -15,9 +16,10 @@ export interface SourceJob {
   postedAt?: string;
   expiresAt?: string;
   sourceIsActive?: boolean;
+  isContract?: boolean;
   description: string;
   salary?: string;
-  portal: "cv-library" | "reed" | "google-jobs" | "adzuna" | "jobicy" | "arbeitnow" | "remotive" | "themuse" | "greenhouse" | "lever" | "ashby" | "jobspy";
+  portal: "cv-library" | "reed" | "google-jobs" | "adzuna" | "jobicy" | "arbeitnow" | "remotive" | "greenhouse" | "lever" | "ashby" | "jobspy";
   sourceLabel: string;
 }
 
@@ -173,6 +175,7 @@ export function normalizeCvLibraryJobs(payload: any): SourceJob[] {
     url: String(job.url || "").startsWith("http") ? String(job.url) : `https://www.cv-library.co.uk${job.url || ""}`,
     ...parseJobDate(job.posted),
     ...getSourceAvailabilityMetadata(job),
+    isContract: isContractRole(job),
     description: text(job.description_full || job.description),
     salary: text(typeof job.salary === "object" ? `${job.salary.min || ""} - ${job.salary.max || ""} ${job.salary.period || ""}` : job.salary),
     portal: "cv-library" as const,
@@ -189,6 +192,7 @@ export function normalizeReedJobs(payload: any): SourceJob[] {
     url: String(job.jobUrl || `https://www.reed.co.uk/jobs/${job.jobId || ""}`),
     ...parseJobDate(job.date),
     ...getSourceAvailabilityMetadata(job),
+    isContract: isContractRole(job),
     description: text(job.jobDescription),
     salary: job.minimumSalary ? `£${Number(job.minimumSalary).toLocaleString()} - £${Number(job.maximumSalary || job.minimumSalary).toLocaleString()}` : undefined,
     portal: "reed" as const,
@@ -207,6 +211,7 @@ export function normalizeGoogleJobs(payload: any): SourceJob[] {
       url: String(applyUrl),
       ...parseJobDate(job.detected_extensions?.posted_at || job.extensions?.find((item: string) => /ago|today/i.test(item))),
       ...getSourceAvailabilityMetadata(job),
+      isContract: isContractRole(job),
       description: text(job.description),
       salary: text(job.detected_extensions?.salary || "") || undefined,
       portal: "google-jobs" as const,
@@ -224,6 +229,7 @@ export function normalizeAdzunaJobs(payload: any): SourceJob[] {
     url: String(job.redirect_url || ""),
     ...parseJobDate(job.created),
     ...getSourceAvailabilityMetadata(job),
+    isContract: isContractRole(job),
     description: text(job.description),
     salary: salaryRange(job.salary_min, job.salary_max),
     portal: "adzuna" as const,
@@ -240,6 +246,7 @@ export function normalizeJobicyJobs(payload: any): SourceJob[] {
     url: String(job.url || ""),
     ...parseJobDate(job.pubDate || job.createdAt),
     ...getSourceAvailabilityMetadata(job),
+    isContract: isContractRole(job),
     description: text(job.jobDescription || job.description),
     salary: text(job.annualSalaryMin && job.annualSalaryMax ? `${job.annualSalaryMin} - ${job.annualSalaryMax}` : job.salary) || undefined,
     portal: "jobicy" as const,
@@ -256,6 +263,7 @@ export function normalizeArbeitnowJobs(payload: any): SourceJob[] {
     url: String(job.url || ""),
     ...parseJobDate(job.created_at),
     ...getSourceAvailabilityMetadata(job),
+    isContract: isContractRole(job),
     description: text(job.description),
     portal: "arbeitnow" as const,
     sourceLabel: "Arbeitnow",
@@ -271,6 +279,7 @@ export function normalizeRemotiveJobs(payload: any): SourceJob[] {
     url: String(job.url || ""),
     ...parseJobDate(job.publication_date),
     ...getSourceAvailabilityMetadata(job),
+    isContract: isContractRole(job),
     description: text(job.description),
     salary: text(job.salary) || undefined,
     portal: "remotive" as const,
@@ -278,33 +287,6 @@ export function normalizeRemotiveJobs(payload: any): SourceJob[] {
   })).filter((job: SourceJob) => job.title && job.company && job.url);
 }
 
-export function normalizeTheMuseJobs(payload: any): SourceJob[] {
-  return (payload?.results || []).map((job: any) => {
-    const locNames = (job.locations || []).map((l: any) => l.name).filter(Boolean);
-    const locStr = locNames.length ? locNames.join(", ") : "Flexible / Remote";
-    const applyUrl = job.refs?.landing_page || "";
-    const rawDesc = (job.contents || "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/\s+/g, " ")
-      .trim();
-    return {
-      externalId: String(job.id || stableId(job.name, job.company?.name, applyUrl)),
-      title: text(job.name),
-      company: text(job.company?.name || "Unknown employer"),
-      location: text(locStr),
-      url: String(applyUrl),
-      ...parseJobDate(job.publication_date),
-      ...getSourceAvailabilityMetadata(job),
-      description: text(rawDesc),
-      portal: "themuse" as const,
-      sourceLabel: "The Muse",
-    };
-  }).filter((job: SourceJob) => job.title && job.company && job.url);
-}
 
 export function normalizeGreenhouseJobs(company: string, payload: any): SourceJob[] {
   const companyTitle = company.charAt(0).toUpperCase() + company.slice(1);
@@ -325,6 +307,7 @@ export function normalizeGreenhouseJobs(company: string, payload: any): SourceJo
       url: String(job.absolute_url || ""),
       ...parseJobDate(job.updated_at),
       ...getSourceAvailabilityMetadata(job),
+      isContract: isContractRole(job),
       description: text(rawContent),
       portal: "greenhouse" as const,
       sourceLabel: `Greenhouse (${companyTitle})`,
@@ -346,6 +329,7 @@ export function normalizeLeverJobs(company: string, payload: any): SourceJob[] {
       url: String(job.applyUrl || job.hostedUrl || ""),
       ...parseJobDate(job.createdAt ? new Date(job.createdAt) : undefined),
       ...getSourceAvailabilityMetadata(job),
+      isContract: isContractRole(job),
       description: desc,
       portal: "lever" as const,
       sourceLabel: `Lever (${companyTitle})`,
@@ -366,6 +350,7 @@ export function normalizeAshbyJobs(company: string, payload: any): SourceJob[] {
       url: String(job.jobUrl || ""),
       ...parseJobDate(job.publishedAt),
       ...getSourceAvailabilityMetadata(job),
+      isContract: isContractRole(job),
       description: text(job.descriptionPlain || ""),
       portal: "ashby" as const,
       sourceLabel: `Ashby (${companyTitle})`,
@@ -682,32 +667,6 @@ export async function searchRemotive(_config: SearchConfig, query: string, locat
   return normalizeRemotiveJobs(await response.json()).filter(job => matchesQuery(job, query) && matchesUkEligibility(job, location));
 }
 
-export async function searchTheMuse(_config: SearchConfig, query: string, location: string): Promise<SourceJob[]> {
-  const url = new URL("https://www.themuse.com/api/public/jobs");
-  url.searchParams.set("page", "1");
-  url.searchParams.set("descending", "true");
-  if (/software|engineer|developer|devops|cloud|platform|sre|qa|test|data|infrastructure/i.test(query)) {
-    url.searchParams.set("category", "Software Engineering");
-  }
-  if (/remote/i.test(location || "")) {
-    url.searchParams.set("location", "Flexible / Remote");
-  } else if (/united kingdom|\buk\b|london|manchester|leeds|birmingham|hartlepool/i.test(location || "")) {
-    url.searchParams.set("location", "London, United Kingdom");
-  } else if (/germany|deutschland|berlin|munich|frankfurt|chemnitz/i.test(location || "")) {
-    url.searchParams.set("location", "Berlin, Germany");
-  } else if (location && !/any|all/i.test(location)) {
-    url.searchParams.set("location", location);
-  }
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)"
-    },
-    signal: AbortSignal.timeout(15000)
-  });
-  if (!response.ok) throw new Error(`The Muse returned ${response.status}`);
-  return normalizeTheMuseJobs(await response.json()).filter(job => matchesQuery(job, query) && matchesUkEligibility(job, location));
-}
 
 export const DEFAULT_GREENHOUSE_COMPANIES = [
   "cloudflare", "datadog", "stripe", "figma", "elastic", "gitlab", "docker", "canva", "reddit", "airbnb"
@@ -898,6 +857,7 @@ export async function searchJobSpy(
           url: String(j.url || ""),
           postedDate: String(j.postedDate || new Date().toISOString().slice(0, 10)),
           postedAt: j.postedAt || undefined,
+          isContract: isContractRole(j),
           description: String(j.description || ""),
           salary: j.salary && j.salary !== "Not advertised" ? String(j.salary) : undefined,
           portal: "jobspy" as const,

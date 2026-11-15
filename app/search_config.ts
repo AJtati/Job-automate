@@ -13,7 +13,6 @@ export interface SearchConfig {
     jobicy: boolean;
     arbeitnow: boolean;
     remotive: boolean;
-    themuse: boolean;
     greenhouse: boolean;
     lever: boolean;
     ashby: boolean;
@@ -39,7 +38,6 @@ const DEFAULT_CONFIG: SearchConfig = {
     jobicy: true,
     arbeitnow: false,
     remotive: true,
-    themuse: true,
     greenhouse: true,
     lever: true,
     ashby: true,
@@ -49,7 +47,9 @@ const DEFAULT_CONFIG: SearchConfig = {
 };
 
 function withCoreSources(sources: SearchConfig["sources"]): SearchConfig["sources"] {
-  return { ...sources, linkedin: true, freehire: true };
+  const supportedSources = { ...sources } as SearchConfig["sources"] & { themuse?: boolean };
+  delete supportedSources.themuse;
+  return { ...supportedSources, linkedin: true, freehire: true };
 }
 
 export class SearchConfigManager {
@@ -63,10 +63,14 @@ export class SearchConfigManager {
 
   private load(): SearchConfig {
     let cfg: SearchConfig = structuredClone(DEFAULT_CONFIG);
+    let removeTheMuseSetting = false;
     try {
       if (existsSync(this.configFile)) {
         const saved = JSON.parse(readFileSync(this.configFile, "utf-8"));
-        cfg = { ...DEFAULT_CONFIG, ...saved, sources: withCoreSources({ ...DEFAULT_CONFIG.sources, ...(saved.sources || {}) }) };
+        const savedSources = { ...(saved.sources || {}) };
+        removeTheMuseSetting = Object.prototype.hasOwnProperty.call(savedSources, "themuse");
+        delete savedSources.themuse;
+        cfg = { ...DEFAULT_CONFIG, ...saved, sources: withCoreSources({ ...DEFAULT_CONFIG.sources, ...savedSources }) };
       }
     } catch {}
 
@@ -107,6 +111,13 @@ export class SearchConfigManager {
           }
         } catch {}
       }
+    }
+
+    if (removeTheMuseSetting) {
+      try {
+        mkdirSync(dirname(this.configFile), { recursive: true });
+        writeFileSync(this.configFile, JSON.stringify(cfg, null, 2), "utf-8");
+      } catch {}
     }
 
     return cfg;

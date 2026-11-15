@@ -19,12 +19,13 @@ import { SearchConfigManager } from "./search_config";
 import {
   detectCandidateCountry, detectJobCountry, type CandidateCountryInfo,
   searchAdzuna, searchArbeitnow, searchCvLibrary, searchGoogleJobs,
-  searchJobicy, searchReed, searchRemotive, searchTheMuse,
+  searchJobicy, searchReed, searchRemotive,
   searchGreenhouse, searchLever, searchAshby, searchJobSpy,
   parseJobDateAndTimestamp, getSourceAvailabilityMetadata,
   type SourceJob, type SourceReport,
 } from "./job_sources";
 import { confirmedExpiryReason, expiryDateBeforePostedDate, isMateriallyDifferentListing, repairInvalidExpiryMetadata, repostRecordId } from "./job_lifecycle";
+import { isContractRole } from "./job_classification";
 
 const PORT = Number(process.env.PORT || process.env.AI_JOB_SEARCH_PORT || 3333);
 const APP_ROOT = process.env.AI_JOB_SEARCH_APP_ROOT || process.cwd();
@@ -258,6 +259,7 @@ interface DiscoveredJob {
   postedAt?: string;
   expiresAt?: string;
   sourceIsActive?: boolean;
+  isContract?: boolean;
   description?: string;
   summary?: string;
   skills?: string[];
@@ -474,6 +476,7 @@ function ingestDiscoveredJob(
   sponsorshipMode: SponsorshipMode,
 ): "added" | "enriched" | "filtered" | "unchanged" {
   const description = String(job.description || "").trim();
+  const isContract = Boolean(job.isContract || isContractRole({ title: job.title, description, summary: job.summary }));
   const sponsorship = assessSponsorship(sponsorRegistry, job.company, description);
   if (!matchesSponsorshipMode(sponsorship, sponsorshipMode)) return "filtered";
 
@@ -520,6 +523,7 @@ function ingestDiscoveredJob(
     if (job.source === "manual" && !existing.profileId) {
       existing.profileId = profile.id;
     }
+    if (isContract) existing.is_contract = true;
     if (expiryReason) {
       existing.availability_status = "expired";
       existing.availability_reason = expiryReason;
@@ -562,6 +566,7 @@ function ingestDiscoveredJob(
     key_skills: (job.skills || []).slice(0, 8),
     salary: job.salary || "Not advertised",
     status: "new",
+    ...(isContract ? { is_contract: true } : {}),
     availability_status: expiryReason ? "expired" : "active",
     ...(expiryReason ? { availability_reason: expiryReason, availability_closed_at: now.toISOString() } : {}),
     ...(safeExpiresAt && !expiryDateBeforePostedDate(safeExpiresAt, dateInfo.date) ? { expires_at: safeExpiresAt } : {}),
@@ -1793,6 +1798,7 @@ export async function runScrapeForProfile(
                   postedDate: job.date || job.posted_at?.split("T")[0],
                   postedAt: job.posted_at || (job.date && job.date.includes("T") ? job.date : undefined),
                   ...getSourceAvailabilityMetadata(job),
+                  isContract: isContractRole({ ...job, title: job.title, description: job.description || job.summary }),
                   description: job.description || "",
                   summary: job.summary || "", skills: job.skills || [],
                   salary: job.salary_min ? `£${job.salary_min.toLocaleString()} - £${(job.salary_max || job.salary_min).toLocaleString()}` : undefined,
@@ -1819,7 +1825,6 @@ export async function runScrapeForProfile(
     { enabled: config.sources.jobicy, name: "Jobicy", keyReady: true, search: (q, l) => searchJobicy(config, q, l) },
     { enabled: config.sources.arbeitnow, name: "Arbeitnow", keyReady: true, search: (q, l) => searchArbeitnow(config, q, l) },
     { enabled: config.sources.remotive, name: "Remotive", keyReady: true, search: (q, l) => searchRemotive(config, q, l) },
-    { enabled: config.sources.themuse, name: "The Muse", keyReady: true, search: (q, l) => searchTheMuse(config, q, l) },
     { enabled: config.sources.greenhouse, name: "Greenhouse ATS", keyReady: true, search: (q, l) => searchGreenhouse(config, q, l) },
     { enabled: config.sources.lever, name: "Lever ATS", keyReady: true, search: (q, l) => searchLever(config, q, l) },
     { enabled: config.sources.ashby, name: "Ashby ATS", keyReady: true, search: (q, l) => searchAshby(config, q, l) },
@@ -1842,7 +1847,7 @@ export async function runScrapeForProfile(
         countResult(ingestDiscoveredJob(seen, {
           id: `${job.portal}_${job.externalId}`, title: job.title, company: job.company, url: job.url,
           location: job.location, postedDate: job.postedDate, postedAt: job.postedAt, description: job.description,
-          expiresAt: job.expiresAt, sourceIsActive: job.sourceIsActive,
+          expiresAt: job.expiresAt, sourceIsActive: job.sourceIsActive, isContract: job.isContract,
           salary: job.salary, portal: job.portal, source: job.sourceLabel || "api",
         }, profile, sponsorshipMode));
       }
@@ -1942,6 +1947,18 @@ serve({
 
           const dist = profilesManager.calculateDistance(item.location || "", activeProfile);
           const fullJd = item.full_jd || item.summary || "";
+          const isContract = item.is_contract === true || isContractRole({
+            title: item.title,
+            description: item.full_jd,
+            summary: item.summary,
+            employment_type: item.employment_type,
+            job_type: item.job_type,
+          });
+          if (isContract && item.is_contract !== true) {
+            item.is_contract = true;
+            seen[id] = item;
+            seenMutated = true;
+          }
           const sponsor = checkSponsor(item.company || "", fullJd);
           
           // Check if tracker has an entry via id, url, dedupKey, simpleKey, or normKey
@@ -2077,6 +2094,7 @@ serve({
           sponsorship_employer: sponsor.isNewSponsor ? (sponsor.newSponsorDetails?.organisation || sponsor.assessment.employer.organisation || "") : (sponsor.assessment.employer.organisation || ""),
           sponsorship_source: sponsor.assessment.employer.source,
           status,
+          is_contract: isContract,
           availability_status: item.availability_status || "active",
           availability_reason: item.availability_reason || null,
           availability_closed_at: item.availability_closed_at || null,

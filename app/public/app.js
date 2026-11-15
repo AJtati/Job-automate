@@ -3031,6 +3031,7 @@ function renderJobs() {
       <div class="job-card-meta">
         ${relativeDateBadge}
         ${portalTag}
+        ${job.is_contract ? '<span class="meta-pill" style="color: #c084fc; border-color: rgba(192, 132, 252, 0.4); font-weight: 600;" title="Contract, fixed-term, temporary, or freelance role">Contract</span>' : ''}
         <span class="meta-pill">${escapeHtml(job.commute_tag)}</span>
         ${(isHybridJob(job) && !job.is_remote)
           ? '<span class="meta-pill" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.35); font-weight: 500;">🏢 Hybrid</span>'
@@ -4870,6 +4871,7 @@ function renderDetailsTab() {
           <div class="meta-pill" style="font-size: 12px; padding: 5px 12px; background: rgba(10, 132, 255, 0.15); border-color: rgba(10, 132, 255, 0.35); color: #93c5fd;">
             ${escapeHtml(selectedJob.title)}
           </div>
+          ${selectedJob.is_contract ? '<div class="meta-pill" style="display: inline-block; margin-top: 6px; color: #c084fc; border-color: rgba(192, 132, 252, 0.4); font-weight: 600;">Contract role</div>' : ''}
         </div>
       </div>
 
@@ -6301,7 +6303,6 @@ async function fetchSearchConfig() {
     document.getElementById("sourceJobicy").checked = Boolean(sources.jobicy);
     document.getElementById("sourceArbeitnow").checked = Boolean(sources.arbeitnow);
     document.getElementById("sourceRemotive").checked = Boolean(sources.remotive);
-    document.getElementById("sourceTheMuse").checked = Boolean(sources.themuse ?? true);
     document.getElementById("sourceGreenhouse").checked = Boolean(sources.greenhouse ?? true);
     document.getElementById("sourceLever").checked = Boolean(sources.lever ?? true);
     document.getElementById("sourceAshby").checked = Boolean(sources.ashby ?? true);
@@ -6364,7 +6365,6 @@ async function saveSearchConfig() {
       jobicy: document.getElementById("sourceJobicy").checked,
       arbeitnow: document.getElementById("sourceArbeitnow").checked,
       remotive: document.getElementById("sourceRemotive").checked,
-      themuse: document.getElementById("sourceTheMuse").checked,
       greenhouse: document.getElementById("sourceGreenhouse").checked,
       lever: document.getElementById("sourceLever").checked,
       ashby: document.getElementById("sourceAshby").checked,
