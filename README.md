@@ -16,6 +16,7 @@ This project extends the workflow in [ai-job-search-dev/ai-job-search](https://g
 - Uses AI only for optional constrained rewrites. Matching, gates, and scoring work without a model.
 - Compiles PDFs locally with LuaLaTeX or XeLaTeX.
 - Runs in current browsers on macOS and Windows, with launchers for each platform.
+- Archives confirmed expired postings separately from application status, keeps applied roles saved, and treats a materially changed repost as a new listing.
 
 ## Quick start
 
@@ -32,13 +33,11 @@ For this extended repository, clone your own fork or working copy instead.
 
 ### 2. Install prerequisites
 
-Install [Bun](https://bun.sh). PDF output also requires a local TeX distribution:
+Install [Bun](https://bun.sh) to run the app from source. Source runs can use a local Tectonic or TeX Live installation for PDF generation.
 
-- macOS: MacTeX or BasicTeX with the required LaTeX packages.
-- Windows: MiKTeX or TeX Live, with `lualatex` and `xelatex` available on `PATH`.
-- Linux: TeX Live with the extra and recommended font packages.
+The packaged macOS and Windows apps bundle Bun, PDF.js for PDF resume import, Tectonic for PDF generation, and the LaTeX support files used by the resume and cover-letter templates. Packaged apps do not require Python, Poppler, Swift command-line tools, or a separate TeX installation for those workflows.
 
-PDF resume import uses Poppler’s `pdftotext` when available, with Python `pypdf` as a fallback. Plain text and `.tex` imports require neither.
+JobSpy aggregation remains an optional search source that needs Python with `python-jobspy`. AI rewriting also needs a configured provider key; keys are not included in installers.
 
 ### 3. Run the app
 
@@ -69,6 +68,8 @@ bun run app:windows
 4. Review eligibility and language gates before considering the score.
 5. Select requirements to inspect their source evidence.
 6. Tailor the application, review every claim, then build the PDF locally.
+
+Expired Postings uses explicit closure signals or passed application deadlines. A posting is not marked expired only because it is old or missing from a later scrape. LinkedIn detail checks are limited to one saved listing per scrape, time out after five seconds, and are cached for seven days; other sources are checked only when their data includes an explicit closure or deadline.
 
 The score is not an ATS vendor prediction. It is a transparent internal fit score: technical evidence 30%, experience relevance 25%, behavioral evidence 15%, and career alignment 30%. Location is shown as a gate and does not inflate the number.
 
@@ -103,28 +104,25 @@ The broader Python suite requires Python 3.10 or newer.
 ```bash
 bun run build:dmg
 ```
+Run this from the cloned repository on macOS. The build machine needs Bun, internet access to download the pinned runtimes and LaTeX resources, and Apple Command Line Tools (`xcode-select --install`) for `swiftc` and the macOS packaging utilities. A full Xcode installation is not required.
+
 * Compiles a native Swift Cocoa/WebKit application (`/Applications/AI Job Search Studio.app`) with macOS Dock integration.
 * Creates `dist/AI-Job-Search-Studio.dmg` for distribution.
+* Builds a universal DMG for Intel and Apple Silicon Macs, with a macOS 13 minimum.
+* Bundles Bun, PDF.js, Tectonic, and an offline cache of the LaTeX files used by the supported resume languages.
 
-### Windows Application (Portable Standalone ZIP)
-The Windows package is completely self-contained and portable—it bundles the **Bun runtime** (`runtime/bun.exe`) and has **zero external npm dependencies**. The end user does not need to install Bun, Node.js, or Python.
+### Windows Application (Setup EXE and Portable ZIP)
+The Windows package includes a Windows Bun runtime, PDF.js, the Windows Tectonic executable, and cached LaTeX support files. The setup installs per-user and stores profile/job data under `%LOCALAPPDATA%\AI Job Search Studio\`.
 
 #### 1. Running the Windows Package
 1. Download or extract **`AI-Job-Search-Studio-Windows.zip`**.
 2. Double-click **`AI Job Search Studio.cmd`**.
 3. The app automatically launches in a dedicated desktop application window (powered by Microsoft Edge App Mode, hiding browser bars and tabs for a native window feel).
 4. All candidate data, profiles, and tailored files are preserved in `%LOCALAPPDATA%\AI Job Search Studio\`.
+For a regular installer, run `AI-Job-Search-Studio-Setup.exe`; it creates Start Menu shortcuts and can optionally create a desktop shortcut.
 
-#### 2. Optional: PDF Compilation on Windows
-To compile LaTeX resumes directly to PDF on Windows, install a LaTeX engine using Windows Package Manager (`winget`):
-```powershell
-# Recommended: Fast, self-contained modern compiler
-winget install Tectonic.Tectonic
-
-# Or full TeX Live / MiKTeX distribution:
-winget install MiKTeX.MiKTeX
-```
-*Alternatively, you can click **"Open Overleaf ↗"** or **"Copy LaTeX"** inside the app to render PDFs online with zero local tools.*
+#### 2. PDF Import and Generation
+PDF resume import and local PDF generation work from the packaged app without separately installing a parser or TeX distribution. The package uses Tectonic locally, so first-use LaTeX downloads are not needed.
 
 #### 3. Building the Windows Package
 You can build the Windows distribution from **either Windows or macOS/Linux**:
@@ -135,7 +133,9 @@ bun run build:windows:sh
 # From Windows PowerShell:
 bun run build:windows
 ```
-Output: `dist/AI-Job-Search-Studio-Windows.zip` (portable, ~52 MB compressed).
+Output: `dist/AI-Job-Search-Studio-Windows.zip` (portable) and, when built on Windows with Inno Setup 6, `dist/AI-Job-Search-Studio-Setup.exe`.
+
+Run either command from the cloned repository after installing Bun. The macOS/Linux script creates only the portable ZIP. On Windows, `bun run build:windows` creates the ZIP and also creates `dist/AI-Job-Search-Studio-Setup.exe` when Inno Setup 6 is installed (`ISCC.exe` on `PATH` or in its default install location). Without Inno Setup, the ZIP is still produced. Runtime assets are version-pinned and SHA-256 checked. Internet access is needed on the build machine to fetch runtimes and prepare the offline TeX cache, but not for first-use PDF generation.
 
 ## Project structure
 
