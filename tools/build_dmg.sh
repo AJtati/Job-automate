@@ -101,71 +101,21 @@ rm -f "$DIST_DIR/AI Job Search Studio.arm64" "$DIST_DIR/AI Job Search Studio.x86
 
 chmod +x "$APP_BUNDLE/Contents/MacOS/AI Job Search Studio"
 
-# 3. Create high-resolution macOS ICNS icon
+# 3. Create the macOS app icon from the source artwork.
 ICONSET_DIR="$DIST_DIR/AppIcon.iconset"
-mkdir -p "$ICONSET_DIR"
-
-cat <<'SWIFTEOF' > "$DIST_DIR/generate_icon.swift"
-import Cocoa
-
-let size = NSSize(width: 1024, height: 1024)
-let img = NSImage(size: size)
-img.lockFocus()
-
-let rect = NSRect(origin: .zero, size: size)
-let roundedPath = NSBezierPath(roundedRect: rect.insetBy(dx: 40, dy: 40), xRadius: 220, yRadius: 220)
-
-// Rich Apple gradient
-let gradient = NSGradient(colors: [
-    NSColor(red: 0.05, green: 0.12, blue: 0.28, alpha: 1.0),
-    NSColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1.0)
-])
-gradient?.draw(in: roundedPath, angle: -45)
-
-// Outer border
-NSColor(white: 1.0, alpha: 0.25).setStroke()
-roundedPath.lineWidth = 12
-roundedPath.stroke()
-
-// Text / Symbol
-let font = NSFont.systemFont(ofSize: 420, weight: .bold)
-let text = "⚡" as NSString
-let attr: [NSAttributedString.Key: Any] = [
-    .font: font,
-    .foregroundColor: NSColor.white
-]
-let textSize = text.size(withAttributes: attr)
-let textOrigin = NSPoint(x: (size.width - textSize.width) / 2, y: (size.height - textSize.height) / 2 - 20)
-text.draw(at: textOrigin, withAttributes: attr)
-
-img.unlockFocus()
-
-if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
-    let pngData = rep.representation(using: .png, properties: [:])
-    try? pngData?.write(to: URL(fileURLWithPath: "dist/icon_1024.png"))
-}
-SWIFTEOF
-
-swiftc -O -framework Cocoa "$DIST_DIR/generate_icon.swift" -o "$DIST_DIR/generate_icon"
-(cd "$REPO_DIR" && "$DIST_DIR/generate_icon")
-rm "$DIST_DIR/generate_icon"
-rm "$DIST_DIR/generate_icon.swift"
-
-if [ -f "$DIST_DIR/icon_1024.png" ]; then
-    sips -z 16 16     "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null
-    sips -z 32 32     "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_16x16@2x.png" >/dev/null
-    sips -z 32 32     "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_32x32.png" >/dev/null
-    sips -z 64 64     "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_32x32@2x.png" >/dev/null
-    sips -z 128 128   "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_128x128.png" >/dev/null
-    sips -z 256 256   "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null
-    sips -z 256 256   "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_256x256.png" >/dev/null
-    sips -z 512 512   "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
-    sips -z 512 512   "$DIST_DIR/icon_1024.png" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null
-    cp "$DIST_DIR/icon_1024.png" "$ICONSET_DIR/icon_512x512@2x.png"
-
-    iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE/Contents/Resources/app.icns"
-    rm -rf "$ICONSET_DIR" "$DIST_DIR/icon_1024.png"
+ICON_SOURCE="$REPO_DIR/assets/ai-job-search-studio-icon.png"
+if [ ! -f "$ICON_SOURCE" ]; then
+    echo "The macOS app icon artwork is missing: $ICON_SOURCE" >&2
+    exit 1
 fi
+mkdir -p "$ICONSET_DIR"
+for size in 16 32 128 256 512; do
+    sips -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
+    retina_size=$((size * 2))
+    sips -z "$retina_size" "$retina_size" "$ICON_SOURCE" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
+done
+python3 "$REPO_DIR/tools/pack_macos_icon.py" "$ICONSET_DIR" "$APP_BUNDLE/Contents/Resources/app.icns"
+rm -rf "$ICONSET_DIR"
 
 # 3.5 Bundle web app code and assets into Resources for standalone execution
 echo "Bundling web app resources into .app bundle..."

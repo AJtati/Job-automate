@@ -42,6 +42,7 @@ linkedin_Profile.pdf
 *.jpg
 *.jpeg
 *.png
+!assets/ai-job-search-studio-icon.png
 !cover_letters/OpenFonts/fonts/**
 
 # OS files

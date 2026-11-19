@@ -112,40 +112,61 @@ function extractRequestedExperienceAdditions(
   if (!instructions?.trim() || !experience?.length) return [];
 
   const additions: RequestedExperienceAddition[] = [];
-  const clauses = instructions.split(/[\r\n;]+|(?<=[.!?])\s+/).map(clause => clause.trim()).filter(Boolean);
+  const lines = instructions.split(/\r?\n/);
   const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const normalize = (value: string) => value.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  let contextualExperienceIndex: number | null = null;
 
-  for (const clause of clauses) {
-    const action = /\b(?:add|include|insert|record|capture|mention)\b/i.exec(clause);
-    if (!action) continue;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const clauses = line.split(/\s*;\s*/).map(clause => clause.trim()).filter(Boolean);
 
-    const lowerClause = clause.toLowerCase();
-    const companyMatches = experience.flatMap((item, index) =>
-      item.company && lowerClause.includes(item.company.toLowerCase()) ? [index] : []
-    );
-    const roleMatches = experience.flatMap((item, index) =>
-      item.role && lowerClause.includes(item.role.toLowerCase()) ? [index] : []
-    );
-    const matches = companyMatches.length ? companyMatches : roleMatches;
-    if (matches.length !== 1) continue;
+    for (const clause of clauses) {
+      const normalizedClause = normalize(clause);
+      const explicitMatches = experience.flatMap((item, index) => {
+        const names = [item.company, item.role].filter(Boolean).map(normalize);
+        return names.some(name => name.length >= 3 && ` ${normalizedClause} `.includes(` ${name} `)) ? [index] : [];
+      });
+      const uniqueExplicitMatches = [...new Set(explicitMatches)];
+      if (uniqueExplicitMatches.length === 1) contextualExperienceIndex = uniqueExplicitMatches[0];
+      else if (uniqueExplicitMatches.length > 1) contextualExperienceIndex = null;
 
-    let fact = clause.slice(action.index! + action[0].length).trim().replace(/^[,:-]\s*/, "");
-    const colon = fact.indexOf(":");
-    if (colon >= 0) fact = fact.slice(colon + 1).trim();
-    const target = experience[matches[0]];
-    for (const name of [target.company, target.role].filter(Boolean) as string[]) {
-      fact = fact.replace(new RegExp(`^(?:(?:a|an|the|some|new|my|one|two|three)\\s+)*(?:(?:work\\s+)?(?:experience\\s+)?(?:point|bullet|detail|achievement|responsibility|fact)\\s+)?(?:under|at|for|with)\\s+${escapeRegExp(name)}\\b[:,]?\\s*`, "i"), "");
-      fact = fact.replace(new RegExp(`\\b(?:under|at|for|with)\\s+${escapeRegExp(name)}\\b`, "gi"), "");
-    }
-    fact = fact.replace(/^(?:(?:a|an|the|some|new|my|one|two|three)\s+)*(?:(?:work\s+)?(?:experience\s+)?(?:point|bullet|detail|achievement|responsibility|fact)\s+)?(?:that|this)\s+/i, "");
-    fact = fact.replace(/\s+(?:please|thanks?)\.?$/i, "").trim();
-    if (fact.length < 12 || /\bto (?:my )?(?:resume|cv|skills)\b/i.test(fact)) continue;
+      const action = /\b(?:add|include|insert|record|capture|mention|append|place|put|update)\b/i.exec(clause);
+      const isListItem = /^(?:[-*•]\s*|\d+[.)]\s*)/.test(clause);
+      const experienceIndex = uniqueExplicitMatches.length === 1
+        ? uniqueExplicitMatches[0]
+        : contextualExperienceIndex;
+      if (experienceIndex === null || (!action && !isListItem && uniqueExplicitMatches.length === 0)) continue;
 
-    fact = fact.replace(/^I(?:\s+have|\s+had|['’]ve|['’]d)?\s+/i, "").replace(/^we(?:\s+have|\s+had|['’]ve|['’]d)?\s+/i, "");
-    fact = fact[0].toUpperCase() + fact.slice(1);
-    if (!/[.!?]$/.test(fact)) fact += ".";
-    if (!additions.some(item => item.experienceIndex === matches[0] && item.fact.toLowerCase() === fact.toLowerCase())) {
-      additions.push({ experienceIndex: matches[0], fact });
+      let fact = action
+        ? clause.slice(action.index! + action[0].length).trim()
+        : clause;
+      fact = fact
+        .replace(/^(?:[-*•]\s*|\d+[.)]\s*)/, "")
+        .replace(/^[,:-]\s*/, "")
+        .replace(/^(?:(?:a|an|the|some|new|my|one|two|three|these|those|this|that|following)\s+)*(?:(?:work\s+)?(?:experience\s+)?(?:point|bullet|detail|achievement|responsibility|fact|points|bullets|details|achievements|responsibilities)\s+)?(?:to (?:my )?(?:resume|cv)\s*)?[:,-]?\s*/i, "")
+        .replace(/^(?:[-*•]\s*|\d+[.)]\s*)/, "");
+      const target = experience[experienceIndex];
+      for (const name of [target.company, target.role].filter(Boolean) as string[]) {
+        const escapedName = escapeRegExp(name);
+        fact = fact
+          .replace(new RegExp(`^(?:(?:under|at|for|with)\\s+)?${escapedName}\\b[:,]?\\s*`, "i"), "")
+          .replace(new RegExp(`\\b(?:under|at|for|with)\\s+${escapedName}\\b[:,]?`, "gi"), "");
+      }
+      fact = fact
+        .replace(/\b(?:in|to|on) (?:the )?(?:resume|cv)\b/gi, "")
+        .replace(/\s+(?:please|thanks?)\.?$/i, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (fact.length < 12) continue;
+
+      fact = fact.replace(/^I(?:\s+have|\s+had|['’]ve|['’]d)?\s+/i, "").replace(/^we(?:\s+have|\s+had|['’]ve|['’]d)?\s+/i, "");
+      fact = fact[0].toUpperCase() + fact.slice(1);
+      if (!/[.!?]$/.test(fact)) fact += ".";
+      if (!additions.some(item => item.experienceIndex === experienceIndex && item.fact.toLowerCase() === fact.toLowerCase())) {
+        additions.push({ experienceIndex, fact });
+      }
     }
   }
 

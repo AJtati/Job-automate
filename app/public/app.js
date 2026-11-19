@@ -1174,6 +1174,7 @@ function clearStudioView() {
 async function switchActiveProfile(profileId) {
   profileDropdownMenu.style.display = "none";
   clearStudioView();
+  currentDocLang = "native";
   const targetProfile = allProfiles.find(p => p.id === profileId);
 
   // 1. Instant optimistic UI switch (0ms latency)
@@ -3480,6 +3481,17 @@ let currentCoverViewMode = "visual";
 let currentDocLang = "native"; // "native" (original language) or "english"
 let currentRenderJobId = null;
 
+function safePdfPart(value, fallback = "item") {
+  const clean = String(value || fallback).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60);
+  return clean || fallback;
+}
+
+function currentPdfFilename(type) {
+  const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob?.id && activeTailoredData.hasDualLanguage;
+  const langSuffix = isDual && currentDocLang === "english" ? "_EN" : "";
+  return `${safePdfPart(activeProfile?.name, "candidate")}_${safePdfPart(activeProfile?.id, "profile")}_${safePdfPart(selectedJob?.company, "company")}_${safePdfPart(selectedJob?.title, "role")}_${type.toUpperCase()}${langSuffix}.pdf`;
+}
+
 function cleanLatexText(str) {
   if (!str) return "";
   let s = str;
@@ -3777,7 +3789,7 @@ function renderVisualCVHtml(texCode) {
   const nameToRender = parsed.name || activeProfile?.name || "Candidate";
   const latexRoleMatch = texCode.match(/\\textbf\{\\large\s*([^}]+)\}/i) || texCode.match(/\\large\s*\{?([^\\}\n]+)\}?\s*\\\\\s*\\small/i);
   const rawHeadline = parsed.role || (latexRoleMatch ? cleanLatexText(latexRoleMatch[1]) : (selectedJob?.title || activeProfile?.headline));
-  const headlineRole = cleanCandidateHeadline(rawHeadline, activeProfile?.headline);
+  const headlineRole = rawHeadline || selectedJob?.title || activeProfile?.headline || "";
 
   let contactHtml = parsed.contactHtml;
   if (!contactHtml) {
@@ -5880,7 +5892,7 @@ async function tailorCurrentJob(force = true, customInstructions = null) {
   }
 }
 
-async function downloadPDF(type) {
+async function downloadPDF(type, saveToDownloads = true) {
   if (!selectedJob) return;
 
   const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
@@ -5936,9 +5948,7 @@ async function downloadPDF(type) {
       codeToCompile = docData.content;
     }
 
-    const candidateSlug = (activeProfile?.name || "candidate").replace(/[^a-zA-Z0-9]/g, "_");
-    const cleanCompany = (selectedJob.company || "company").replace(/[^a-zA-Z0-9]/g, "_");
-    const filename = `${candidateSlug}_${cleanCompany}_${type.toUpperCase()}.pdf`;
+    const filename = currentPdfFilename(type);
 
     const compileRes = await fetch("/api/compile", {
       method: "POST",
@@ -5949,18 +5959,20 @@ async function downloadPDF(type) {
     const result = await compileRes.json();
     if (result.success && result.repoPath) {
       // 1. Copy PDF directly to the user's Downloads directory.
-      try {
-        const saveRes = await fetch("/api/save-to-downloads", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: result.repoPath, filename: result.filename, open: false })
-        });
-        const saveData = await saveRes.json();
-        if (saveData.success) {
-          showToast(`PDF saved to Downloads: ${result.filename}`);
+      if (saveToDownloads) {
+        try {
+          const saveRes = await fetch("/api/save-to-downloads", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: result.repoPath, filename: result.filename, open: false })
+          });
+          const saveData = await saveRes.json();
+          if (saveData.success) {
+            showToast(`PDF saved to Downloads: ${result.filename}`);
+          }
+        } catch (saveErr) {
+          console.warn("Could not copy to Downloads:", saveErr);
         }
-      } catch (saveErr) {
-        console.warn("Could not copy to ~/Downloads:", saveErr);
       }
 
       // 2. Open PDF in the system viewer without navigating the app webview.
@@ -6004,54 +6016,16 @@ async function openInPreview(type) {
   const activeEditorSaver = window[`__saveLatexEditor_${type}`];
   if (typeof activeEditorSaver === "function") {
     await activeEditorSaver();
-    await downloadPDF(type);
-    return;
   }
-
-  const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
-  let docPath = "";
-  if (type === "cover") {
-    docPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
-      ? activeTailoredData.coverEnglishPath
-      : (selectedJob.cover_file || "");
-  } else {
-    docPath = (isDual && currentDocLang === "english" && activeTailoredData.cvEnglishPath)
-      ? activeTailoredData.cvEnglishPath
-      : (selectedJob.cv_file || "");
-  }
-  if (!docPath) {
-    showToast("Please tailor the application first to generate the document.");
-    return;
-  }
-  const candidateSlug = (activeProfile?.name || "candidate").replace(/[^a-zA-Z0-9]/g, "_");
-  const cleanCompany = (selectedJob.company || "company").replace(/[^a-zA-Z0-9]/g, "_");
-  const langSuffix = (isDual && currentDocLang === "english") ? "_EN" : "";
-  const filename = `${candidateSlug}_${cleanCompany}_${type.toUpperCase()}${langSuffix}.pdf`;
-  const folder = type === "cover" ? "cover_letters" : "cv";
-  const pdfPath = `${folder}/${filename}`;
-
-  try {
-    const res = await fetch("/api/open-file", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: pdfPath })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast("Opened with the system PDF viewer");
-    } else {
-      // PDF hasn't been compiled yet: compile it now and open!
-      await downloadPDF(type);
-    }
-  } catch {
-    await downloadPDF(type);
-  }
+  // Always compile the selected LaTeX source so Open cannot show a stale PDF
+  // from a different role or profile that reused an older output filename.
+  await downloadPDF(type, false);
 }
 
 async function revealInFinder(type) {
   if (!selectedJob) return;
-  const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   let docPath = "";
+  const isDual = activeTailoredData && activeTailoredData.jobId === selectedJob.id && activeTailoredData.hasDualLanguage;
   if (type === "cover") {
     docPath = (isDual && currentDocLang === "english" && activeTailoredData.coverEnglishPath)
       ? activeTailoredData.coverEnglishPath
@@ -6065,10 +6039,7 @@ async function revealInFinder(type) {
     showToast("Please tailor the application first.");
     return;
   }
-  const candidateSlug = (activeProfile?.name || "candidate").replace(/[^a-zA-Z0-9]/g, "_");
-  const cleanCompany = (selectedJob.company || "company").replace(/[^a-zA-Z0-9]/g, "_");
-  const langSuffix = (isDual && currentDocLang === "english") ? "_EN" : "";
-  const filename = `${candidateSlug}_${cleanCompany}_${type.toUpperCase()}${langSuffix}.pdf`;
+  const filename = currentPdfFilename(type);
   const folder = type === "cover" ? "cover_letters" : "cv";
   const pdfPath = `${folder}/${filename}`;
 
