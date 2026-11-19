@@ -120,6 +120,24 @@ function safeSlug(value: string): string {
   return (value || "item").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "item";
 }
 
+function profileArtifactSlug(profile: CandidateProfile): string {
+  const displaySlug = safeSlug(profile.name || profile.id || "candidate").replace(/-/g, "_");
+  const identity = profile.id || profile.name || "candidate";
+  return `${displaySlug}_${profileArtifactIdentity(profile)}`;
+}
+
+function profileArtifactIdentity(profile: CandidateProfile): string {
+  const identity = profile.id || profile.name || "candidate";
+  const identityHash = createHash("sha256").update(identity).digest("hex").slice(0, 10);
+  return `profile_${identityHash}`;
+}
+
+function pathContainsToken(path: string, token: string): boolean {
+  const normalizedPath = `_${path.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}_`;
+  const normalizedToken = token.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return Boolean(normalizedToken && normalizedPath.includes(`_${normalizedToken}_`));
+}
+
 function profileEvidenceText(profile: CandidateProfile): string {
   return [
     profile.sourceResume?.text || "",
@@ -284,6 +302,7 @@ export function isJobRelevantToProfile(item: any, profile: CandidateProfile, id?
   if (item.profileId) {
     if (item.profileId === profile.id) return true;
     if (Array.isArray(item.imported_by_profiles) && item.imported_by_profiles.includes(profile.id)) return true;
+    if (item.tailored_by_profile?.[profile.id]) return true;
     return false;
   }
 
@@ -616,6 +635,15 @@ export function isProfileOwnerOfFile(
       }
     }
   }
+
+  // New generated files carry a display name plus a stable profile fingerprint.
+  // Match this exact token before falling back to legacy name-based filenames.
+  const activeArtifactToken = profileArtifactIdentity(activeProfile);
+  if (pathContainsToken(cleanPath, activeArtifactToken)) return true;
+  const otherArtifactOwnsFile = allProfiles.some(profile =>
+    profile.id !== activeProfile.id && pathContainsToken(cleanPath, profileArtifactIdentity(profile))
+  );
+  if (otherArtifactOwnsFile) return false;
 
   // 2. Candidate tokens from active profile
   const activeName = (activeProfile.name || "").toLowerCase().trim();
@@ -1967,13 +1995,14 @@ serve({
           const normComp = (item.company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
           const normRole = (item.title || "").toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9]/g, "");
           const normKey = `norm_${normComp}_${normRole}`;
+          const profileTailored = item.tailored_by_profile?.[activeProfile.id];
           const tracked = item.relisted_from
             ? tracker[id]
             : tracker[id] || (item.url ? tracker[item.url] : undefined) || tracker[itemDedupKey] || tracker[simpleKey] || tracker[normKey];
 
           // Status hierarchy scoped to the active candidate
           const trackedStatus = tracked?.status;
-          const itemStatus = (item.profileId && item.profileId !== activeProfile.id) ? undefined : item.status;
+          const itemStatus = profileTailored?.status || ((item.profileId && item.profileId !== activeProfile.id) ? undefined : item.status);
           const status = getHigherStatus(trackedStatus, itemStatus);
 
           // Strictly scope candidate files to the active profile to prevent cross-candidate leakage
@@ -1993,7 +2022,6 @@ serve({
               : "";
           let coverFile = trackedCover || itemCover || "";
 
-          const profileTailored = item.tailored_by_profile?.[activeProfile.id];
           if (profileTailored) {
             if (!cvFile && profileTailored.cv_file && isProfileOwnerOfFile(profileTailored.cv_file, activeProfile, allProfiles)) {
               cvFile = profileTailored.cv_file;
@@ -2012,7 +2040,7 @@ serve({
           });
 
           const baselineScore = analysis.overallScore;
-          let tailoredScore: number | null = (tracked && tracked.fitRating ? parseInt(tracked.fitRating, 10) : null) || (item.profileId === activeProfile.id ? item.tailored_score : null) || null;
+          let tailoredScore: number | null = (tracked && tracked.fitRating ? parseInt(tracked.fitRating, 10) : null) || profileTailored?.tailored_score || (item.profileId === activeProfile.id ? item.tailored_score : null) || null;
           let effectiveAnalysis = analysis;
 
           if (cvFile && existsSync(join(ROOT_DIR, cvFile))) {
@@ -2105,6 +2133,9 @@ serve({
           ignored: status === "ignored",
           cv_file: cvFile,
           cover_file: coverFile,
+          user_instructions: profileTailored?.user_instructions ?? (item.profileId === activeProfile.id ? item.user_instructions : ""),
+          is_deep_tailored: profileTailored?.is_deep_tailored ?? (item.profileId === activeProfile.id ? item.is_deep_tailored : undefined),
+          tailor_report: profileTailored?.tailor_report ?? (item.profileId === activeProfile.id ? item.tailor_report : undefined),
           portal: item.portal || (isImported ? "external-url" : "linkedin-search"),
           is_imported: isImported,
           imported: isImported,
@@ -2462,9 +2493,17 @@ serve({
           if (edit.mode === "emphasize" && term) keySkills.unshift(term);
           const cleanCompany = safeSlug(company).replace(/-/g, "_");
           const cleanRole = safeSlug(role).replace(/-/g, "_");
-          const candidateSlug = safeSlug(activeProfile.name || "candidate").replace(/-/g, "_");
-          const cvPath = job.cv_file || `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
-          const coverPath = job.cover_file || `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
+          const candidateSlug = profileArtifactSlug(activeProfile);
+          const savedProfileDocuments = job.tailored_by_profile?.[activeProfile.id] || {};
+          const allProfiles = profilesManager.getAllProfiles();
+          const savedCv = savedProfileDocuments.cv_file && isProfileOwnerOfFile(savedProfileDocuments.cv_file, activeProfile, allProfiles)
+            ? savedProfileDocuments.cv_file
+            : (job.profileId === activeProfile.id && job.cv_file && isProfileOwnerOfFile(job.cv_file, activeProfile, allProfiles) ? job.cv_file : "");
+          const savedCover = savedProfileDocuments.cover_file && isProfileOwnerOfFile(savedProfileDocuments.cover_file, activeProfile, allProfiles)
+            ? savedProfileDocuments.cover_file
+            : (job.profileId === activeProfile.id && job.cover_file && isProfileOwnerOfFile(job.cover_file, activeProfile, allProfiles) ? job.cover_file : "");
+          const cvPath = savedCv || `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
+          const coverPath = savedCover || `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`;
           let cvContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, undefined, undefined, prompt);
           let coverContent = await aiService.generateTailoredCoverLetter(activeProfile, { company, role, location, keySkills, fullJd }, undefined, undefined, prompt);
           if (edit.mode === "concise") cvContent = makeResumeConcise(cvContent);
@@ -2476,8 +2515,8 @@ serve({
           if (edit.kind !== "cv") writeFileSync(join(ROOT_DIR, coverPath), coverContent, "utf-8");
           const baselineAnalysis = analyzeApplication(activeProfile, { company, role, location, keySkills, fullJd });
           const tailoredAnalysis = analyzeTailoredResume(cvContent, { company, role, location, keySkills, fullJd }, activeProfile, baselineAnalysis);
-          seen[jobId] = {
-            ...job,
+          const profileEdit = {
+            ...(job.tailored_by_profile?.[activeProfile.id] || {}),
             cv_file: cvPath,
             cover_file: coverPath,
             status: "drafted",
@@ -2485,7 +2524,26 @@ serve({
             baseline_analysis: baselineAnalysis,
             fit_score: tailoredAnalysis.overallScore,
             baseline_score: baselineAnalysis.overallScore,
-            tailored_score: tailoredAnalysis.overallScore
+            tailored_score: tailoredAnalysis.overallScore,
+            updatedAt: new Date().toISOString()
+          };
+          seen[jobId] = {
+            ...job,
+            tailored_by_profile: {
+              ...(job.tailored_by_profile || {}),
+              [activeProfile.id]: profileEdit
+            },
+            ...((!job.profileId || job.profileId === activeProfile.id) ? {
+              profileId: activeProfile.id,
+              cv_file: cvPath,
+              cover_file: coverPath,
+              status: "drafted",
+              analysis: tailoredAnalysis,
+              baseline_analysis: baselineAnalysis,
+              fit_score: tailoredAnalysis.overallScore,
+              baseline_score: baselineAnalysis.overallScore,
+              tailored_score: tailoredAnalysis.overallScore
+            } : {})
           };
           saveSeenJobs(seen);
           profilesManager.updateActiveProfileTracker(jobId, { status: "drafted", cvFile: cvPath, coverFile: coverPath, fitRating: String(tailoredAnalysis.overallScore), notes: `Scenario edit: ${prompt}` });
@@ -2791,7 +2849,8 @@ serve({
           }
         }
 
-        const candidateSlug = (activeProfile.name || "candidate").toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
+        const candidateSlug = profileArtifactSlug(activeProfile);
+        const legacyCandidateSlug = (activeProfile.name || "candidate").toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
         const cleanCompany = (company || "Company").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         const cleanRole = (role || "Role").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
 
@@ -2807,10 +2866,14 @@ serve({
           : (incomingJob?.cv_file && isProfileOwnerOfFile(incomingJob.cv_file, activeProfile, allProfiles))
             ? incomingJob.cv_file
             : "";
+        const storedProfileDocs = storedJob.tailored_by_profile?.[activeProfile.id] || {};
+        const profileSavedCv = storedProfileDocs.cv_file && isProfileOwnerOfFile(storedProfileDocs.cv_file, activeProfile, allProfiles)
+          ? storedProfileDocs.cv_file
+          : "";
         const storedCv = (storedJob?.profileId === activeProfile.id && storedJob?.cv_file && isProfileOwnerOfFile(storedJob.cv_file, activeProfile, allProfiles))
           ? storedJob.cv_file
           : "";
-        const cvPath = trackedCv || incomingCv || storedCv || "";
+        const cvPath = trackedCv || incomingCv || profileSavedCv || storedCv || "";
 
         const trackedCover = (tracked && tracked.coverFile && isProfileOwnerOfFile(tracked.coverFile, activeProfile, allProfiles)) ? tracked.coverFile : "";
         const incomingCover = (incomingJob?.profileId === activeProfile.id && incomingJob?.cover_file && isProfileOwnerOfFile(incomingJob.cover_file, activeProfile, allProfiles))
@@ -2818,10 +2881,13 @@ serve({
           : (incomingJob?.cover_file && isProfileOwnerOfFile(incomingJob.cover_file, activeProfile, allProfiles))
             ? incomingJob.cover_file
             : "";
+        const profileSavedCover = storedProfileDocs.cover_file && isProfileOwnerOfFile(storedProfileDocs.cover_file, activeProfile, allProfiles)
+          ? storedProfileDocs.cover_file
+          : "";
         const storedCover = (storedJob?.profileId === activeProfile.id && storedJob?.cover_file && isProfileOwnerOfFile(storedJob.cover_file, activeProfile, allProfiles))
           ? storedJob.cover_file
           : "";
-        const coverPath = trackedCover || incomingCover || storedCover || "";
+        const coverPath = trackedCover || incomingCover || profileSavedCover || storedCover || "";
 
         let tailoredCvContent = "";
         let tailoredCoverContent = "";
@@ -2829,7 +2895,9 @@ serve({
         const candidateCvPaths = [
           cvPath,
           `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`,
-          `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}_en.tex`
+          `cv/main_${candidateSlug}_${cleanCompany}_${cleanRole}_en.tex`,
+          `cv/main_${legacyCandidateSlug}_${cleanCompany}_${cleanRole}.tex`,
+          `cv/main_${legacyCandidateSlug}_${cleanCompany}_${cleanRole}_en.tex`
         ].filter(Boolean) as string[];
 
         for (const p of candidateCvPaths) {
@@ -2846,7 +2914,9 @@ serve({
         const candidateCoverPaths = [
           coverPath,
           `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}.tex`,
-          `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}_en.tex`
+          `cover_letters/cover_${candidateSlug}_${cleanCompany}_${cleanRole}_en.tex`,
+          `cover_letters/cover_${legacyCandidateSlug}_${cleanCompany}_${cleanRole}.tex`,
+          `cover_letters/cover_${legacyCandidateSlug}_${cleanCompany}_${cleanRole}_en.tex`
         ].filter(Boolean) as string[];
 
         for (const p of candidateCoverPaths) {
@@ -2903,9 +2973,15 @@ serve({
 
         const seen = readSeenJobs();
         const storedJob = seen[jobId] || {};
+        const storedProfileTailoring = storedJob.tailored_by_profile?.[activeProfile.id] || {};
+        const ownsLegacyJobFields = !storedJob.profileId || storedJob.profileId === activeProfile.id;
+        const hasExplicitInstructions = Object.prototype.hasOwnProperty.call(body, "userInstructions");
         const isDeepTailor = Boolean(deepTailor !== undefined ? deepTailor : activeProfile.enableDeepTailor);
-        const deepTailorChanged = storedJob.is_deep_tailored !== undefined && storedJob.is_deep_tailored !== isDeepTailor;
-        const effectiveInstructions = cleanInstructions || storedJob.user_instructions || "";
+        const previousDeepTailor = storedProfileTailoring.is_deep_tailored ?? (ownsLegacyJobFields ? storedJob.is_deep_tailored : undefined);
+        const deepTailorChanged = previousDeepTailor !== undefined && previousDeepTailor !== isDeepTailor;
+        const effectiveInstructions = hasExplicitInstructions
+          ? cleanInstructions
+          : (storedProfileTailoring.user_instructions || (ownsLegacyJobFields ? storedJob.user_instructions : "") || "");
 
         const incomingJob = body.job || {};
         const rawCompany = body.company || incomingJob.company || storedJob.company || "";
@@ -2949,7 +3025,7 @@ serve({
           return new Response(JSON.stringify({ success: false, error: "This role fails a mandatory eligibility or language gate.", analysis }), { status: 409, headers: { "Content-Type": "application/json" } });
         }
         
-        const candidateSlug = (activeProfile.name || "candidate").toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
+        const candidateSlug = profileArtifactSlug(activeProfile);
         const cleanCompany = (company || "Company").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         const cleanRole = (role || "Role").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         
@@ -2986,7 +3062,7 @@ serve({
         // Regenerate if force requested, user instructions provided, file doesn't exist, deep alignment changed, or file is a legacy basic stub / wrong language
         const hasUnchangedSansBackbone = Boolean(activeProfile.latexBackbone &&
           upgradeLegacyAtsBackbone(activeProfile.latexBackbone) !== activeProfile.latexBackbone);
-        const isCvStale = !existsSync(cvFullPath) || force || deepTailorChanged || Boolean(cleanInstructions) || (() => {
+        const isCvStale = !existsSync(cvFullPath) || force || deepTailorChanged || Boolean(effectiveInstructions) || (() => {
           const content = readFileSync(cvFullPath, "utf-8");
           if (content.split("\n").length < 100) return true;
           if (detectedLang === "de" && !/\\section\{Profil\}/i.test(content)) return true;
@@ -3000,7 +3076,7 @@ serve({
           cvContent = readFileSync(cvFullPath, "utf-8");
         }
 
-        const isCoverStale = !existsSync(coverFullPath) || force || deepTailorChanged || Boolean(cleanInstructions) || (() => {
+        const isCoverStale = !existsSync(coverFullPath) || force || deepTailorChanged || Boolean(effectiveInstructions) || (() => {
           const content = readFileSync(coverFullPath, "utf-8");
           if (content.split("\n").length < 20) return true;
           if (detectedLang === "de" && /Dear Hiring/i.test(content)) return true;
@@ -3028,7 +3104,7 @@ serve({
           const cvEnFull = join(ROOT_DIR, cvEnglishPath);
           const coverEnFull = join(ROOT_DIR, coverEnglishPath);
 
-          const isCvEnStale = !existsSync(cvEnFull) || force || deepTailorChanged || (() => {
+          const isCvEnStale = !existsSync(cvEnFull) || force || deepTailorChanged || Boolean(effectiveInstructions) || (() => {
             const content = readFileSync(cvEnFull, "utf-8");
             if (content.split("\n").length < 100) return true;
             if (/\\resumeItem\{(?:Automatisierung|Konzeption|Entwicklung|Implementierung|Zusammenarbeit|Vorbereitung|Mitarbeit|Durchf\u00fchrung|Anwendung|Master Thesis)/i.test(content)) return true;
@@ -3037,13 +3113,13 @@ serve({
           })();
 
           if (isCvEnStale) {
-            cvEnglishContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, "en", isDeepTailor);
+            cvEnglishContent = await aiService.generateTailoredCV(activeProfile, { company, role, location, keySkills, fullJd }, "en", isDeepTailor, effectiveInstructions);
             writeFileSync(cvEnFull, cvEnglishContent);
           } else {
             cvEnglishContent = readFileSync(cvEnFull, "utf-8");
           }
 
-          const isCoverEnStale = !existsSync(coverEnFull) || force || deepTailorChanged || (() => {
+          const isCoverEnStale = !existsSync(coverEnFull) || force || deepTailorChanged || Boolean(effectiveInstructions) || (() => {
             const content = readFileSync(coverEnFull, "utf-8");
             if (content.split("\n").length < 20) return true;
             if (/Sehr geehrte|Mit freundlichen|hiermit bewerbe/i.test(content)) return true;
