@@ -16,6 +16,7 @@ let profileJobsCache = {};
 // Multi-Selection Filter State
 let multiFilter = {
   workModes: new Set(), // "remote", "hybrid", "onsite"
+  source: "",
   hideSc: false,
   licensedOnly: false,
   minScore70: false
@@ -48,6 +49,7 @@ function updateFilterBarUI() {
   const chipHideSc = document.getElementById("chipHideSc");
   const chipLicensedOnly = document.getElementById("chipLicensedOnly");
   const chipMinScore = document.getElementById("chipMinScore");
+  const feedSourceSelect = document.getElementById("feedSourceSelect");
   const filterResetBtn = document.getElementById("filterResetBtn");
 
   // 1. Work modes
@@ -65,10 +67,12 @@ function updateFilterBarUI() {
   chipHideSc?.classList.toggle("active-warning", multiFilter.hideSc);
   chipLicensedOnly?.classList.toggle("active-green", multiFilter.licensedOnly);
   chipMinScore?.classList.toggle("active", multiFilter.minScore70);
+  if (feedSourceSelect) feedSourceSelect.value = multiFilter.source;
 
   // 3. Reset button
   const defaultHideSc = Boolean(activeProfile?.excludeSecurityClearance);
   const hasActiveFilters = multiFilter.workModes.size > 0 ||
+    Boolean(multiFilter.source) ||
     multiFilter.hideSc !== defaultHideSc ||
     multiFilter.licensedOnly ||
     multiFilter.minScore70;
@@ -306,6 +310,7 @@ function setupEventListeners() {
   const chipHideSc = document.getElementById("chipHideSc");
   const chipLicensedOnly = document.getElementById("chipLicensedOnly");
   const chipMinScore = document.getElementById("chipMinScore");
+  const feedSourceSelect = document.getElementById("feedSourceSelect");
   const filterResetBtn = document.getElementById("filterResetBtn");
 
   filterWorkModes?.querySelectorAll(".filter-chip").forEach(btn => {
@@ -346,8 +351,15 @@ function setupEventListeners() {
     showToast(multiFilter.minScore70 ? "🎯 Filtering to ≥70% ATS Match roles" : "Showing all match scores");
   });
 
+  feedSourceSelect?.addEventListener("change", () => {
+    multiFilter.source = feedSourceSelect.value;
+    updateFilterBarUI();
+    renderJobs();
+  });
+
   filterResetBtn?.addEventListener("click", () => {
     multiFilter.workModes.clear();
+    multiFilter.source = "";
     multiFilter.hideSc = false;
     multiFilter.licensedOnly = false;
     multiFilter.minScore70 = false;
@@ -2696,7 +2708,73 @@ function isImportedJob(j) {
   return true;
 }
 
-function filterJobsList() {
+function getJobSourceLabel(job) {
+  if (isImportedJob(job)) return "Imported";
+
+  const portal = String(job?.portal || "").toLowerCase();
+  if (portal === "jobspy" || (job?.source && /jobspy/i.test(job.source))) {
+    return String(job.source || job.sourceLabel || "JobSpy").trim();
+  }
+
+  const portalNames = {
+    "freehire-ats": "Direct ATS",
+    "linkedin-search": "LinkedIn",
+    "cv-library": "CV-Library",
+    reed: "Reed",
+    "google-jobs": "Google Jobs",
+    adzuna: "Adzuna",
+    jobicy: "Jobicy",
+    arbeitnow: "Arbeitnow",
+    remotive: "Remotive",
+    greenhouse: "Greenhouse",
+    lever: "Lever",
+    ashby: "Ashby",
+    manual: "Manual"
+  };
+  if (portalNames[portal]) return portalNames[portal];
+
+  const explicitSource = String(job?.sourceLabel || job?.source || "").trim();
+  if (explicitSource && !/^(?:api|cli)$/i.test(explicitSource)) return explicitSource;
+  return portal ? portal.replace(/[-_]/g, " ").replace(/\b\w/g, letter => letter.toUpperCase()) : "Unknown Source";
+}
+
+function updateSourceFilterOptions() {
+  const select = document.getElementById("feedSourceSelect");
+  if (!select) return;
+
+  const sourceCounts = new Map();
+  filterJobsList({ ignoreSourceFilter: true }).forEach(job => {
+    const label = getJobSourceLabel(job);
+    const key = label.trim().toLowerCase();
+    if (!key) return;
+    const existing = sourceCounts.get(key);
+    sourceCounts.set(key, { label: existing?.label || label, count: (existing?.count || 0) + 1 });
+  });
+
+  if (multiFilter.source && !sourceCounts.has(multiFilter.source)) {
+    multiFilter.source = "";
+  }
+
+  select.replaceChildren();
+  const allSourcesOption = document.createElement("option");
+  allSourcesOption.value = "";
+  allSourcesOption.textContent = "All Sources";
+  select.append(allSourcesOption);
+
+  [...sourceCounts.entries()]
+    .sort(([, a], [, b]) => a.label.localeCompare(b.label))
+    .forEach(([key, source]) => {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = `${source.label} (${source.count})`;
+      select.append(option);
+    });
+
+  select.disabled = sourceCounts.size === 0;
+  select.value = multiFilter.source;
+}
+
+function filterJobsList({ ignoreSourceFilter = false } = {}) {
   const query = (searchInput.value || "").toLowerCase().trim();
   const radius = activeProfile?.preferredRadiusMiles || 50;
 
@@ -2719,6 +2797,10 @@ function filterJobsList() {
       (j.key_skills || []).some(s => s.toLowerCase().includes(query));
 
     if (!matchSearch) return false;
+
+    if (!ignoreSourceFilter && multiFilter.source && getJobSourceLabel(j).trim().toLowerCase() !== multiFilter.source) {
+      return false;
+    }
 
     if (scenarioFeedFilters.location && scenarioFeedFilters.location.toLowerCase() !== "remote" && !j.location.toLowerCase().includes(scenarioFeedFilters.location.toLowerCase())) return false;
     if (scenarioFeedFilters.minSalary) {
@@ -2924,6 +3006,7 @@ function normalizeJobDisplay(job) {
 }
 
 function renderJobs() {
+  updateSourceFilterOptions();
   updateFilterBarUI();
   const filtered = filterJobsList();
   feedCount.textContent = `${filtered.length} roles`;
